@@ -13,6 +13,7 @@ from bevelgear.geometry import (
     WORKING_DEPTH_FACTOR,
     max_tip_radius,
     top_land,
+    beyond_back_cone,
     blank_outline,
     compute_set,
     end_overshoot,
@@ -500,26 +501,110 @@ def test_loft_sections_clear_the_blank(member, sigma, z1, z2):
     outer = tooth_space_section(g, member, "outer", overshoot=over)
     inner = tooth_space_section(g, member, "inner", overshoot=over)
 
-    # The flat back is at the crown; the flat front is at the inner tip point.
-    assert min(z for _, _, z in outer.loop_3d()) > m.crown_to_apex
+    # The back is the back cone; the flat front is at the inner tip point.
+    assert min(beyond_back_cone(g, m, pt) for pt in outer.loop_3d()) > 0.0
     assert max(z for _, _, z in inner.loop_3d()) < front_face_z(g, m)
+
+    # Nothing on the outer section overhangs the flat rim behind the back cone
+    # either: the whole section sits radially outside the outer root radius.
+    assert min(
+        math.hypot(x, y) for x, y, _ in outer.loop_3d()
+    ) > m.outer_root_radius
 
 
 @pytest.mark.parametrize("member", ["pinion", "gear"])
-def test_blank_back_face_is_flat_and_parallel_to_the_front(geo, member):
-    """The back must be perpendicular to the axis, not follow the back cone."""
+def test_blank_back_face_follows_the_back_cone(geo, member):
+    """The large end of the teeth must end on the back cone, not on a plane.
+
+    That is what makes a meshed pair flush - see `test_tooth_tips_land_on_the_
+    mates_back_cone`.
+    """
     outline = blank_outline(geo, member)
     m = geo.member(member)
 
-    # The crown is the widest point, and the segment leaving it runs at
-    # constant z - that is the flat back face.
+    # The crown is the widest point; the segment leaving it is the back cone,
+    # running inward in R and *backward* in z.
     crown_i = max(range(len(outline)), key=lambda i: outline[i][0])
-    assert outline[crown_i][1] == pytest.approx(m.crown_to_apex, rel=1e-12)
-    assert outline[crown_i + 1][1] == pytest.approx(outline[crown_i][1], abs=1e-12)
-    assert outline[crown_i + 1][0] < outline[crown_i][0]
+    crown = outline[crown_i]
+    back = outline[crown_i + 1]
+    assert crown == pytest.approx((m.outside_dia / 2.0, m.crown_to_apex), rel=1e-12)
+    assert back == pytest.approx((m.outer_root_radius, m.root_to_apex), rel=1e-12)
+    assert back[0] < crown[0]
+    assert back[1] > crown[1]
 
-    # And the front face is flat too, at the same orientation.
+    # It is perpendicular to the pitch cone, which is the defining property.
+    edge = (back[0] - crown[0], back[1] - crown[1])
+    pitch_dir = (math.sin(m.pitch_angle), math.cos(m.pitch_angle))
+    assert edge[0] * pitch_dir[0] + edge[1] * pitch_dir[1] == pytest.approx(
+        0.0, abs=1e-12
+    )
+
+    # Its length is the whole depth: crown to outer root point.
+    assert math.hypot(*edge) == pytest.approx(m.addendum + m.dedendum, rel=1e-12)
+
+    # Behind it the blank is flat, and the front face is flat too.
+    assert outline[crown_i + 2][1] == pytest.approx(back[1], abs=1e-12)
     assert outline[0][1] == pytest.approx(outline[1][1], abs=1e-12)
+
+
+@pytest.mark.parametrize("sigma", [45.0, 60.0, 90.0, 120.0])
+@pytest.mark.parametrize("z1,z2", [(17, 43), (20, 20), (12, 60)])
+def test_tooth_tips_land_on_the_mates_back_cone(sigma, z1, z2):
+    """The whole point of the back cone: a meshed pair ends flush.
+
+    Both members' back cones are perpendicular to the *same* pitch generator at
+    Ao, so in the meridian plane they are one and the same line. Walking that
+    line from the outer pitch point, each member's crown and outer root point
+    are at signed distances +a and -b_f, with the sign flipped between members
+    because their radial directions oppose. The mate's crown must therefore fall
+    strictly inside this member's back cone span - that is "flush, not
+    overhanging".
+    """
+    g = compute_set(BevelSetParams.with_defaults(2.0, z1, z2, shaft_angle=sigma))
+    d1 = g.pinion.pitch_angle
+    sig = math.radians(sigma)
+
+    # Shared meridian frame (x, h): the pinion keeps its own frame, so pinion
+    # (R, z) -> (R, z). The gear is turned to the shaft angle and its meshing
+    # side faces the pinion, which flips its radial direction - see mesh.py.
+    def to_shared(member, R, z):
+        if member == "pinion":
+            return R, z
+        return (
+            z * math.sin(sig) - R * math.cos(sig),
+            R * math.sin(sig) + z * math.cos(sig),
+        )
+
+    # Everything below is measured along the shared back cone generator: the
+    # line through the outer pitch point, perpendicular to the pitch cone.
+    p_out = (g.outer_cone_dist * math.sin(d1), g.outer_cone_dist * math.cos(d1))
+    u = (math.cos(d1), -math.sin(d1))   # outward for the pinion along that line
+
+    def t_of(member, R, z):
+        x, h = to_shared(member, R, z)
+        off = (x - p_out[0], h - p_out[1])
+        # Must lie *on* the line, not merely near it.
+        assert off[0] * u[1] - off[1] * u[0] == pytest.approx(0.0, abs=1e-9)
+        return off[0] * u[0] + off[1] * u[1]
+
+    spans = {}
+    for name in ("pinion", "gear"):
+        m = g.member(name)
+        t_crown = t_of(name, m.outside_dia / 2.0, m.crown_to_apex)
+        t_root = t_of(name, m.outer_root_radius, m.root_to_apex)
+        # Each member's back cone spans its own whole depth, and the sign of
+        # the crown says which way its radial direction points.
+        assert abs(t_crown - t_root) == pytest.approx(
+            m.addendum + m.dedendum, rel=1e-9
+        )
+        spans[name] = (min(t_crown, t_root), max(t_crown, t_root), t_crown)
+
+    # The payoff: each member's crown sits strictly inside the *mate's* back
+    # cone span, so its tooth tips end flush against the mate instead of
+    # hanging past it.
+    for name, mate in (("pinion", "gear"), ("gear", "pinion")):
+        lo, hi, _ = spans[mate]
+        assert lo < spans[name][2] < hi
 
 
 @pytest.mark.parametrize("member", ["pinion", "gear"])

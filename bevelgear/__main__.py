@@ -87,6 +87,8 @@ def print_report(geo) -> None:
     print(_row("tip radius, outer", f(a.virtual_tip_r), f(b.virtual_tip_r), "mm"))
     print(_row("tip radius, inner", f(a.virtual_tip_r_inner), f(b.virtual_tip_r_inner), "mm"))
     print(_row("crown to apex", f(a.crown_to_apex), f(b.crown_to_apex), "mm"))
+    print(_row("outer root to apex", f(a.root_to_apex), f(b.root_to_apex), "mm"))
+    print(_row("outer root radius", f(a.outer_root_radius), f(b.outer_root_radius), "mm"))
     print(_row("mounting distance", f(a.mounting_distance), f(b.mounting_distance), "mm"))
 
 

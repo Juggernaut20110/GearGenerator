@@ -53,28 +53,46 @@ END_OVERSHOOT_FRACTION = 0.05
 END_OVERSHOOT_MIN_MM = 0.5
 
 
+def beyond_back_cone(geo: "SetGeometry", m: "MemberGeometry", pt: "Point3") -> float:
+    """How far a point sits behind the back cone, along the pitch cone. mm.
+
+    The back cone stands perpendicular to the pitch cone at Ao, so the signed
+    distance from it is just the component of (point - outer pitch point) along
+    the pitch cone generator. Positive means outside the blank.
+    """
+    x, y, z = pt
+    sin_d, cos_d = math.sin(m.pitch_angle), math.cos(m.pitch_angle)
+    return (math.hypot(x, y) - geo.outer_cone_dist * sin_d) * sin_d + (
+        z - geo.outer_cone_dist * cos_d
+    ) * cos_d
+
+
 def end_overshoot(geo: "SetGeometry", member: str, margin: float | None = None) -> float:
     """Smallest overshoot that puts both loft sections clear of the blank, mm.
 
-    A fixed fraction of the face width is not enough on its own: whether a
-    section clears depends on the cone angle and the tooth depth, and the
-    outer section's lowest point is its cap, not its crown. So start from the
-    fraction and grow until the property actually holds - measured on the real
-    section points rather than assumed.
+    A fixed fraction of the face width is not enough on its own: whether the
+    inner section clears the flat front face depends on the cone angle and the
+    tooth depth. So start from the fraction and grow until the property actually
+    holds - measured on the real section points rather than assumed.
+
+    The outer end is the easy one now that the blank ends on the back cone: the
+    section and the back cone are the same family of cones, so *every* point of
+    the section clears by exactly the overshoot. It is still measured rather
+    than asserted, because that is what keeps the two ends honest with each
+    other.
     """
     p = geo.params
     m = geo.member(member)
     if margin is None:
         margin = max(0.2, 0.1 * p.module)
 
-    z_back = m.crown_to_apex           # the flat back face
     z_front = front_face_z(geo, m)     # the flat front face
 
     over = max(END_OVERSHOOT_MIN_MM, END_OVERSHOOT_FRACTION * p.face_width)
     for _ in range(40):
         outer = tooth_space_section(geo, member, "outer", overshoot=over)
         inner = tooth_space_section(geo, member, "inner", overshoot=over)
-        clear_back = min(z for _, _, z in outer.loop_3d()) > z_back + margin
+        clear_back = min(beyond_back_cone(geo, m, pt) for pt in outer.loop_3d()) > margin
         clear_front = max(z for _, _, z in inner.loop_3d()) < z_front - margin
         if clear_back and clear_front:
             return over
@@ -140,6 +158,11 @@ class MemberGeometry:
     outside_dia: float          # d_a = d + 2*a*cos(delta)
     crown_to_apex: float        # axial distance, pitch apex to crown
     mounting_distance: float    # crown to the mate's axis
+
+    # Outer root point: where the back cone stops and the flat back begins.
+    # Same back-cone generator as the crown, stepped inward by the dedendum.
+    outer_root_radius: float    # R of that point
+    root_to_apex: float         # axial distance, pitch apex to that point
 
     @property
     def pitch_angle_deg(self) -> float:
@@ -268,12 +291,16 @@ def compute_set(p: BevelSetParams) -> SetGeometry:
         delta_a = delta + th_a
         delta_f = delta - th_f
 
-        # Outer pitch point in the meridian plane, then step outward along the
-        # back cone by the addendum to reach the crown.
+        # Outer pitch point in the meridian plane, then step along the back cone
+        # generator: outward by the addendum to reach the crown, inward by the
+        # dedendum to reach the outer root point. Those two points bound the
+        # blank's back cone face.
         pitch_R = outer_cone_dist * sin_d
         pitch_z = outer_cone_dist * cos_d
         tip_R = pitch_R + a * cos_d
         tip_z = pitch_z - a * sin_d
+        root_R = pitch_R - bf * cos_d
+        root_z = pitch_z + bf * sin_d
 
         virtual_pitch_r = (d / 2.0) / cos_d
         members.append(
@@ -299,6 +326,8 @@ def compute_set(p: BevelSetParams) -> SetGeometry:
                 outside_dia=d + 2.0 * a * cos_d,
                 crown_to_apex=tip_z,
                 mounting_distance=mate_d / 2.0 - a * sin_d,
+                outer_root_radius=root_R,
+                root_to_apex=root_z,
             )
         )
 
@@ -663,46 +692,67 @@ def blank_outline(geo: SetGeometry, member: str) -> list[Point2]:
 
     Revolving this about the Z axis gives the un-toothed body. The profile runs:
     bore at the front face, out across the front face, up the face cone to the
-    crown, then **flat across the back** and home along the bore, with an
-    optional hub boss behind.
+    crown, **back down the back cone** to the outer root point, then flat home
+    along the bore, with an optional hub boss behind.
 
-    The back face is flat and perpendicular to the axis - parallel to the front
-    face - rather than following the back cone. A textbook bevel blank ends the
-    large end of the teeth on the back cone, but that surface is *parallel* to
-    the outer loft section, and SOLIDWORKS will not make a cut that ends on a
-    face parallel and adjacent to it: it fails with "would result in
-    zero-thickness geometry". A flat back crosses the loft section
-    transversally instead, and the cut goes through cleanly.
+    Why the back cone rather than a plane
+    -------------------------------------
+    The back cone is perpendicular to the pitch cone at Ao, so *both* members of
+    a pair have their back cones perpendicular to the same pitch generator, in
+    the same meridian plane - the two back cones share that generator and are
+    tangent along it. The consequence is the one that makes a meshed pair look
+    right: the outer tip of every tooth lands exactly on the **mate's** back
+    cone, flush, with nothing sticking out.
 
-    The cost is real and worth stating: the teeth are truncated at the crown
-    plane rather than at the back cone, so the effective face width is a few
-    percent less than the nominal `face_width` at the pitch line.
+    Truncating the large end with a plane perpendicular to the axis instead
+    leaves each member's teeth hanging past the back of the mate by the working
+    depth resolved onto the mate's axis - on the anchor set, the pinion teeth
+    overhang the gear by 2*m*cos(delta1) = 3.72 mm and the gear teeth overhang
+    the pinion by 2*m*sin(delta1) = 1.47 mm. That is the overhang this profile
+    removes.
+
+    The back cone only runs over the tooth depth - from the crown at
+    `outside_dia/2` down to the outer root point - and behind that the blank is
+    flat. `hub_thickness` is measured from that flat back, which is what the
+    parameter has always claimed ("backing behind the outer root point").
+
+    SOLIDWORKS note: the outer loft section lies *on* this back cone, so a cut
+    ending there would be tangent to a real face and get rejected as
+    zero-thickness geometry. `end_overshoot` pushes it clear, and it clears by a
+    uniform distance because section and back cone are concentric - see there.
     """
     p = geo.params
     m = geo.member(member)
-    cos_d, sin_d = math.cos(m.pitch_angle), math.sin(m.pitch_angle)
+    cos_d = math.cos(m.pitch_angle)
 
     r_bore = p.bore / 2.0
     min_wall = max(p.module, 1.0)
 
     tip_R = m.outside_dia / 2.0          # crown, the widest point of the blank
     z_crown = m.crown_to_apex
+    root_R = m.outer_root_radius         # where the back cone stops
+    z_back = m.root_to_apex              # the flat back sits here
     inner_R = m.virtual_tip_r_inner * cos_d
     z_front = front_face_z(geo, m)
 
-    outline = [(r_bore, z_front), (inner_R, z_front), (tip_R, z_crown)]
+    outline = [
+        (r_bore, z_front),
+        (inner_R, z_front),
+        (tip_R, z_crown),
+        (root_R, z_back),
+    ]
 
     if p.hub_thickness > 0.0:
         # Keep the hub inside the root cone so the tooth cut never grazes it.
-        root_R_at_crown = z_crown * math.tan(m.root_angle)
+        # `root_R` is the root cone's radius at exactly this plane.
         hub_R = max(
             r_bore + min_wall,
-            min(r_bore + 2.0 * min_wall, 0.7 * root_R_at_crown),
+            min(r_bore + 2.0 * min_wall, 0.7 * root_R),
         )
-        outline.append((hub_R, z_crown))
-        outline.append((hub_R, z_crown + p.hub_thickness))
-        outline.append((r_bore, z_crown + p.hub_thickness))
+        outline.append((hub_R, z_back))
+        outline.append((hub_R, z_back + p.hub_thickness))
+        outline.append((r_bore, z_back + p.hub_thickness))
     else:
-        outline.append((r_bore, z_crown))
+        outline.append((r_bore, z_back))
 
     return outline
