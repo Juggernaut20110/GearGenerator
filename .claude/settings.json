@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& c:\\\\git\\\\BevelClaude\\\\.venv\\\\Scripts\\\\python.exe -m pytest c:\\\\git\\\\BevelClaude\\\\tests -q --no-header 2>&1)",
+      "PowerShell(cd c:\\\\git\\\\BevelClaude; & .\\\\.venv\\\\Scripts\\\\python.exe -m bevelgear --module 2 --z1 8 --z2 9 --hub 1 2>&1 | Select-Object -First 6; Write-Output \"--- invalid case, expect exit 1 ---\"; & .\\\\.venv\\\\Scripts\\\\python.exe -m bevelgear --module 2 --z1 17 --z2 43 --sigma 120 2>&1 | Select-Object -First 4; Write-Output \"exit=$LASTEXITCODE\")",
+      "Read(//c/Users/Jugge/AppData/Local/Temp/gen_py/3.13/**)"
+    ]
+  }
+}
