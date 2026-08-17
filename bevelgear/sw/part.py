@@ -327,7 +327,15 @@ def build_gear(
             2.0 * math.pi,
             False,                    # flip direction
             "NULL",
-            False,                    # geometry pattern
+            # Geometry pattern, and it has to be on. Off, SOLIDWORKS repeats the
+            # *feature* at each instance: it re-solves the loft cut, its end
+            # conditions and its feature scope against the body at every rotated
+            # position, and a cut driven by two 3D sketch profiles will not
+            # re-solve that way - the pattern is rejected outright. On, it copies
+            # the resulting faces about the axis instead, which is also what the
+            # part actually is: every tooth is an exact rotational copy of the
+            # first by construction. Carl found this by ticking the box by hand.
+            True,                     # geometry pattern
             True,                     # equal spacing
             False,                    # vary instance
             False,                    # sync sub-assemblies
