@@ -6,7 +6,7 @@ different mechanisms on purpose.
 **Placement** is written straight into the component transforms. A bevel pair
 needs coincident apexes, axes at the shaft angle *and* clocked teeth, and the
 mate solver can satisfy the first two while getting the third wrong. The
-placement arithmetic is exact (see `bevelgear.mesh`), so writing it in leaves
+placement arithmetic is exact (see `gears.bevel.mesh`), so writing it in leaves
 the solver nothing to get wrong.
 
 **Constraint** is then layered on top, so the saved assembly articulates rather
@@ -57,9 +57,9 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import mesh
-from ..geometry import SetGeometry
-from .part import AXIS_FEATURE_NAME, BuildResult, build_gear
+from ..bevel import mesh
+from ..bevel.geometry import SetGeometry
+from .bevel_part import AXIS_FEATURE_NAME, BuildResult, build_gear
 from .session import (
     ADD_MATE_ERROR_NAMES,
     CONSTRAINED_STATUS_NAMES,

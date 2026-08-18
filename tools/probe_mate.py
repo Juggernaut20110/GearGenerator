@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bevelgear.sw.session import (            # noqa: E402
+from gears.sw.session import (            # noqa: E402
     ADD_MATE_ERROR_NAMES,
     FEATURE_TYPE_ORIGIN,
     FEATURE_TYPE_REF_AXIS,

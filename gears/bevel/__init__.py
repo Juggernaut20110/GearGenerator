@@ -1,4 +1,4 @@
-"""Bevel gear generator: geometry, validation, and SOLIDWORKS construction."""
+"""Straight bevel gears: parameters, geometry and validation."""
 
 from .geometry import (
     MemberGeometry,

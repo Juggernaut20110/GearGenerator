@@ -39,8 +39,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bevelgear import mesh                            # noqa: E402
-from bevelgear.sw.session import (                    # noqa: E402
+from gears.bevel import mesh                            # noqa: E402
+from gears.sw.session import (                    # noqa: E402
     MARK_MATE_ENTITY,
     RIGHT_PLANE_NAMES,
     SW_ADD_MATE_NO_ERROR,

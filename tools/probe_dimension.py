@@ -32,9 +32,9 @@ import pythoncom
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from bevelgear.geometry import blank_outline, compute_set          # noqa: E402
-from bevelgear.params import BevelSetParams                        # noqa: E402
-from bevelgear.sw.part import (                                    # noqa: E402
+from gears.bevel.geometry import blank_outline, compute_set          # noqa: E402
+from gears.bevel.params import BevelSetParams                        # noqa: E402
+from gears.sw.bevel_part import (                                    # noqa: E402
     _angle_position,
     _axis_apex,
     _constrain_blank,
@@ -43,7 +43,7 @@ from bevelgear.sw.part import (                                    # noqa: E402
     _link_blank_equations,
     _model_to_sketch,
 )
-from bevelgear.sw.session import (                                 # noqa: E402
+from gears.sw.session import (                                 # noqa: E402
     CONSTRAINED_STATUS_NAMES,
     NULL_DISPATCH,
     SW_DIM_DRIVING,

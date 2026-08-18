@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from ..geometry import (
+from ..bevel.geometry import (
     SetGeometry,
     blank_outline,
     end_overshoot,

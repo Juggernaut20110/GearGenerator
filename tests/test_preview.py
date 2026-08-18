@@ -10,9 +10,9 @@ import math
 
 import pytest
 
-from bevelgear import preview
-from bevelgear.geometry import compute_set, to_cone_3d, tooth_space_section
-from bevelgear.params import BevelSetParams
+from gears.bevel import preview
+from gears.bevel.geometry import compute_set, to_cone_3d, tooth_space_section
+from gears.bevel.params import BevelSetParams
 
 ANCHOR = BevelSetParams.with_defaults(2.0, 17, 43)
 GEO = compute_set(ANCHOR)

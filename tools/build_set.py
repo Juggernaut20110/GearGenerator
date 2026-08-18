@@ -16,10 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bevelgear.geometry import compute_set          # noqa: E402
-from bevelgear.params import BevelSetParams         # noqa: E402
-from bevelgear.validate import validate             # noqa: E402
-from bevelgear.sw import SwError, SwSession, build_set  # noqa: E402
+from gears.bevel.geometry import compute_set          # noqa: E402
+from gears.bevel.params import BevelSetParams         # noqa: E402
+from gears.bevel.validate import validate             # noqa: E402
+from gears.sw import SwError, SwSession, build_set  # noqa: E402
 
 
 def main(argv=None) -> int:

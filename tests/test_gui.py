@@ -14,9 +14,9 @@ import pytest
 
 tk = pytest.importorskip("tkinter")
 
-from bevelgear import preview                      # noqa: E402
-from bevelgear.gui import App, FIELDS              # noqa: E402
-from bevelgear.params import BevelSetParams        # noqa: E402
+from gears.bevel import preview                      # noqa: E402
+from gears.gui import App, FIELDS              # noqa: E402
+from gears.bevel.params import BevelSetParams        # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -185,7 +185,7 @@ def test_presets_round_trip_through_json(app, tmp_path):
 
 
 def test_a_bad_preset_file_does_not_take_the_window_down(app, tmp_path, monkeypatch):
-    monkeypatch.setattr("bevelgear.gui.messagebox.showerror", lambda *a, **k: None)
+    monkeypatch.setattr("gears.gui.messagebox.showerror", lambda *a, **k: None)
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
 
@@ -226,7 +226,7 @@ def test_build_report_formatting_survives_a_stub_result(app):
 
 
 def test_a_failed_build_is_reported_in_the_messages_pane(app, monkeypatch):
-    monkeypatch.setattr("bevelgear.gui.messagebox.showerror", lambda *a, **k: None)
+    monkeypatch.setattr("gears.gui.messagebox.showerror", lambda *a, **k: None)
     app._build_queue.put(("error", ["SOLIDWORKS rejected: the loft cut"]))
 
     app._poll_build()

@@ -7,8 +7,8 @@ import math
 
 import pytest
 
-from bevelgear.params import BevelSetParams
-from bevelgear.validate import validate
+from gears.bevel.params import BevelSetParams
+from gears.bevel.validate import validate
 
 ANCHOR = BevelSetParams.with_defaults(2.0, 17, 43)
 

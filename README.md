@@ -26,7 +26,7 @@ The interpreter is the venv one. Always. There is no global install.
 
 ```
 .venv\Scripts\python.exe run.py                      # the GUI
-.venv\Scripts\python.exe -m bevelgear --module 2 --z1 17 --z2 43
+.venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43
 .venv\Scripts\python.exe -m pytest -q                # 299 tests, no SOLIDWORKS
 ```
 
@@ -46,21 +46,27 @@ which is gitignored along with all SOLIDWORKS file types.
 ## Layout
 
 ```
-bevelgear/
-  params.py      the nine inputs; JSON save/load for GUI presets
-  geometry.py    all the maths - the heart of the project
-  validate.py    errors block a build, warnings don't
-  mesh.py        how the two members sit relative to each other
-  preview.py     scenes, pan/zoom arithmetic, DXF and CSV export
+gears/
   gui.py         tkinter widgets and wiring, nothing else
   __main__.py    terminal report, no SOLIDWORKS involved
+  bevel/         straight bevel gears
+    params.py    the nine inputs; JSON save/load for GUI presets
+    geometry.py  all the maths - the heart of the project
+    validate.py  errors block a build, warnings don't
+    mesh.py      how the two members sit relative to each other
+    preview.py   scenes, pan/zoom arithmetic, DXF and CSV export
+  spur/          involute spur gears, straight and helical
   sw/            everything that touches pywin32 lives here
-    session.py   COM connection, unit conversion, checked-call discipline
-    part.py      builds one gear: blank, sections, loft cut, pattern
-    assembly.py  builds both, places them, mates them into a turning set
+    session.py         COM connection, unit conversion, checked calls
+    bevel_part.py      builds one gear: blank, sections, loft cut, pattern
+    bevel_assembly.py  builds both, places them, mates them into a turning set
 tools/           standalone drivers and API probes, one per question asked
 tests/           pure-Python; SOLIDWORKS is never involved
 ```
+
+One sub-package per gear type. What the types share sits at the `gears/` level -
+the whole of `sw/`, and (as the spur side lands) the planar involute core, the
+placement arithmetic and the drawing primitives.
 
 The dependency direction is strict: `geometry` imports nothing but `params`,
 `preview` never imports tkinter, and nothing outside `sw/` imports pywin32.
@@ -70,7 +76,7 @@ That is what keeps the whole engine unit-testable without a CAD seat.
 
 ## The geometry, in brief
 
-Read the module docstring in [bevelgear/geometry.py](bevelgear/geometry.py)
+Read the module docstring in [gears/bevel/geometry.py](gears/bevel/geometry.py)
 before changing anything there — it is written to be read.
 
 **Coordinate system.** Millimetres and radians. The gear axis is +Z and the
@@ -116,7 +122,7 @@ spaces at the heel.
 
 ## The SOLIDWORKS build
 
-`build_gear` in [bevelgear/sw/part.py](bevelgear/sw/part.py) runs five steps:
+`build_gear` in [gears/sw/bevel_part.py](gears/sw/bevel_part.py) runs five steps:
 
 1. reference axis along Z (intersection of the Top and Right planes)
 2. blank: meridian outline sketched on the Top Plane, fully dimensioned with
@@ -139,7 +145,7 @@ eating into the teeth.
 
 ### The assembly
 
-`build_set` in [bevelgear/sw/assembly.py](bevelgear/sw/assembly.py) inserts both
+`build_set` in [gears/sw/bevel_assembly.py](gears/sw/bevel_assembly.py) inserts both
 parts, writes their placement transforms, then floats them and mates them. Each
 member ends up with five degrees of freedom removed and keeps the sixth — the
 spin about its own axis:

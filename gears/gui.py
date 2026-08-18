@@ -26,10 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import preview
-from .geometry import compute_set
-from .params import BevelSetParams
-from .validate import ValidationResult, validate
+from .bevel import preview
+from .bevel.geometry import compute_set
+from .bevel.params import BevelSetParams
+from .bevel.validate import ValidationResult, validate
 
 REFRESH_DELAY_MS = 120
 BUILD_POLL_MS = 150

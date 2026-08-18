@@ -6,9 +6,9 @@ import math
 
 import pytest
 
-from bevelgear import mesh
-from bevelgear.geometry import compute_set
-from bevelgear.params import BevelSetParams
+from gears.bevel import mesh
+from gears.bevel.geometry import compute_set
+from gears.bevel.params import BevelSetParams
 
 
 # --- clocking --------------------------------------------------------------

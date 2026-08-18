@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from bevelgear.geometry import (
+from gears.bevel.geometry import (
     CLEARANCE_FACTOR,
     MIN_TOP_LAND_FACTOR,
     WHOLE_DEPTH_FACTOR,
@@ -24,7 +24,7 @@ from bevelgear.geometry import (
     to_cone_3d,
     tooth_space_section,
 )
-from bevelgear.params import BevelSetParams
+from gears.bevel.params import BevelSetParams
 
 # The anchor case used throughout: m=2, 17 x 43 teeth, 20 deg, 90 deg shafts.
 ANCHOR = BevelSetParams.with_defaults(2.0, 17, 43)

@@ -1,7 +1,7 @@
 """Dump derived bevel gear geometry to the terminal, with no SOLIDWORKS involved.
 
-    .venv\\Scripts\\python.exe -m bevelgear --module 2 --z1 17 --z2 43
-    .venv\\Scripts\\python.exe -m bevelgear --module 2 --z1 17 --z2 43 \\
+    .venv\\Scripts\\python.exe -m gears --module 2 --z1 17 --z2 43
+    .venv\\Scripts\\python.exe -m gears --module 2 --z1 17 --z2 43 \\
         --csv out/pinion_outer.csv --member pinion --end outer
 """
 
@@ -12,13 +12,13 @@ import math
 import sys
 from pathlib import Path
 
-from .geometry import blank_outline, compute_set, tooth_space_section
-from .params import BevelSetParams
-from .validate import validate
+from .bevel.geometry import blank_outline, compute_set, tooth_space_section
+from .bevel.params import BevelSetParams
+from .bevel.validate import validate
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="bevelgear", description=__doc__)
+    ap = argparse.ArgumentParser(prog="gears", description=__doc__)
     ap.add_argument("--module", type=float, required=True, help="outer module, mm")
     ap.add_argument("--z1", type=int, required=True, help="pinion tooth count")
     ap.add_argument("--z2", type=int, required=True, help="gear tooth count")
