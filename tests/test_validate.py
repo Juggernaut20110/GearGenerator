@@ -123,6 +123,27 @@ def test_non_positive_face_width_is_an_error(value):
 def test_negative_bore_and_hub_are_errors():
     assert "bore" in fields_with_errors(tweak(bore=-1.0))
     assert "hub_thickness" in fields_with_errors(tweak(hub_thickness=-1.0))
+    assert "min_root_thickness" in fields_with_errors(tweak(min_root_thickness=-1.0))
+
+
+def test_no_root_rim_warns_when_the_heel_would_feather():
+    """Only when the wedge is actually shallow, and only with no rim to fix it.
+
+    17/43 leaves the gear at 25 degrees and the pinion at 70, so exactly one
+    member should be named.
+    """
+    fields = {w.field for w in validate(tweak(min_root_thickness=0.0)).warnings}
+    assert "min_root_thickness" in fields
+
+    messages = [
+        w.message for w in validate(tweak(min_root_thickness=0.0)).warnings
+        if w.field == "min_root_thickness"
+    ]
+    assert len(messages) == 1 and "gear" in messages[0]
+
+    assert "min_root_thickness" not in {
+        w.field for w in validate(tweak(min_root_thickness=0.5)).warnings
+    }
 
 
 def test_validate_never_raises_on_nonsense():

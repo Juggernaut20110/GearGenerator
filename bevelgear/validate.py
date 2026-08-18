@@ -66,6 +66,8 @@ def _check_basics(p: BevelSetParams, r: ValidationResult) -> None:
         r.error("bore", "cannot be negative")
     if p.hub_thickness < 0:
         r.error("hub_thickness", "cannot be negative")
+    if p.min_root_thickness < 0:
+        r.error("min_root_thickness", "cannot be negative")
 
 
 def validate(p: BevelSetParams) -> ValidationResult:
@@ -145,6 +147,21 @@ def validate(p: BevelSetParams) -> ValidationResult:
             f"gear ratio {ratio:.2f}:1 is outside the usual 1:10 to 10:1 range "
             "for straight bevels",
         )
+
+    # --- material under the teeth at the heel ------------------------------
+    # With no root rim the flat back runs straight through the outer root point,
+    # so the rim under the teeth tapers to a knife edge whose included angle is
+    # 90 - root_angle. Steep is harmless; shallow is a feather, and it gets
+    # shallower the further the ratio is from 1:1.
+    for member in (geo.pinion, geo.gear):
+        wedge = 90.0 - member.root_angle_deg
+        if p.min_root_thickness <= 0.0 and wedge < 45.0:
+            result.warn(
+                "min_root_thickness",
+                f"the {member.name}'s root cone meets its back face at "
+                f"{wedge:.1f} deg, so the material under the teeth tapers to "
+                "nothing at the heel; give it a root rim",
+            )
 
     if p.hub_thickness < geo.whole_depth:
         result.warn(

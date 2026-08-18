@@ -520,6 +520,7 @@ def derived_rows(geo: SetGeometry) -> list[Row]:
         Row("working depth", _n(geo.working_depth), unit="mm"),
         Row("whole depth", _n(geo.whole_depth), unit="mm"),
         Row("clearance", _n(geo.clearance), unit="mm"),
+        Row("min root thickness", _n(p.min_root_thickness), unit="mm"),
         Row("MEMBERS", "pinion", "gear", header=True),
         Row("teeth", str(a.z), str(b.z)),
         Row("pitch cone angle", _n(a.pitch_angle_deg), _n(b.pitch_angle_deg), "deg"),

@@ -15,6 +15,7 @@ from bevelgear.geometry import (
     top_land,
     beyond_back_cone,
     blank_outline,
+    blank_reach_past_back_cone,
     compute_set,
     end_overshoot,
     front_face_z,
@@ -501,8 +502,13 @@ def test_loft_sections_clear_the_blank(member, sigma, z1, z2):
     outer = tooth_space_section(g, member, "outer", overshoot=over)
     inner = tooth_space_section(g, member, "inner", overshoot=over)
 
-    # The back is the back cone; the flat front is at the inner tip point.
-    assert min(beyond_back_cone(g, m, pt) for pt in outer.loop_3d()) > 0.0
+    # The back is the root rim, which stands proud of the back cone; the flat
+    # front is at the inner tip point. Clearing the cone is not enough - a
+    # section between the cone and the rim would leave the rim uncut, bridging
+    # the tooth spaces at the heel.
+    assert min(
+        beyond_back_cone(g, m, pt) for pt in outer.loop_3d()
+    ) > blank_reach_past_back_cone(g, member)
     assert max(z for _, _, z in inner.loop_3d()) < front_face_z(g, m)
 
     # Nothing on the outer section overhangs the flat rim behind the back cone
@@ -542,9 +548,75 @@ def test_blank_back_face_follows_the_back_cone(geo, member):
     # Its length is the whole depth: crown to outer root point.
     assert math.hypot(*edge) == pytest.approx(m.addendum + m.dedendum, rel=1e-12)
 
-    # Behind it the blank is flat, and the front face is flat too.
-    assert outline[crown_i + 2][1] == pytest.approx(back[1], abs=1e-12)
+    # Behind it comes the root rim - a cylinder at the same radius - and only
+    # then does the blank go flat. The front face is flat too.
+    rim = outline[crown_i + 2]
+    assert rim[0] == pytest.approx(back[0], abs=1e-12)
+    assert rim[1] - back[1] == pytest.approx(ANCHOR.min_root_thickness, abs=1e-12)
+    assert outline[crown_i + 3][1] == pytest.approx(rim[1], abs=1e-12)
     assert outline[0][1] == pytest.approx(outline[1][1], abs=1e-12)
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+@pytest.mark.parametrize("z1,z2", [(17, 43), (20, 20), (12, 60)])
+def test_root_rim_keeps_material_under_the_whole_tooth(member, z1, z2):
+    """The point of the rim: no radius under the teeth is thinner than it.
+
+    Without one the flat back runs through the outer root point, so the rim
+    thins linearly to zero at the heel - on the anchor gear it is under 1 mm for
+    the last 2.1 mm of radius. The check walks the root cone over the face width
+    and measures what is left between it and the flat back.
+    """
+    t = 0.8
+    p = BevelSetParams.with_defaults(2.0, z1, z2, min_root_thickness=t)
+    g = compute_set(p)
+    m = g.member(member)
+    outline = blank_outline(g, member)
+
+    z_back = outline[4][1]
+    assert outline[4][0] == pytest.approx(m.outer_root_radius, rel=1e-12)
+    assert z_back - m.root_to_apex == pytest.approx(t, abs=1e-12)
+
+    # Sample the root cone from toe to heel. The thinnest place is the heel, and
+    # there it is exactly the rim.
+    gaps = []
+    for i in range(41):
+        A = g.outer_cone_dist - p.face_width * i / 40
+        r_root = (A / g.outer_cone_dist) * m.virtual_root_r
+        R = r_root * math.cos(m.pitch_angle)
+        z = A / math.cos(m.pitch_angle) - r_root * math.sin(m.pitch_angle)
+        assert R <= m.outer_root_radius + 1e-9
+        gaps.append(z_back - z)
+    assert min(gaps) == pytest.approx(t, abs=1e-9)
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+def test_zero_root_rim_restores_the_plain_flat_back(member):
+    """Setting it to zero has to give back the old outline exactly, not a
+    degenerate zero-length segment - which SOLIDWORKS would reject as a line."""
+    p = BevelSetParams.with_defaults(2.0, 17, 43, min_root_thickness=0.0)
+    g = compute_set(p)
+    m = g.member(member)
+    outline = blank_outline(g, member)
+
+    assert outline[3] == pytest.approx((m.outer_root_radius, m.root_to_apex), rel=1e-12)
+    assert outline[4][1] == pytest.approx(m.root_to_apex, abs=1e-12)
+    assert blank_reach_past_back_cone(g, member) == pytest.approx(0.0, abs=1e-12)
+    assert len({(round(R, 12), round(z, 12)) for R, z in outline}) == len(outline)
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+@pytest.mark.parametrize("z1,z2", [(17, 43), (20, 20), (12, 60)])
+def test_root_rim_reaches_past_the_back_cone_by_t_cos_delta(member, z1, z2):
+    """How far the rim stands proud of the back cone, which is what the loft
+    overshoot has to beat. The near corner is on the cone, so it is the far one
+    that reaches, at t * cos(delta)."""
+    t = 1.25
+    g = compute_set(BevelSetParams.with_defaults(2.0, z1, z2, min_root_thickness=t))
+    m = g.member(member)
+    assert blank_reach_past_back_cone(g, member) == pytest.approx(
+        t * math.cos(m.pitch_angle), rel=1e-9
+    )
 
 
 @pytest.mark.parametrize("sigma", [45.0, 60.0, 90.0, 120.0])

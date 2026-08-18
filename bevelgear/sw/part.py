@@ -266,12 +266,44 @@ class BlankDimension:
     `value` is in the unit the equation is written in - millimetres or degrees,
     whichever a person editing it would expect to type - while `si` is the
     metres or radians the API works in.
+
+    `defn` overrides the right-hand side of the variable's defining equation. It
+    is how a dimension can be *derived* from other variables rather than carrying
+    a number of its own - see `BlankVariable`.
     """
 
     name: str
     value: float
     unit: str
     si: float
+    what: str
+    defn: str | None = None
+
+
+@dataclass(frozen=True)
+class BlankVariable:
+    """A global variable with no dimension of its own to drive.
+
+    Only one so far: `OuterRootToApex`. The sketch has to be dimensioned to the
+    *back face* - the alternative is an apex-to-point distance, which is a
+    point-to-point dimension whose axial-versus-diagonal reading depends on where
+    the text is placed, and that is not a thing to gamble a driving dimension on.
+    But the number a person wants to edit is the rim, not the back face. So the
+    root point's axial position is held here, and the back face is derived from
+    it:
+
+        "OuterRootToApex" = 19.9314mm
+        "MinRootThickness" = 0.5mm
+        "BackFaceToApex"  = "OuterRootToApex" + "MinRootThickness"
+
+    which makes editing MinRootThickness grow the blank *backward*, leaving the
+    root point - and so the whole tooth - exactly where the geometry put it.
+    Dimensioning both to literals instead would move the root point forward and
+    eat into the teeth.
+    """
+
+    name: str
+    text: str
     what: str
 
 
@@ -283,8 +315,9 @@ def _constrain_blank(model, axis, lines, outline) -> None:
     previous one ended still shares its point: measured on this sketch, five
     lines and a centreline give seven sketch points, not twelve, and
     `a.GetEndPoint2()` and `b.GetStartPoint2()` come back as the same underlying
-    object. So the profile arrives already closed with five vertices, which is
-    what the degree-of-freedom count below assumes.
+    object. So the profile arrives already closed, with one vertex per outline
+    point, which is what the degree-of-freedom count in `_dimension_blank`
+    assumes.
 
     The centreline is fixed rather than tied to the sketch origin. It is both
     the revolve axis and the datum every axial dimension measures from, and
@@ -322,51 +355,83 @@ def _dimension_blank(app, model, geo: SetGeometry, member: str, axis, lines, out
     two cones define the blank.
 
     The counts have to be exact or the dimensions cannot all be driving. Without
-    a hub the sketch has seven points - five profile vertices and the two ends
-    of the centreline - so fourteen degrees of freedom; fixing both centreline
-    ends removes four, and three relations (flat front, flat back, bore) remove
-    three, leaving the seven that the seven dimensions below take up. With a hub
-    it is nine points, eighteen degrees of freedom, four fixed, five relations,
-    and nine dimensions.
+    a hub or a root rim the sketch has seven points - five profile vertices and
+    the two ends of the centreline - so fourteen degrees of freedom; fixing both
+    centreline ends removes four, and three relations (flat front, flat back,
+    bore) remove three, leaving the seven that the seven dimensions below take
+    up. A hub adds two points, two relations and two dimensions; a root rim adds
+    one point, one relation (the rim is a cylinder, so vertical) and one
+    dimension. All four combinations balance, which is what
+    `require_fully_defined` then confirms against the solver.
 
     Values come from `outline` rather than being recomputed, so a dimension
     cannot disagree with the geometry it is measuring - except the two angles,
     which are the nominal cone angles and are checked against the drawn
     segments by `add_dimension`.
     """
+    p = geo.params
     m = geo.member(member)
     apex = _axis_apex(axis)
 
+    # Line i runs from outline[i] to outline[i+1], so the root rim - when there
+    # is one - displaces the flat back and everything behind it by one.
+    has_rim = p.min_root_thickness > 0.0
+    i_back = 4 if has_rim else 3
+
     r_bore, z_front = outline[0]
     tip_r, z_crown = outline[2]
-    root_r, z_back = outline[3]
+    root_r, z_root = outline[3]
+    z_back = outline[i_back][1]
 
-    front_face, face_cone, back_cone, flat_back = lines[0], lines[1], lines[2], lines[3]
+    front_face, face_cone, back_cone = lines[0], lines[1], lines[2]
+    flat_back = lines[i_back]
     bore = lines[-1]
 
     plan = [
         ((axis, bore), _radial_position(r_bore, 0.5 * (z_front + z_back)),
-         r_bore, "mm", "bore radius", "BoreRadius"),
+         r_bore, "mm", "bore radius", "BoreRadius", None),
         ((apex, front_face), _axial_position(tip_r, 0.5 * z_front),
-         z_front, "mm", "front face to apex", "FrontFaceToApex"),
-        ((apex, flat_back), _axial_position(tip_r, 0.5 * z_back),
-         z_back, "mm", "back face to apex", "BackFaceToApex"),
-        ((axis, back_cone.GetStartPoint2()), _radial_position(tip_r, z_crown),
-         tip_r, "mm", "crown radius", "CrownRadius"),
-        ((axis, back_cone.GetEndPoint2()), _radial_position(root_r, z_back),
-         root_r, "mm", "outer root radius", "OuterRootRadius"),
+         z_front, "mm", "front face to apex", "FrontFaceToApex", None),
     ]
 
-    if len(lines) == 7:
-        hub_r = outline[4][0]
-        z_hub_back = outline[5][1]
+    if has_rim:
+        # Measured from the root point to the flat back rather than along the
+        # rim line itself: point-to-line is the same pattern as every other
+        # axial dimension here, and a line-length dimension is not.
         plan.append(
-            ((axis, lines[4]), _radial_position(hub_r, 0.5 * (z_back + z_hub_back)),
-             hub_r, "mm", "hub radius", "HubRadius")
+            ((back_cone.GetEndPoint2(), flat_back),
+             # Further out than the other axial dimensions so the two that share
+             # this end of the blank do not sit on top of each other.
+             _axial_position(1.5 * tip_r, 0.5 * (z_root + z_back)),
+             z_back - z_root, "mm", "minimum root thickness", "MinRootThickness",
+             None)
+        )
+
+    plan.append(
+        ((apex, flat_back), _axial_position(tip_r, 0.5 * z_back),
+         z_back, "mm", "back face to apex", "BackFaceToApex",
+         '"OuterRootToApex" + "MinRootThickness"' if has_rim else None)
+    )
+    plan.append(
+        ((axis, back_cone.GetStartPoint2()), _radial_position(tip_r, z_crown),
+         tip_r, "mm", "crown radius", "CrownRadius", None)
+    )
+    plan.append(
+        ((axis, back_cone.GetEndPoint2()), _radial_position(root_r, z_back),
+         root_r, "mm", "outer root radius", "OuterRootRadius", None)
+    )
+
+    if p.hub_thickness > 0.0:
+        hub_r = outline[i_back + 1][0]
+        z_hub_back = outline[i_back + 2][1]
+        plan.append(
+            ((axis, lines[i_back + 1]),
+             _radial_position(hub_r, 0.5 * (z_back + z_hub_back)),
+             hub_r, "mm", "hub radius", "HubRadius", None)
         )
         plan.append(
-            ((apex, lines[5]), _axial_position(tip_r, 0.5 * z_hub_back),
-             z_hub_back, "mm", "hub back to apex", "HubBackToApex")
+            ((apex, lines[i_back + 2]), _axial_position(tip_r, 0.5 * z_hub_back),
+             z_hub_back, "mm", "hub back to apex", "HubBackToApex", None)
         )
 
     # The back cone is perpendicular to the pitch cone, so its angle to the axis
@@ -374,30 +439,40 @@ def _dimension_blank(app, model, geo: SetGeometry, member: str, axis, lines, out
     # a different cone and is 20 degrees away from this one.
     plan.append(
         ((face_cone, axis), _angle_position(outline[1], outline[2]),
-         math.degrees(m.face_angle), "deg", "face cone angle", "FaceConeAngle")
+         math.degrees(m.face_angle), "deg", "face cone angle", "FaceConeAngle", None)
     )
     plan.append(
         ((back_cone, axis), _angle_position(outline[2], outline[3]),
          math.degrees(math.pi / 2.0 - m.pitch_angle), "deg",
-         "back cone angle", "BackConeAngle")
+         "back cone angle", "BackConeAngle", None)
     )
 
     created = []
     with DimensionFlags(app):
-        for entities, position, value, unit, what, name in plan:
+        for entities, position, value, unit, what, name, defn in plan:
             si = mm(value) if unit == "mm" else math.radians(value)
             add_dimension(model, entities, position, si, what, name)
-            created.append(BlankDimension(name, value, unit, si, what))
-    return created
+            created.append(BlankDimension(name, value, unit, si, what, defn))
+
+    variables = []
+    if has_rim:
+        variables.append(
+            BlankVariable(
+                "OuterRootToApex", f"{z_root:.9g}mm", "outer root point to apex"
+            )
+        )
+    return created, variables
 
 
-def _link_blank_equations(model, sketch_name: str, dims) -> None:
+def _link_blank_equations(model, sketch_name: str, dims, variables=()) -> None:
     """Give every blank dimension a named global variable and drive it from that.
 
     Two equations per dimension: `"CrownRadius" = 19.922mm` defines the
     variable, and `"CrownRadius@Sketch1" = "CrownRadius"` hands the dimension
     over to it. All the variables go in first, because an equation cannot refer
-    to a global variable that does not exist yet.
+    to a global variable that does not exist yet - which is also why `variables`
+    is written ahead of them, and why a dimension whose `defn` names another
+    variable has to be planned after the one it names.
 
     A variable and a dimension may share a name - the dimension is only ever
     referred to with its `@sketch` suffix, so the two never collide.
@@ -420,10 +495,11 @@ def _link_blank_equations(model, sketch_name: str, dims) -> None:
     """
     require_angle_precision(model)
     mgr = equation_manager(model)
+    for v in variables:
+        add_equation(mgr, f'"{v.name}" = {v.text}', f"{v.what} variable")
     for d in dims:
-        add_equation(
-            mgr, f'"{d.name}" = {d.value:.9g}{d.unit}', f"{d.what} variable"
-        )
+        text = d.defn if d.defn else f"{d.value:.9g}{d.unit}"
+        add_equation(mgr, f'"{d.name}" = {text}', f"{d.what} variable")
     for d in dims:
         add_equation(
             mgr, f'"{d.name}@{sketch_name}" = "{d.name}"', f"{d.what} link"
@@ -486,7 +562,7 @@ def build_blank(app, model, geo: SetGeometry, member: str):
     # Relations and dimensions go on with AddToDB back off and the sketch still
     # open; both are edits to the active sketch, not to a closed one.
     _constrain_blank(model, axis, lines, outline)
-    dims = _dimension_blank(app, model, geo, member, axis, lines, outline)
+    dims, variables = _dimension_blank(app, model, geo, member, axis, lines, outline)
     require_fully_defined(mgr.ActiveSketch, "blank profile sketch")
 
     mgr.InsertSketch(True)
@@ -495,7 +571,7 @@ def build_blank(app, model, geo: SetGeometry, member: str):
 
     # Only now is the sketch's own name settled, and an equation needs it to
     # name the dimension it drives.
-    _link_blank_equations(model, blank_sketch.Name, dims)
+    _link_blank_equations(model, blank_sketch.Name, dims, variables)
 
     _select_feature(blank_sketch, "blank profile sketch")
     require(

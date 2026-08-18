@@ -1,4 +1,4 @@
-"""tkinter front end: eight inputs, live derived values, and a 2D preview.
+"""tkinter front end: nine inputs, live derived values, and a 2D preview.
 
 Everything here is presentation. The rules it enforces come from `validate`,
 the numbers from `geometry`, and the drawing from `preview`; this module owns
@@ -70,10 +70,11 @@ FIELDS: tuple[Field, ...] = (
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
+    Field("min_root_thickness", "Min root thickness", float, "mm"),
 )
 
 # Fields `with_defaults` can size for us, and so the "Auto" button rewrites.
-AUTO_FIELDS = ("face_width", "bore", "hub_thickness")
+AUTO_FIELDS = ("face_width", "bore", "hub_thickness", "min_root_thickness")
 
 TEXT_COLOURS = {
     "error": "#b0202a",

@@ -14,7 +14,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class BevelSetParams:
-    """The eight editable inputs, plus two form factors kept out of the GUI."""
+    """The nine editable inputs, plus two form factors kept out of the GUI."""
 
     module: float               # mm, transverse module at the outer (large) end
     z1: int                     # pinion tooth count
@@ -22,6 +22,17 @@ class BevelSetParams:
     face_width: float           # mm, along the pitch cone
     bore: float                 # mm, diameter
     hub_thickness: float        # mm, backing behind the outer root point
+
+    # Axial rim kept behind the outer root point, before the flat back begins.
+    #
+    # Without it the flat back passes exactly through that point, so the material
+    # under the tooth root tapers to nothing at the heel. The wedge it leaves has
+    # an included angle of 90 - root_angle, which is a harmless 70 degrees on a
+    # 17-tooth pinion but a 25 degree feather edge on its 43-tooth mate - the
+    # bigger the ratio, the thinner the gear's heel. Setting this to zero
+    # restores the old outline exactly.
+    min_root_thickness: float = 0.5    # mm, measured along the axis
+
     pressure_angle: float = 20.0   # degrees
     shaft_angle: float = 90.0      # degrees
 
@@ -49,9 +60,9 @@ class BevelSetParams:
     def with_defaults(cls, module: float, z1: int, z2: int, **overrides):
         """Build a set with sensible face width / bore / hub for the given size.
 
-        Face width follows the usual bevel limit of min(Ao/3, 10*m); the bore and
-        hub are rules of thumb that keep the blank manufacturable. Any of them
-        can be overridden.
+        Face width follows the usual bevel limit of min(Ao/3, 10*m); the bore,
+        hub and root rim are rules of thumb that keep the blank manufacturable.
+        Any of them can be overridden.
         """
         # Ao needs the pitch angle, which needs the shaft angle - resolve it here
         # rather than importing geometry (which would be a circular import).
@@ -63,6 +74,7 @@ class BevelSetParams:
             "face_width": round(min(outer_cone_dist / 3.0, 10.0 * module), 2),
             "bore": round(max(0.25 * module * z1, 4.0), 1),
             "hub_thickness": round(2.5 * module, 2),
+            "min_root_thickness": round(0.25 * module, 2),
         }
         defaults.update(overrides)
         return cls(module=module, z1=z1, z2=z2, **defaults)

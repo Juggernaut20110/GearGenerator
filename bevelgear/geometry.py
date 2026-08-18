@@ -67,6 +67,32 @@ def beyond_back_cone(geo: "SetGeometry", m: "MemberGeometry", pt: "Point3") -> f
     ) * cos_d
 
 
+def blank_reach_past_back_cone(geo: "SetGeometry", member: str) -> float:
+    """How far the blank sticks out past the back cone, where the cut can see it.
+
+    Zero when the blank ends on the back cone. With a root rim it is the rim's
+    far corner that reaches furthest - `min_root_thickness * cos(delta)`, since
+    the near corner sits on the cone - but this measures the outline rather than
+    assuming which vertex wins, so it stays right if the outline changes shape.
+
+    Only the blank at or outside the outer root radius counts. The hub reaches
+    much further past the cone than the rim ever does - 2.4 mm against 0.5 on
+    the anchor pinion, because a steep back cone runs away from a tall boss near
+    the axis - but it sits radially *inside* the whole outer section (the
+    property `test_loft_sections_clear_the_blank` pins down), so the loft never
+    meets it and there is nothing to clear.
+    """
+    m = geo.member(member)
+    return max(
+        (
+            beyond_back_cone(geo, m, (R, 0.0, z))
+            for R, z in blank_outline(geo, member)
+            if R >= m.outer_root_radius - 1e-9
+        ),
+        default=0.0,
+    )
+
+
 def end_overshoot(geo: "SetGeometry", member: str, margin: float | None = None) -> float:
     """Smallest overshoot that puts both loft sections clear of the blank, mm.
 
@@ -75,11 +101,18 @@ def end_overshoot(geo: "SetGeometry", member: str, margin: float | None = None) 
     tooth depth. So start from the fraction and grow until the property actually
     holds - measured on the real section points rather than assumed.
 
-    The outer end is the easy one now that the blank ends on the back cone: the
-    section and the back cone are the same family of cones, so *every* point of
-    the section clears by exactly the overshoot. It is still measured rather
-    than asserted, because that is what keeps the two ends honest with each
-    other.
+    The outer end used to be the easy one, back when the blank ended on the back
+    cone: the section and the cone are the same family, so every point of the
+    section cleared by exactly the overshoot. The root rim breaks that. It puts
+    material `min_root_thickness * cos(delta)` *behind* the back cone, and a
+    section that only clears the cone would leave that rim uncut - a ring of
+    material bridging the tooth spaces at the heel. So the outer end is measured
+    against the blank, not against the cone.
+
+    It is not a hypothetical: on the anchor set the pinion settles at 1.505 mm
+    of overshoot against a rim that reaches 0.930 mm per mm of thickness, so a
+    1.5 mm rim would have overrun it. The gear, at 7.176 mm against 0.368, has
+    room to spare.
     """
     p = geo.params
     m = geo.member(member)
@@ -87,12 +120,16 @@ def end_overshoot(geo: "SetGeometry", member: str, margin: float | None = None) 
         margin = max(0.2, 0.1 * p.module)
 
     z_front = front_face_z(geo, m)     # the flat front face
+    reach = blank_reach_past_back_cone(geo, member)
 
     over = max(END_OVERSHOOT_MIN_MM, END_OVERSHOOT_FRACTION * p.face_width)
     for _ in range(40):
         outer = tooth_space_section(geo, member, "outer", overshoot=over)
         inner = tooth_space_section(geo, member, "inner", overshoot=over)
-        clear_back = min(beyond_back_cone(geo, m, pt) for pt in outer.loop_3d()) > margin
+        clear_back = (
+            min(beyond_back_cone(geo, m, pt) for pt in outer.loop_3d())
+            > reach + margin
+        )
         clear_front = max(z for _, _, z in inner.loop_3d()) < z_front - margin
         if clear_back and clear_front:
             return over
@@ -692,8 +729,9 @@ def blank_outline(geo: SetGeometry, member: str) -> list[Point2]:
 
     Revolving this about the Z axis gives the un-toothed body. The profile runs:
     bore at the front face, out across the front face, up the face cone to the
-    crown, **back down the back cone** to the outer root point, then flat home
-    along the bore, with an optional hub boss behind.
+    crown, **back down the back cone** to the outer root point, straight back
+    along the root rim, then flat home along the bore, with an optional hub boss
+    behind.
 
     Why the back cone rather than a plane
     -------------------------------------
@@ -716,10 +754,31 @@ def blank_outline(geo: SetGeometry, member: str) -> list[Point2]:
     flat. `hub_thickness` is measured from that flat back, which is what the
     parameter has always claimed ("backing behind the outer root point").
 
+    The root rim
+    ------------
+    The outer root point is where the tooth root emerges on the back cone, so
+    running the flat back straight through it leaves *zero* material under the
+    root at the heel: a wedge of included angle 90 - root_angle, tapering to a
+    knife edge. On a 17/43 set that is 70 degrees on the pinion and 25 on the
+    gear, where the rim stays under 1 mm for the last 2.1 mm of radius. It gets
+    worse as the ratio climbs, because the gear's root cone lies down towards
+    its own back face.
+
+    `min_root_thickness` inserts a short cylinder at the outer root radius
+    before the flat back, so the rim is at least that thick everywhere under the
+    teeth. A cylinder specifically: extending the back cone further, or offsetting
+    a cone parallel to the root cone, leaves the two surfaces still meeting at a
+    point and only opens the wedge (to 43 degrees on the anchor gear) rather than
+    removing it. The cylinder meets the back cone at 158 degrees instead.
+
+    It grows the blank *away* from the mate - the rim sits behind the back cone,
+    which is the face the mate's teeth land on - so it costs no meshing
+    clearance. What it does cost is loft overshoot; see `end_overshoot`.
+
     SOLIDWORKS note: the outer loft section lies *on* this back cone, so a cut
     ending there would be tangent to a real face and get rejected as
-    zero-thickness geometry. `end_overshoot` pushes it clear, and it clears by a
-    uniform distance because section and back cone are concentric - see there.
+    zero-thickness geometry. `end_overshoot` pushes it clear - past the rim as
+    well as past the cone, which is no longer the same distance.
     """
     p = geo.params
     m = geo.member(member)
@@ -731,7 +790,8 @@ def blank_outline(geo: SetGeometry, member: str) -> list[Point2]:
     tip_R = m.outside_dia / 2.0          # crown, the widest point of the blank
     z_crown = m.crown_to_apex
     root_R = m.outer_root_radius         # where the back cone stops
-    z_back = m.root_to_apex              # the flat back sits here
+    z_root = m.root_to_apex              # the outer root point
+    z_back = z_root + max(0.0, p.min_root_thickness)   # the flat back sits here
     inner_R = m.virtual_tip_r_inner * cos_d
     z_front = front_face_z(geo, m)
 
@@ -739,12 +799,16 @@ def blank_outline(geo: SetGeometry, member: str) -> list[Point2]:
         (r_bore, z_front),
         (inner_R, z_front),
         (tip_R, z_crown),
-        (root_R, z_back),
+        (root_R, z_root),
     ]
+    if z_back > z_root:
+        outline.append((root_R, z_back))
 
     if p.hub_thickness > 0.0:
         # Keep the hub inside the root cone so the tooth cut never grazes it.
-        # `root_R` is the root cone's radius at exactly this plane.
+        # `root_R` is the root cone's radius at the outer root point; at the
+        # flat back, a root rim further along the cone, it is wider still - so
+        # measuring against `root_R` errs on the safe side.
         hub_R = max(
             r_bore + min_wall,
             min(r_bore + 2.0 * min_wall, 0.7 * root_R),

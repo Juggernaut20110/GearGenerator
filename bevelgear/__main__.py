@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--face-width", type=float, help="mm (default: auto)")
     ap.add_argument("--bore", type=float, help="mm (default: auto)")
     ap.add_argument("--hub", type=float, help="hub/backing thickness, mm (default: auto)")
+    ap.add_argument(
+        "--min-root",
+        type=float,
+        help="axial rim kept behind the outer root point, mm (default: auto)",
+    )
     ap.add_argument("--member", choices=("pinion", "gear"), default="pinion")
     ap.add_argument("--end", choices=("outer", "inner"), default="outer")
     ap.add_argument("--csv", type=Path, help="write the section's points to this file")
@@ -41,6 +46,8 @@ def params_from_args(args) -> BevelSetParams:
         overrides["bore"] = args.bore
     if args.hub is not None:
         overrides["hub_thickness"] = args.hub
+    if args.min_root is not None:
+        overrides["min_root_thickness"] = args.min_root
     return BevelSetParams.with_defaults(args.module, args.z1, args.z2, **overrides)
 
 
@@ -60,6 +67,7 @@ def print_report(geo) -> None:
     print(_row("face width", f(p.face_width), "", "mm"))
     print(_row("bore", f(p.bore), "", "mm"))
     print(_row("hub thickness", f(p.hub_thickness), "", "mm"))
+    print(_row("min root thickness", f(p.min_root_thickness), "", "mm"))
 
     print("\nSET")
     print(_row("ratio", f(p.ratio)))
