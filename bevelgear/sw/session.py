@@ -47,6 +47,11 @@ SW_PREF_INPUT_DIM_VAL_ON_CREATE = 10
 SW_PREF_OVERDEF_DIMS_PROMPT = 100
 SW_PREF_OVERDEF_DIMS_DRIVEN_BY_DEFAULT = 101
 
+# swUserPreferenceIntegerValue_e, and how many angular decimals the equations
+# need. See require_angle_precision for why this is not a display detail.
+SW_UNITS_ANGULAR_DECIMALS = 52
+EQUATION_ANGLE_DECIMALS = 6
+
 # Sketch relation ids, as SketchAddConstraints spells them.
 REL_FIXED = "sgFIXED"
 REL_HORIZONTAL = "sgHORIZONTAL"
@@ -405,6 +410,52 @@ def add_dimension(model, entities, position, value: float, what: str, name: str 
         except Exception:
             pass
     return dim
+
+
+def equation_manager(model):
+    """IEquationMgr, with the members late binding gets wrong already flagged."""
+    mgr = require(
+        flag_methods(model, "GetEquationMgr").GetEquationMgr(), "GetEquationMgr"
+    )
+    return flag_methods(mgr, "Add2", "EvaluateAll", "GetCount")
+
+
+def require_angle_precision(model, decimals: int = EQUATION_ANGLE_DECIMALS) -> None:
+    """Give the document enough angular decimals to hold its own equations.
+
+    An angular equation is re-parsed at the document's angular precision on
+    every rebuild, not merely when it is written. In a document set to two
+    decimals - the default - a 42.1613465 degree face cone comes back as 42.16,
+    and because these dimensions drive the profile it takes the geometry with
+    it: 0.0013 degrees, about half a micron at the crown. Linear equations are
+    unaffected, holding their value to 2e-15 mm whatever the setting.
+
+    So this has to persist in the document. Raising the setting only while the
+    equations are written and then restoring it re-rounds them on the next
+    rebuild - measured, not assumed. Six decimals leaves 8e-9 radians, a
+    hundredfold margin on the check in `add_dimension`, and still reads as a
+    sensible cone angle.
+
+    Only ever raises the setting; a template already carrying more decimals
+    keeps them.
+    """
+    ext = model.Extension
+    current = int(ext.GetUserPreferenceInteger(SW_UNITS_ANGULAR_DECIMALS, 0))
+    if current < decimals:
+        ext.SetUserPreferenceInteger(SW_UNITS_ANGULAR_DECIMALS, 0, decimals)
+
+
+def add_equation(mgr, text: str, what: str) -> int:
+    """Append one equation, returning its index.
+
+    `Add2` hands back the index it was given, or -1 when it will not take the
+    equation - a name it cannot resolve, or syntax it cannot parse. Note that a
+    global variable has to be added before anything referring to it.
+    """
+    index = mgr.Add2(-1, text, True)
+    if index is None or int(index) < 0:
+        raise SwError(f"SOLIDWORKS rejected the equation for {what}: {text}")
+    return int(index)
 
 
 def require_fully_defined(sketch, what: str) -> None:

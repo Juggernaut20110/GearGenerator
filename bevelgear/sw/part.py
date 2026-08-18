@@ -39,11 +39,14 @@ from .session import (
     SketchFlags,
     SwError,
     add_dimension,
+    add_equation,
     add_relation,
+    equation_manager,
     flag_methods,
     mm,
     points_to_doubles,
     require,
+    require_angle_precision,
     require_fully_defined,
     select,
     select_first,
@@ -256,6 +259,22 @@ def _angle_position(a, b) -> tuple[float, float, float]:
     return (mm(reach * br / norm), 0.0, mm(z0 + reach * bz / norm))
 
 
+@dataclass(frozen=True)
+class BlankDimension:
+    """One driving dimension on the blank sketch, and its global variable.
+
+    `value` is in the unit the equation is written in - millimetres or degrees,
+    whichever a person editing it would expect to type - while `si` is the
+    metres or radians the API works in.
+    """
+
+    name: str
+    value: float
+    unit: str
+    si: float
+    what: str
+
+
 def _constrain_blank(model, axis, lines, outline) -> None:
     """Relations first - the dimensions need something to hold on to.
 
@@ -327,15 +346,15 @@ def _dimension_blank(app, model, geo: SetGeometry, member: str, axis, lines, out
 
     plan = [
         ((axis, bore), _radial_position(r_bore, 0.5 * (z_front + z_back)),
-         r_bore, "bore radius", "BoreRadius"),
+         r_bore, "mm", "bore radius", "BoreRadius"),
         ((apex, front_face), _axial_position(tip_r, 0.5 * z_front),
-         z_front, "front face to apex", "FrontFaceToApex"),
+         z_front, "mm", "front face to apex", "FrontFaceToApex"),
         ((apex, flat_back), _axial_position(tip_r, 0.5 * z_back),
-         z_back, "back face to apex", "BackFaceToApex"),
+         z_back, "mm", "back face to apex", "BackFaceToApex"),
         ((axis, back_cone.GetStartPoint2()), _radial_position(tip_r, z_crown),
-         tip_r, "crown radius", "CrownRadius"),
+         tip_r, "mm", "crown radius", "CrownRadius"),
         ((axis, back_cone.GetEndPoint2()), _radial_position(root_r, z_back),
-         root_r, "outer root radius", "OuterRootRadius"),
+         root_r, "mm", "outer root radius", "OuterRootRadius"),
     ]
 
     if len(lines) == 7:
@@ -343,36 +362,85 @@ def _dimension_blank(app, model, geo: SetGeometry, member: str, axis, lines, out
         z_hub_back = outline[5][1]
         plan.append(
             ((axis, lines[4]), _radial_position(hub_r, 0.5 * (z_back + z_hub_back)),
-             hub_r, "hub radius", "HubRadius")
+             hub_r, "mm", "hub radius", "HubRadius")
         )
         plan.append(
             ((apex, lines[5]), _axial_position(tip_r, 0.5 * z_hub_back),
-             z_hub_back, "hub back to apex", "HubBackToApex")
+             z_hub_back, "mm", "hub back to apex", "HubBackToApex")
         )
 
+    # The back cone is perpendicular to the pitch cone, so its angle to the axis
+    # is 90 degrees minus the pitch angle - not the root angle, which belongs to
+    # a different cone and is 20 degrees away from this one.
+    plan.append(
+        ((face_cone, axis), _angle_position(outline[1], outline[2]),
+         math.degrees(m.face_angle), "deg", "face cone angle", "FaceConeAngle")
+    )
+    plan.append(
+        ((back_cone, axis), _angle_position(outline[2], outline[3]),
+         math.degrees(math.pi / 2.0 - m.pitch_angle), "deg",
+         "back cone angle", "BackConeAngle")
+    )
+
+    created = []
     with DimensionFlags(app):
-        for entities, position, value, what, name in plan:
-            add_dimension(model, entities, position, mm(value), what, name)
+        for entities, position, value, unit, what, name in plan:
+            si = mm(value) if unit == "mm" else math.radians(value)
+            add_dimension(model, entities, position, si, what, name)
+            created.append(BlankDimension(name, value, unit, si, what))
+    return created
 
-        # The back cone is perpendicular to the pitch cone, so its angle to the
-        # axis is 90 degrees minus the pitch angle - not the root angle, which
-        # belongs to a different cone and is 20 degrees away from this one.
-        add_dimension(
-            model,
-            (face_cone, axis),
-            _angle_position(outline[1], outline[2]),
-            m.face_angle,
-            "face cone angle",
-            "FaceConeAngle",
+
+def _link_blank_equations(model, sketch_name: str, dims) -> None:
+    """Give every blank dimension a named global variable and drive it from that.
+
+    Two equations per dimension: `"CrownRadius" = 19.922mm` defines the
+    variable, and `"CrownRadius@Sketch1" = "CrownRadius"` hands the dimension
+    over to it. All the variables go in first, because an equation cannot refer
+    to a global variable that does not exist yet.
+
+    A variable and a dimension may share a name - the dimension is only ever
+    referred to with its `@sketch` suffix, so the two never collide.
+
+    Values are written to nine significant figures. These dimensions *drive* the
+    profile, so precision here is not cosmetic - a rounded equation moves the
+    blank rather than just labelling it differently, which is also why the
+    document's angular precision has to be raised first (see
+    `require_angle_precision`). Nine figures leaves about a nanometre on a 25 mm
+    dimension, far below anything the solver or the check in `add_dimension`
+    can see, and it keeps `repr`'s float artefacts - 13.625339999999998 for a
+    number that is meant to read 13.62534 - out of a dialog people edit by hand.
+
+    `IDimension.DrivenState` reads back as driven once a dimension is bound to
+    an equation. That is the "driven by equation" sense, not a reference
+    dimension: the sketch stays fully defined, and editing the variable moves
+    the geometry. Measured on the anchor pinion, setting CrownRadius to 22 mm
+    walks the crown from (19.9220, 22.5585) to (22.0000, 21.0000) - along the
+    back cone, exactly where the 53.13 degree angle puts it.
+    """
+    require_angle_precision(model)
+    mgr = equation_manager(model)
+    for d in dims:
+        add_equation(
+            mgr, f'"{d.name}" = {d.value:.9g}{d.unit}', f"{d.what} variable"
         )
-        add_dimension(
-            model,
-            (back_cone, axis),
-            _angle_position(outline[2], outline[3]),
-            math.pi / 2.0 - m.pitch_angle,
-            "back cone angle",
-            "BackConeAngle",
+    for d in dims:
+        add_equation(
+            mgr, f'"{d.name}@{sketch_name}" = "{d.name}"', f"{d.what} link"
         )
+    mgr.EvaluateAll()
+
+    for d in dims:
+        full = f"{d.name}@{sketch_name}"
+        dim = model.Parameter(full)
+        if dim is None:
+            raise SwError(f"could not read {full} back after linking it")
+        actual = float(dim.SystemValue)
+        if abs(actual - d.si) > 1e-6:
+            raise SwError(
+                f"{full} reads {actual:.9g} after its equation was applied but "
+                f"the geometry is at {d.si:.9g} (SI units)"
+            )
 
 
 def build_blank(app, model, geo: SetGeometry, member: str):
@@ -418,12 +486,16 @@ def build_blank(app, model, geo: SetGeometry, member: str):
     # Relations and dimensions go on with AddToDB back off and the sketch still
     # open; both are edits to the active sketch, not to a closed one.
     _constrain_blank(model, axis, lines, outline)
-    _dimension_blank(app, model, geo, member, axis, lines, outline)
+    dims = _dimension_blank(app, model, geo, member, axis, lines, outline)
     require_fully_defined(mgr.ActiveSketch, "blank profile sketch")
 
     mgr.InsertSketch(True)
     model.ClearSelection2(True)
     blank_sketch = _last_feature(model)
+
+    # Only now is the sketch's own name settled, and an equation needs it to
+    # name the dimension it drives.
+    _link_blank_equations(model, blank_sketch.Name, dims)
 
     _select_feature(blank_sketch, "blank profile sketch")
     require(
