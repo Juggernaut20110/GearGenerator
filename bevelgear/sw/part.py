@@ -3,7 +3,8 @@
 Sequence, matching the plan:
 
 1. reference axis along Z (intersection of the Top and Right planes)
-2. blank: meridian outline sketched on the Top Plane, revolved 360 degrees
+2. blank: meridian outline sketched on the Top Plane, fully dimensioned with
+   driving dimensions, revolved 360 degrees
 3. two 3D sketches - the tooth-space section at each end of the face width
 4. loft cut between them
 5. circular pattern of that cut, z instances about the axis
@@ -28,15 +29,22 @@ from .session import (
     MARK_LOFT_PROFILE,
     MARK_PATTERN_AXIS,
     MARK_PATTERN_FEATURE,
+    REL_FIXED,
+    REL_HORIZONTAL,
+    REL_VERTICAL,
     RIGHT_PLANE_NAMES,
     SW_SOLID_BODY,
     TOP_PLANE_NAMES,
+    DimensionFlags,
     SketchFlags,
     SwError,
+    add_dimension,
+    add_relation,
     flag_methods,
     mm,
     points_to_doubles,
     require,
+    require_fully_defined,
     select,
     select_first,
 )
@@ -186,12 +194,192 @@ def create_axis(model):
     return _last_feature(model)
 
 
-def build_blank(model, geo: SetGeometry, member: str):
-    """Sketch the meridian outline on the Top Plane and revolve it."""
+_COORD_TOL = 1e-9    # mm; outline coordinates that "share" a value share it exactly
+
+
+def _endpoint_methods(line):
+    """Flag a fresh sketch line's endpoint accessors as methods, before use.
+
+    `GetStartPoint2` and `GetEndPoint2` take no arguments and return IDispatch,
+    which late binding can resolve either way - and it decides on *first*
+    access and caches that decision for the object. Resolved as a property, the
+    attribute is already the point, so the `()` in `line.GetStartPoint2()` lands
+    on the point instead and fails with "Member not found". Flagging has to
+    happen here, at creation, because by the time the first read fails it is
+    already too late.
+    """
+    return flag_methods(line, "GetStartPoint2", "GetEndPoint2")
+
+
+def _axis_apex(axis):
+    """The centreline endpoint sitting at the pitch apex.
+
+    The apex is the sketch origin, so it is whichever endpoint is at (0, 0) in
+    sketch space. Taking the nearer of the two rather than assuming
+    `CreateCenterLine` kept its arguments in the order they were given.
+    """
+    a, b = axis.GetStartPoint2(), axis.GetEndPoint2()
+    return a if math.hypot(a.X, a.Y) <= math.hypot(b.X, b.Y) else b
+
+
+def _radial_position(r: float, z: float) -> tuple[float, float, float]:
+    """Put a radial dimension halfway between the axis and what it measures."""
+    return (mm(0.5 * r), 0.0, mm(z))
+
+
+def _axial_position(reach: float, z: float) -> tuple[float, float, float]:
+    """Put an axial dimension to the left of the axis, where nothing is drawn."""
+    return (mm(-0.3 * reach), 0.0, mm(z))
+
+
+def _angle_position(a, b) -> tuple[float, float, float]:
+    """Where to place the angular dimension between a cone segment and the axis.
+
+    Placement is not cosmetic for an angular dimension: it is what picks which
+    of the four angles around the intersection SOLIDWORKS creates. Extend the
+    cone to where it crosses the axis, then sit the text on the bisector of the
+    axis and the cone, on the side the gear is actually on. `add_dimension`
+    re-reads the value, so a placement that lands in the wrong quadrant comes
+    back as the supplement and fails loudly rather than quietly.
+    """
+    (r1, z1), (r2, z2) = a, b
+    z0 = z1 - r1 * (z2 - z1) / (r2 - r1)      # cone apex, on the axis
+    d1 = math.hypot(r1, z1 - z0)
+    d2 = math.hypot(r2, z2 - z0)
+
+    far = a if d1 >= d2 else b
+    ur, uz = far[0] / max(d1, d2), (far[1] - z0) / max(d1, d2)
+    # Both endpoints lie on the same ray, so the axis leg runs the same way in z.
+    br, bz = ur, uz + (1.0 if uz >= 0.0 else -1.0)
+    norm = math.hypot(br, bz) or 1.0
+    reach = 0.5 * min(d1, d2)
+    return (mm(reach * br / norm), 0.0, mm(z0 + reach * bz / norm))
+
+
+def _constrain_blank(model, axis, lines, outline) -> None:
+    """Relations first - the dimensions need something to hold on to.
+
+    No merge pass is needed at the corners. `AddToDB` being on suppresses
+    inference against *existing* geometry, but a line started exactly where the
+    previous one ended still shares its point: measured on this sketch, five
+    lines and a centreline give seven sketch points, not twelve, and
+    `a.GetEndPoint2()` and `b.GetStartPoint2()` come back as the same underlying
+    object. So the profile arrives already closed with five vertices, which is
+    what the degree-of-freedom count below assumes.
+
+    The centreline is fixed rather than tied to the sketch origin. It is both
+    the revolve axis and the datum every axial dimension measures from, and
+    pinning it outright avoids having to select the origin point over COM,
+    which is the one selection in this API with no good handle to hold.
+
+    It is the two *endpoints* that get fixed, not the line. Fixing a line pins
+    where it lies and which way it points but leaves its length free, and that
+    one leftover degree of freedom is enough to keep the whole sketch under
+    defined however well the profile itself is dimensioned.
+    """
+    add_relation(
+        model,
+        (axis.GetStartPoint2(), axis.GetEndPoint2()),
+        REL_FIXED,
+        "fix the gear axis",
+    )
+
+    n = len(lines)
+    for i, line in enumerate(lines):
+        (r1, z1), (r2, z2) = outline[i], outline[(i + 1) % n]
+        if abs(z1 - z2) < _COORD_TOL:
+            add_relation(model, (line,), REL_HORIZONTAL, f"blank segment {i} flat")
+        elif abs(r1 - r2) < _COORD_TOL:
+            add_relation(model, (line,), REL_VERTICAL, f"blank segment {i} cylindrical")
+
+
+def _dimension_blank(app, model, geo: SetGeometry, member: str, axis, lines, outline):
+    """Drive the blank profile the way a bevel gear drawing dimensions it.
+
+    The two cones carry angles and everything else carries a linear dimension.
+    That is not just presentation: P1's radius is left undimensioned because the
+    face cone angle pins it, and the crown's axial position is left
+    undimensioned because the back cone angle pins it, which is exactly how the
+    two cones define the blank.
+
+    The counts have to be exact or the dimensions cannot all be driving. Without
+    a hub the sketch has seven points - five profile vertices and the two ends
+    of the centreline - so fourteen degrees of freedom; fixing both centreline
+    ends removes four, and three relations (flat front, flat back, bore) remove
+    three, leaving the seven that the seven dimensions below take up. With a hub
+    it is nine points, eighteen degrees of freedom, four fixed, five relations,
+    and nine dimensions.
+
+    Values come from `outline` rather than being recomputed, so a dimension
+    cannot disagree with the geometry it is measuring - except the two angles,
+    which are the nominal cone angles and are checked against the drawn
+    segments by `add_dimension`.
+    """
+    m = geo.member(member)
+    apex = _axis_apex(axis)
+
+    r_bore, z_front = outline[0]
+    tip_r, z_crown = outline[2]
+    root_r, z_back = outline[3]
+
+    front_face, face_cone, back_cone, flat_back = lines[0], lines[1], lines[2], lines[3]
+    bore = lines[-1]
+
+    plan = [
+        ((axis, bore), _radial_position(r_bore, 0.5 * (z_front + z_back)),
+         r_bore, "bore radius", "BoreRadius"),
+        ((apex, front_face), _axial_position(tip_r, 0.5 * z_front),
+         z_front, "front face to apex", "FrontFaceToApex"),
+        ((apex, flat_back), _axial_position(tip_r, 0.5 * z_back),
+         z_back, "back face to apex", "BackFaceToApex"),
+        ((axis, back_cone.GetStartPoint2()), _radial_position(tip_r, z_crown),
+         tip_r, "crown radius", "CrownRadius"),
+        ((axis, back_cone.GetEndPoint2()), _radial_position(root_r, z_back),
+         root_r, "outer root radius", "OuterRootRadius"),
+    ]
+
+    if len(lines) == 7:
+        hub_r = outline[4][0]
+        z_hub_back = outline[5][1]
+        plan.append(
+            ((axis, lines[4]), _radial_position(hub_r, 0.5 * (z_back + z_hub_back)),
+             hub_r, "hub radius", "HubRadius")
+        )
+        plan.append(
+            ((apex, lines[5]), _axial_position(tip_r, 0.5 * z_hub_back),
+             z_hub_back, "hub back to apex", "HubBackToApex")
+        )
+
+    with DimensionFlags(app):
+        for entities, position, value, what, name in plan:
+            add_dimension(model, entities, position, mm(value), what, name)
+
+        # The back cone is perpendicular to the pitch cone, so its angle to the
+        # axis is 90 degrees minus the pitch angle - not the root angle, which
+        # belongs to a different cone and is 20 degrees away from this one.
+        add_dimension(
+            model,
+            (face_cone, axis),
+            _angle_position(outline[1], outline[2]),
+            m.face_angle,
+            "face cone angle",
+            "FaceConeAngle",
+        )
+        add_dimension(
+            model,
+            (back_cone, axis),
+            _angle_position(outline[2], outline[3]),
+            math.pi / 2.0 - m.pitch_angle,
+            "back cone angle",
+            "BackConeAngle",
+        )
+
+
+def build_blank(app, model, geo: SetGeometry, member: str):
+    """Sketch the meridian outline on the Top Plane, dimension it, and revolve it."""
     fm = model.FeatureManager
     mgr = model.SketchManager
     outline = blank_outline(geo, member)
-    z_lo = min(z for _, z in outline)
     z_hi = max(z for _, z in outline)
 
     model.ClearSelection2(True)
@@ -201,21 +389,38 @@ def build_blank(model, geo: SetGeometry, member: str):
 
     with SketchFlags(model):
         # A single centreline in the sketch is what FeatureRevolve2 picks up as
-        # its axis, which saves selecting one explicitly.
-        c1 = to_sketch(0.0, 0.0, mm(z_lo - 5.0))
+        # its axis, which saves selecting one explicitly - so this stays the only
+        # construction line here. It starts at the pitch apex rather than short
+        # of the front face because that endpoint is also the datum every axial
+        # dimension measures from.
+        c1 = to_sketch(0.0, 0.0, 0.0)
         c2 = to_sketch(0.0, 0.0, mm(z_hi + 5.0))
-        require(
-            mgr.CreateCenterLine(c1[0], c1[1], 0.0, c2[0], c2[1], 0.0),
-            "blank centreline",
+        axis = _endpoint_methods(
+            require(
+                mgr.CreateCenterLine(c1[0], c1[1], 0.0, c2[0], c2[1], 0.0),
+                "blank centreline",
+            )
         )
+        lines = []
         closed = outline + [outline[0]]
         for i, ((r1, za), (r2, zb)) in enumerate(zip(closed, closed[1:])):
             a = to_sketch(mm(r1), 0.0, mm(za))
             b = to_sketch(mm(r2), 0.0, mm(zb))
-            require(
-                mgr.CreateLine(a[0], a[1], 0.0, b[0], b[1], 0.0),
-                f"blank outline segment {i}",
+            lines.append(
+                _endpoint_methods(
+                    require(
+                        mgr.CreateLine(a[0], a[1], 0.0, b[0], b[1], 0.0),
+                        f"blank outline segment {i}",
+                    )
+                )
             )
+
+    # Relations and dimensions go on with AddToDB back off and the sketch still
+    # open; both are edits to the active sketch, not to a closed one.
+    _constrain_blank(model, axis, lines, outline)
+    _dimension_blank(app, model, geo, member, axis, lines, outline)
+    require_fully_defined(mgr.ActiveSketch, "blank profile sketch")
+
     mgr.InsertSketch(True)
     model.ClearSelection2(True)
     blank_sketch = _last_feature(model)
@@ -286,7 +491,7 @@ def build_gear(
     fm = model.FeatureManager
 
     axis_feat = create_axis(model)
-    build_blank(model, geo, member)
+    build_blank(session.app, model, geo, member)
 
     # --- 3. tooth space sections -----------------------------------------
     outer_sketch = _draw_section(model, geo, member, "outer")

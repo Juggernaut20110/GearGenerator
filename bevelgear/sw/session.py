@@ -35,6 +35,33 @@ SW_THIN_ONE_DIRECTION = 0         # swThinWallType_e
 SW_SAVE_AS_CURRENT_VERSION = 0    # swSaveAsVersion_e
 SW_SAVE_AS_OPTIONS_SILENT = 1     # swSaveAsOptions_e
 
+# Dimensions. Driving is 2 and driven is 1 - the opposite of the obvious guess,
+# so these came out of swconst.tlb rather than being assumed.
+SW_DIM_DRIVEN = 1                 # swDimensionDrivenState_e
+SW_DIM_DRIVING = 2
+SW_FULLY_CONSTRAINED = 3          # swConstrainedStatus_e
+
+# swUserPreferenceToggle_e. The first one is the important one: left on, every
+# AddDimension2 opens the Modify dialog and a COM-driven build hangs on it.
+SW_PREF_INPUT_DIM_VAL_ON_CREATE = 10
+SW_PREF_OVERDEF_DIMS_PROMPT = 100
+SW_PREF_OVERDEF_DIMS_DRIVEN_BY_DEFAULT = 101
+
+# Sketch relation ids, as SketchAddConstraints spells them.
+REL_FIXED = "sgFIXED"
+REL_HORIZONTAL = "sgHORIZONTAL"
+REL_VERTICAL = "sgVERTICAL"
+
+CONSTRAINED_STATUS_NAMES = {
+    1: "unknown",
+    2: "under defined",
+    3: "fully defined",
+    4: "over defined",
+    5: "no solution",
+    6: "invalid solution",
+    7: "autosolve off",
+}
+
 # Marks used by the feature calls. These are not arbitrary: the API looks for
 # specific mark values in the selection list.
 MARK_LOFT_PROFILE = 1
@@ -90,6 +117,23 @@ def flag_methods(obj, *names):
     except Exception:
         pass
     return obj
+
+
+def value_of(obj, name: str):
+    """Read a no-argument COM member that late binding may have made a property.
+
+    win32com decides on *first* access whether a member is a method or a
+    property and caches that decision, and members that take no arguments are
+    exactly the ambiguous shape. `sketch.GetConstrainedStatus` comes back as the
+    status itself rather than something to call.
+
+    This is only safe for members returning a plain value - an int, a tuple.
+    A member returning IDispatch is itself callable, so the two cases become
+    indistinguishable; flag those as methods before the first access instead.
+    See `flag_methods`.
+    """
+    member = getattr(obj, name)
+    return member() if callable(member) else member
 
 
 def require(value, what: str):
@@ -225,7 +269,10 @@ class SketchFlags:
     """Turn off inference and display while writing generated geometry.
 
     `AddToDB` is the important one: with it off, SOLIDWORKS snaps new points to
-    nearby existing geometry, which quietly destroys an involute.
+    nearby existing geometry, which quietly destroys an involute. The cost is
+    that nothing is inferred at all - not even the coincidences between the
+    endpoints of a polyline drawn corner to corner - so anything that needs a
+    relation has to say so explicitly afterwards. See `add_relation`.
     """
 
     def __init__(self, model):
@@ -243,3 +290,131 @@ class SketchFlags:
         except Exception:
             pass
         return False
+
+
+class DimensionFlags:
+    """Stop dimension creation from opening a dialog and blocking the build.
+
+    `swInputDimValOnCreate` is the one that matters: left on - and it is on by
+    default - every `AddDimension2` pops the Modify box and waits for a click,
+    which a COM-driven build never supplies. The other two suppress the
+    "this dimension over-defines the sketch, make it driven?" prompt and its
+    silent-driven fallback; we would rather a dimension fail loudly than come
+    back driven, because driven means the degree-of-freedom count is wrong.
+    """
+
+    _PREFS = (
+        SW_PREF_INPUT_DIM_VAL_ON_CREATE,
+        SW_PREF_OVERDEF_DIMS_PROMPT,
+        SW_PREF_OVERDEF_DIMS_DRIVEN_BY_DEFAULT,
+    )
+
+    def __init__(self, app):
+        self.app = app
+        self.saved: dict[int, bool] = {}
+
+    def __enter__(self):
+        for pref in self._PREFS:
+            try:
+                self.saved[pref] = bool(self.app.GetUserPreferenceToggle(pref))
+                self.app.SetUserPreferenceToggle(pref, False)
+            except Exception:
+                pass
+        return self.app
+
+    def __exit__(self, *exc):
+        for pref, value in self.saved.items():
+            try:
+                self.app.SetUserPreferenceToggle(pref, value)
+            except Exception:
+                pass
+        return False
+
+
+# --- relations and dimensions ----------------------------------------------
+
+
+def select_entities(model, entities, what: str) -> None:
+    """Select sketch entities in order, replacing the current selection.
+
+    `ISketchSegment.Select4` and `ISketchPoint.Select4` take (Append, Callout);
+    the callout is an IDispatch parameter, so it needs the null VARIANT rather
+    than a bare None. Order matters to the calls that consume the selection -
+    an angular dimension takes its two lines in the order they were picked.
+    """
+    model.ClearSelection2(True)
+    for i, entity in enumerate(entities):
+        if not entity.Select4(i > 0, NULL_DISPATCH):
+            raise SwError(f"could not select entity {i} for {what}")
+
+
+def add_relation(model, entities, id_str: str, what: str) -> None:
+    """Add a sketch relation to the given entities.
+
+    `SketchAddConstraints` returns nothing at all, so there is no return value
+    to check here; the sketch's constrained status at the end of the sketch is
+    what actually proves the relations landed. See `require_fully_defined`.
+    """
+    select_entities(model, entities, what)
+    model.SketchAddConstraints(id_str)
+    model.ClearSelection2(True)
+
+
+def add_dimension(model, entities, position, value: float, what: str, name: str = ""):
+    """Add one *driving* dimension and return the IDimension.
+
+    `position` is a model-space (x, y, z) in metres and `value` is in metres for
+    a linear dimension or radians for an angular one - SI throughout, as the
+    rest of the API is.
+
+    The dimension is created against geometry that is already at `value`, so the
+    value it comes back with is a check on everything else: pick the wrong
+    entities, or let SOLIDWORKS choose the supplement of the angle you meant,
+    and it will not match. That mismatch is raised rather than papered over by
+    setting the value, because setting it would then move the geometry.
+    """
+    select_entities(model, entities, what)
+    display = require(model.AddDimension2(*position), f"dimension {what}")
+    model.ClearSelection2(True)
+
+    # GetDimension takes no arguments and returns IDispatch, so late binding can
+    # resolve it as a property; flag it before the first access. See flag_methods.
+    dim = require(
+        flag_methods(display, "GetDimension").GetDimension(),
+        f"read back the dimension for {what}",
+    )
+    if dim.DrivenState != SW_DIM_DRIVING:
+        dim.DrivenState = SW_DIM_DRIVING
+        if dim.DrivenState != SW_DIM_DRIVING:
+            raise SwError(
+                f"{what} would not go driving - it over-defines the sketch, "
+                "so the degree-of-freedom count is wrong"
+            )
+
+    actual = float(dim.SystemValue)
+    if abs(actual - value) > 1e-6:
+        raise SwError(
+            f"{what} came back as {actual:.9g} but the geometry is at "
+            f"{value:.9g} (SI units)"
+        )
+    dim.SystemValue = float(value)
+
+    if name:
+        try:
+            dim.Name = name
+        except Exception:
+            pass
+    return dim
+
+
+def require_fully_defined(sketch, what: str) -> None:
+    """Raise unless the sketch solved to fully defined.
+
+    This is the check that makes the dimensioning worth anything: relations are
+    added by a call with no return value and dimensions can silently fail to
+    constrain what you thought, so the only honest test is to ask the solver.
+    """
+    status = int(value_of(sketch, "GetConstrainedStatus"))
+    if status != SW_FULLY_CONSTRAINED:
+        name = CONSTRAINED_STATUS_NAMES.get(status, str(status))
+        raise SwError(f"{what} is {name}, not fully defined")
