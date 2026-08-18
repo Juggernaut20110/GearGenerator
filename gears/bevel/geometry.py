@@ -30,16 +30,22 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from ..involute import (
+    CUT_OVERSHOOT_FACTOR,
+    FLANK_POINTS,
+    MIN_TOP_LAND_FACTOR,
+    inv,
+    max_tip_radius,
+    polar,
+    tooth_space_loop,
+    top_land,
+)
 from .params import BevelSetParams
 
 # Gleason straight-bevel proportions, as multiples of the outer module.
 WORKING_DEPTH_FACTOR = 2.000
 WHOLE_DEPTH_FACTOR = 2.188
 CLEARANCE_FACTOR = 0.188
-
-# How far past the tip the tooth-space profile is carried, so that a loft cut
-# fully clears the blank radially. A multiple of the module.
-CUT_OVERSHOOT_FACTOR = 0.5
 
 # How far past each end of the face width the loft sections are pushed.
 #
@@ -143,26 +149,6 @@ def front_face_z(geo: "SetGeometry", m: "MemberGeometry") -> float:
         geo.inner_cone_dist / math.cos(m.pitch_angle)
         - m.virtual_tip_r_inner * math.sin(m.pitch_angle)
     )
-
-# Default sampling density along one involute flank.
-FLANK_POINTS = 40
-
-# Smallest top land the tip is allowed to keep, as a multiple of the module.
-#
-# A Gleason long-addendum pinion with few teeth is already close to pointed at
-# its nominal tip - 17 teeth at 2.53:1 leaves only 0.36 mm of top land. Pushing
-# the loft section outward along the cone grows the tip radius further, and past
-# a point the two flanks of a tooth cross: the top land goes negative and
-# neighbouring tooth spaces overlap. The tip radius is clamped so that never
-# happens. The extension region lies outside the blank anyway, so clamping it
-# costs nothing.
-MIN_TOP_LAND_FACTOR = 0.05
-
-
-def inv(angle: float) -> float:
-    """Involute function: inv(a) = tan(a) - a."""
-    return math.tan(angle) - angle
-
 
 # ---------------------------------------------------------------------------
 # Derived geometry
@@ -391,164 +377,6 @@ Point2 = tuple[float, float]
 Point3 = tuple[float, float, float]
 
 
-def _polar(r: float, phi: float) -> Point2:
-    return r * math.cos(phi), r * math.sin(phi)
-
-
-def top_land(r: float, r_base: float, psi0: float) -> float:
-    """Tooth thickness at radius r, along the arc. Negative means pointed."""
-    alpha_r = math.acos(min(1.0, r_base / r))
-    return 2.0 * (psi0 - inv(alpha_r)) * r
-
-
-def max_tip_radius(r_base: float, psi0: float, min_land: float) -> float:
-    """Largest tip radius still leaving `min_land` of top land.
-
-    `top_land` decreases monotonically once past the base circle, so a plain
-    bisection is safe.
-    """
-    if top_land(r_base, r_base, psi0) <= min_land:
-        return r_base
-
-    lo = hi = r_base
-    for _ in range(200):
-        hi *= 1.05
-        if top_land(hi, r_base, psi0) <= min_land:
-            break
-    for _ in range(80):
-        mid = 0.5 * (lo + hi)
-        if top_land(mid, r_base, psi0) > min_land:
-            lo = mid
-        else:
-            hi = mid
-    return lo
-
-
-def _flank_points(
-    r_base: float,
-    r_root: float,
-    r_tip: float,
-    psi0: float,
-    half_pitch: float,
-    n: int,
-) -> list[Point2]:
-    """One side of a tooth space, root to tip, at positive angle.
-
-    The tooth centred on angle 0 has angular half-thickness
-        theta_t(r) = psi0 - inv(acos(r_base / r))
-    so the space centred on angle 0 has half-width half_pitch - theta_t(r).
-
-    Below the base circle the involute is undefined; a radial line is used
-    instead, which is the standard simplification (the true form there is a
-    trochoid that depends on the cutter).
-    """
-
-    def space_angle(r: float) -> float:
-        alpha_r = math.acos(min(1.0, r_base / r))
-        return half_pitch - psi0 + inv(alpha_r)
-
-    pts: list[Point2] = []
-
-    # Sample uniformly in the involute roll parameter rather than in radius:
-    # it distributes points evenly along the curve instead of bunching them at
-    # the tip.
-    r_lo = max(r_root, r_base)
-    if r_root < r_base:
-        pts.append(_polar(r_root, space_angle(r_base)))
-
-    t_lo = math.sqrt(max(0.0, (r_lo / r_base) ** 2 - 1.0))
-    t_hi = math.sqrt(max(0.0, (r_tip / r_base) ** 2 - 1.0))
-    for i in range(n):
-        t = t_lo + (t_hi - t_lo) * i / (n - 1)
-        r = r_base * math.sqrt(1.0 + t * t)
-        pts.append(_polar(r, space_angle(r)))
-
-    return pts
-
-
-def _point_segment_distance(p: Point2, a: Point2, b: Point2) -> tuple[float, Point2]:
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    dx, dy = bx - ax, by - ay
-    denom = dx * dx + dy * dy
-    if denom < 1e-18:
-        return math.hypot(px - ax, py - ay), a
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / denom))
-    q = (ax + t * dx, ay + t * dy)
-    return math.hypot(px - q[0], py - q[1]), q
-
-
-def _distance_to_polyline(p: Point2, poly: list[Point2]) -> tuple[float, Point2, int]:
-    best = (float("inf"), poly[0], 0)
-    for i in range(len(poly) - 1):
-        d, q = _point_segment_distance(p, poly[i], poly[i + 1])
-        if d < best[0]:
-            best = (d, q, i)
-    return best
-
-
-def _root_fillet(
-    flank: list[Point2], r_root: float, rho: float, arc_points: int = 9
-) -> tuple[list[Point2], list[Point2]] | None:
-    """Fit a circular fillet of radius `rho` tangent to the flank and the root.
-
-    Returns (trimmed_flank, arc_points_root_to_flank), or None if no fillet of
-    that size fits inside the space - in which case the caller keeps a sharp
-    corner.
-
-    The fillet centre must sit at radius r_root + rho (tangency with the root
-    circle), so only its angle is unknown. Distance-to-flank decreases
-    monotonically as that angle sweeps from the space centreline toward the
-    flank, so a bisection is both safe and simple.
-    """
-    if rho <= 0.0:
-        return None
-
-    phi_flank = math.atan2(flank[0][1], flank[0][0])
-    if phi_flank <= 0.0:
-        return None
-
-    def gap(phi: float) -> float:
-        c = _polar(r_root + rho, phi)
-        return _distance_to_polyline(c, flank)[0] - rho
-
-    lo, hi = 0.0, phi_flank
-    if gap(lo) <= 0.0:
-        return None  # space too narrow for this fillet radius
-
-    for _ in range(60):
-        mid = 0.5 * (lo + hi)
-        if gap(mid) > 0.0:
-            lo = mid
-        else:
-            hi = mid
-    phi_c = 0.5 * (lo + hi)
-
-    centre = _polar(r_root + rho, phi_c)
-    _, touch, seg = _distance_to_polyline(centre, flank)
-
-    # Tangent point on the root circle is radially inward from the centre.
-    root_touch = _polar(r_root, phi_c)
-
-    a0 = math.atan2(root_touch[1] - centre[1], root_touch[0] - centre[0])
-    a1 = math.atan2(touch[1] - centre[1], touch[0] - centre[0])
-    # Keep the short way round.
-    while a1 - a0 > math.pi:
-        a1 -= 2.0 * math.pi
-    while a0 - a1 > math.pi:
-        a1 += 2.0 * math.pi
-
-    arc = [
-        (
-            centre[0] + rho * math.cos(a0 + (a1 - a0) * i / (arc_points - 1)),
-            centre[1] + rho * math.sin(a0 + (a1 - a0) * i / (arc_points - 1)),
-        )
-        for i in range(arc_points)
-    ]
-    return [touch] + flank[seg + 1:], arc
-
-
 @dataclass(frozen=True)
 class ToothSpaceSection:
     """One end section of a single tooth space.
@@ -659,51 +487,12 @@ def tooth_space_section(
 
     cone_apex_z = cone_dist / math.cos(m.pitch_angle)
 
-    flank = _flank_points(r_base, r_root, r_tip, psi0, half_pitch, n_flank)
-
-    fillet = _root_fillet(flank, r_root, p.fillet_factor * p.module * k)
-    if fillet is not None:
-        flank, arc = fillet
-    else:
-        arc = []
-
-    # Mirror across the x axis for the other side of the space.
-    def mirror(pts: list[Point2]) -> list[Point2]:
-        return [(x, -y) for x, y in pts]
-
-    phi_root = math.atan2(arc[0][1], arc[0][0]) if arc else math.atan2(
-        flank[0][1], flank[0][0]
+    # The fillet radius scales with the section, like everything else that is a
+    # length rather than an angle.
+    segments, loop, filleted = tooth_space_loop(
+        r_base, r_root, r_tip, r_cap, psi0, half_pitch,
+        p.fillet_factor * p.module * k, n_flank,
     )
-    phi_tip = math.atan2(flank[-1][1], flank[-1][0])
-
-    root_arc = [
-        _polar(r_root, -phi_root + 2.0 * phi_root * i / 8.0) for i in range(9)
-    ]
-    cap = [_polar(r_cap, -phi_tip + 2.0 * phi_tip * i / 4.0) for i in range(5)]
-
-    segments = {
-        # Root to flank, matching the direction of travel round the loop; the
-        # positive side runs the other way and so is reversed instead.
-        "fillet_neg": mirror(arc) if arc else [],
-        "flank_neg": mirror(flank),
-        "riser_neg": [mirror(flank)[-1], cap[0]],
-        "cap": cap,
-        "riser_pos": [cap[-1], flank[-1]],
-        "flank_pos": flank[::-1],
-        "fillet_pos": arc[::-1] if arc else [],
-        "root": root_arc[::-1],
-    }
-
-    loop: list[Point2] = []
-    for name in (
-        "fillet_neg", "flank_neg", "riser_neg", "cap",
-        "riser_pos", "flank_pos", "fillet_pos", "root",
-    ):
-        for pt in segments[name]:
-            if not loop or math.dist(loop[-1], pt) > 1e-9:
-                loop.append(pt)
-    if loop and math.dist(loop[0], loop[-1]) < 1e-9:
-        loop.pop()
 
     return ToothSpaceSection(
         member=member,
@@ -713,7 +502,7 @@ def tooth_space_section(
         r_root=r_root,
         r_tip=r_tip,
         r_cap=r_cap,
-        filleted=bool(arc),
+        filleted=filleted,
         segments=segments,
         loop_2d=loop,
     )

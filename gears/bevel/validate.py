@@ -177,7 +177,7 @@ def validate(p: BevelSetParams) -> ValidationResult:
     # comfortably open even though extrapolating down to the base circle would
     # give a negative width.
     for member in (geo.pinion, geo.gear):
-        from .geometry import inv, top_land  # keeps the module import-light
+        from ..involute import inv, top_land  # keeps the module import-light
 
         half_pitch = math.pi / member.virtual_teeth
         psi0 = (math.pi * p.module / 2.0 - p.backlash / 2.0) / (
