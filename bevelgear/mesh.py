@@ -55,6 +55,48 @@ def gear_clocking(z: int) -> float:
     return phi % tau
 
 
+def angular_velocity_ratio(z1: int, z2: int) -> float:
+    """w_pinion / w_gear, with each member's axis taken pointing away from the apex.
+
+    Rolling without slipping along the contact line means the two surface
+    velocities agree at every point of it, so `w1*a1 - w2*a2` - the relative
+    angular velocity - must lie along that line. With a1 = (0, 0, 1),
+    a2 = (sin S, 0, cos S) and u = (sin d1, 0, cos d1):
+
+        x:   -w2 sin S      = k sin d1
+        z:   w1 - w2 cos S  = k cos d1
+
+    Eliminating k gives `w1 = w2 (cos S - sin S cot d1)`, and substituting the
+    pitch angle - `cot d1 = (z2/z1 + cos S) / sin S`, which is just the pitch
+    cone relation rearranged - collapses the whole thing to
+
+        w1 / w2 = -z2 / z1
+
+    for **any** shaft angle. Every S term cancels. The magnitude is the obvious
+    one; the sign is the part worth having, and it says the two members always
+    turn in *opposite* senses about their own outward axes - as true of a 45
+    degree pair as of a right-angle one.
+
+    The tooth counts are the exact ratio here, not an approximation of one: the
+    pitch cones are defined by them.
+    """
+    return -float(z2) / float(z1)
+
+
+def gear_mate_ratio(z1: int, z2: int) -> tuple[float, float]:
+    """The two numbers a SOLIDWORKS gear mate wants, pinion entity selected first.
+
+    A gear mate holds `w1 * r1 = w2 * r2` for the values r1 and r2 given against
+    its first and second selections, so feeding the tooth counts straight in
+    gives `w1 / w2 = z2 / z1` - the magnitude from `angular_velocity_ratio`.
+
+    The sign cannot be expressed in the ratio; it is the mate's Reverse flag,
+    and it is the one bit of the placement that had to be measured rather than
+    derived. Reverse off is correct - see the module docstring of `sw.assembly`.
+    """
+    return float(z1), float(z2)
+
+
 def _rot_y(a: float) -> Matrix3:
     c, s = math.cos(a), math.sin(a)
     return ((c, 0.0, s), (0.0, 1.0, 0.0), (-s, 0.0, c))

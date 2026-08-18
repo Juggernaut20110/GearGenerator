@@ -35,6 +35,34 @@ SW_THIN_ONE_DIRECTION = 0         # swThinWallType_e
 SW_SAVE_AS_CURRENT_VERSION = 0    # swSaveAsVersion_e
 SW_SAVE_AS_OPTIONS_SILENT = 1     # swSaveAsOptions_e
 
+# Mates. Read out of swconst.tlb rather than assumed - the mechanical mates are
+# not in the order the toolbar lists them, and swMateGEAR sits between
+# swMateCAMFOLLOWER and swMateWIDTH.
+SW_MATE_COINCIDENT = 0            # swMateType_e
+SW_MATE_ANGLE = 6
+SW_MATE_GEAR = 10
+
+# swMateAlign_e. CLOSEST is what lets a mate be added to components that are
+# already sitting exactly where they belong: it resolves the alignment against
+# the arrangement in front of it instead of picking one and moving the parts.
+SW_MATE_ALIGN_CLOSEST = 2
+
+SW_ADD_MATE_NO_ERROR = 1          # swAddMateError_e - note 0 means "unknown"
+ADD_MATE_ERROR_NAMES = {
+    0: "unknown error",
+    2: "incorrect mate type",
+    3: "incorrect alignment",
+    4: "incorrect selections",
+    5: "the mate would over-define the assembly",
+    6: "incorrect gear ratios",
+}
+
+# Feature type names, as IFeature.GetTypeName2 spells them. Type names are not
+# localised the way feature *names* are, so finding the origin this way works on
+# a German seat where "Origin" does not.
+FEATURE_TYPE_ORIGIN = "OriginProfileFeature"
+FEATURE_TYPE_REF_AXIS = "RefAxis"
+
 # Dimensions. Driving is 2 and driven is 1 - the opposite of the obvious guess,
 # so these came out of swconst.tlb rather than being assumed.
 SW_DIM_DRIVEN = 1                 # swDimensionDrivenState_e
@@ -72,6 +100,7 @@ CONSTRAINED_STATUS_NAMES = {
 MARK_LOFT_PROFILE = 1
 MARK_PATTERN_AXIS = 1
 MARK_PATTERN_FEATURE = 4
+MARK_MATE_ENTITY = 1
 
 # Late binding cannot marshal a bare None into a VARIANT of type IDispatch*.
 NULL_DISPATCH = VARIANT(pythoncom.VT_DISPATCH, None)
@@ -98,6 +127,16 @@ def doubles(values) -> VARIANT:
     SOLIDWORKS call silently returning None.
     """
     return VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, [float(v) for v in values])
+
+
+def int_byref(value: int = 0) -> VARIANT:
+    """A VARIANT for an [out] long, read back afterwards through `.value`.
+
+    Several calls report their real failure reason byref while the return value
+    says nothing useful - `SaveAs3` returns False with the reason in `errors`,
+    and `AddMate5` hands back a mate object even when it has refused to add it.
+    """
+    return VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, int(value))
 
 
 def points_to_doubles(points) -> VARIANT:
@@ -222,8 +261,8 @@ class SwSession:
 
     def save(self, model, path: str) -> None:
         """Save under a new name, silently. Errors come back byref, not raised."""
-        errors = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-        warnings = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        errors = int_byref()
+        warnings = int_byref()
         # ExportData and AdvancedSaveAsOptions are IDispatch parameters; a bare
         # Python None will not marshal into them.
         ok = model.Extension.SaveAs3(

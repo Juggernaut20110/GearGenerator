@@ -35,6 +35,14 @@ def main(argv=None) -> int:
     ap.add_argument("--min-root", type=float)
     ap.add_argument("--out", default="out", help="output directory")
     ap.add_argument("--no-save", action="store_true")
+    ap.add_argument(
+        "--no-mates", action="store_true",
+        help="place the pair but leave it floating, with no mates at all",
+    )
+    ap.add_argument(
+        "--reverse-gear", action="store_true",
+        help="flip the gear mate, if the pair turns the wrong way when dragged",
+    )
     args = ap.parse_args(argv)
 
     overrides = {"pressure_angle": args.alpha, "shaft_angle": args.sigma}
@@ -69,6 +77,8 @@ def main(argv=None) -> int:
             built = build_set(
                 session, geo, Path(args.out).resolve(),
                 save_assembly=not args.no_save,
+                mate=not args.no_mates,
+                reverse_gear_mate=args.reverse_gear,
             )
         except SwError as exc:
             print(f"\nBUILD FAILED: {exc}")
@@ -93,6 +103,32 @@ def main(argv=None) -> int:
         print(f"  gear clocking     {built.clocking_deg:.4f} deg")
         if built.assembly_path:
             print(f"  saved             {built.assembly_path}")
+
+        print("\nMATES")
+        if not built.mates:
+            print("  none - the pair is placed but floating")
+        else:
+            for name in built.mates:
+                print(f"  {name}")
+            print(f"  pinion            {built.pinion_status}")
+            print(f"  gear              {built.gear_status}")
+            if built.articulates:
+                # Under defined is the healthy answer here: each member keeps
+                # the spin about its own axis, and the gear mate joins the two.
+                print("  the set turns: drag either member and the other follows")
+            else:
+                print(
+                    "  WARNING: expected both members to come back under "
+                    "defined, one spin each"
+                )
+            # The coupling only acts on a hand drag - no API route runs it -
+            # so this is the one result the build cannot check for itself.
+            print(
+                "  sense              Reverse off, verified by hand on the "
+                "anchor set"
+            )
+            if built.gear_mate_reversed:
+                print("  WARNING: --reverse-gear is on, against the verified sense")
 
         if built.interference_count < 0:
             print("  interference      not available")

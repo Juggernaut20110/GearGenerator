@@ -11,7 +11,9 @@ and root rim, it produces:
   named global variable you can edit in SOLIDWORKS afterwards
 * true involute teeth, lofted between two 3D-sketch sections and circular
   patterned
-* both members plus an assembly with the pair correctly clocked and meshing
+* both members plus an assembly with the pair correctly clocked and meshing,
+  mated so it articulates: a gear mate couples the two, and dragging either
+  member turns the other in the right ratio
 
 The anchor case used throughout the code and tests is **m=2, 17×43 teeth, 20°
 pressure angle, 90° shafts**.
@@ -25,7 +27,7 @@ The interpreter is the venv one. Always. There is no global install.
 ```
 .venv\Scripts\python.exe run.py                      # the GUI
 .venv\Scripts\python.exe -m bevelgear --module 2 --z1 17 --z2 43
-.venv\Scripts\python.exe -m pytest -q                # 274 tests, no SOLIDWORKS
+.venv\Scripts\python.exe -m pytest -q                # 299 tests, no SOLIDWORKS
 ```
 
 Building actual geometry needs SOLIDWORKS running (or installed — the session
@@ -55,8 +57,8 @@ bevelgear/
   sw/            everything that touches pywin32 lives here
     session.py   COM connection, unit conversion, checked-call discipline
     part.py      builds one gear: blank, sections, loft cut, pattern
-    assembly.py  builds both plus the meshed assembly
-tools/           standalone drivers and API probes
+    assembly.py  builds both, places them, mates them into a turning set
+tools/           standalone drivers and API probes, one per question asked
 tests/           pure-Python; SOLIDWORKS is never involved
 ```
 
@@ -135,6 +137,53 @@ so the part stays editable as a parametric model rather than dead geometry:
 "MinRootThickness"` — so editing the rim grows the blank backward instead of
 eating into the teeth.
 
+### The assembly
+
+`build_set` in [bevelgear/sw/assembly.py](bevelgear/sw/assembly.py) inserts both
+parts, writes their placement transforms, then floats them and mates them. Each
+member ends up with five degrees of freedom removed and keeps the sixth — the
+spin about its own axis:
+
+```
+apex        component origin coincident with the assembly origin      (3)
+axis        component axis coincident with the assembly Top plane     (1)
+direction   pinion: axis also coincident with the Right plane         (1)
+            gear:   angle mate to the pinion axis = the shaft angle   (1)
+```
+
+A **gear mate** between the two reference axes then ties those two remaining
+freedoms together in the ratio z1:z2. The assembly is deliberately left under
+defined by one degree of freedom — fully defined would mean the teeth could not
+turn — and each component's `GetConstrainedStatus` is read back to confirm it.
+
+Every mate is added with `swMateAlignCLOSEST`. That is what lets the two
+mechanisms cooperate: the components are already sitting exactly where they
+belong, so "closest" resolves each mate's alignment against the arrangement in
+front of it and nothing moves. ALIGNED or ANTI\_ALIGNED is a coin toss that
+flips a part half the time. No mate touches the spin, so the clocking written by
+the transform survives — the gear mate couples the two spins wherever it finds
+them rather than choosing a phase.
+
+`mesh.angular_velocity_ratio` shows the two members must turn in **opposite**
+senses about their outward axes, and that the ratio is exactly z2/z1 at *any*
+shaft angle — every shaft-angle term cancels, which is not obvious until you
+substitute the pitch cone relation. What that does not settle is how SOLIDWORKS
+reads a gear mate's Reverse flag against two reference axes, which the API will
+not report. Measured by hand on the anchor set: with the pinion axis selected
+first and Reverse off, the pair turns the right way. `--reverse-gear` flips it
+if that ever stops holding.
+
+It had to be measured by hand because **a gear mate is applied by the
+interactive drag solver and by nothing else**. Writing a component transform and
+rebuilding, adding an angle mate that drives the pinion's last freedom, and
+`IDragOperator` were each measured to turn the pinion exactly as asked and leave
+the gear at 0.0000° — see [tools/probe_gear_sense.py](tools/probe_gear_sense.py),
+which is kept for its three dead ends. The same fact is why the transform-written
+clocking is safe: the gear mate never gets the chance to shift it.
+
+`--no-mates` places the pair and leaves it floating, which is the older
+behaviour and worth having when a mate is the thing under suspicion.
+
 ### Hard-won facts about this API
 
 These were each found by breaking something. Don't undo them:
@@ -159,22 +208,40 @@ These were each found by breaking something. Don't undo them:
 * **Angular precision has to be raised in the document.** An angular equation is
   re-parsed at the document's precision on every rebuild, and at the default two
   decimals a driving cone angle moves the geometry.
-* **The assembly is placed by writing transforms, not by adding mates.** A bevel
-  pair needs coincident apexes, axes at the shaft angle, *and* clocked teeth —
-  three conditions the mate solver can satisfy in the wrong way.
+* **The assembly is *placed* by writing transforms, and constrained only
+  afterwards.** A bevel pair needs coincident apexes, axes at the shaft angle,
+  *and* clocked teeth — three conditions the mate solver can satisfy in the
+  wrong way. Placing by transform settles all three by arithmetic; the mates
+  then go onto a pair that is already right.
+* **Components added through `AddComponent5` arrive fixed.** Fixed outranks
+  every mate on them, so a gear mate can be added, look correct in the tree,
+  and do nothing at all when the assembly is dragged. `UnfixComponent` first.
+* **`AddMate5` reports its refusal byref.** The return value can be a mate
+  object that is not in the assembly; the `ErrorStatus` argument is the one
+  that tells the truth, and `swAddMateError_NoError` is 1, not 0.
+* **An origin cannot be mated as a feature.** Selecting the OriginProfileFeature
+  is what a user does in the tree, but over the API it lands in the selection
+  list as `swSelSKETCHES` and `AddMate5` refuses it — returning None with error
+  status 0, "unknown error". Reach through to the single sketch point inside it,
+  which reports `swSelEXTSKETCHPOINTS` and mates first time.
+* **Marks do not matter to `AddMate5`.** It mates whatever is in the selection
+  list, which is what lets `ISketchPoint.Select4` — which has no mark parameter
+  at all — be used for one entity and `IFeature.Select2` for the other.
 
-`tools/smoke_com.py` and `tools/probe_dimension.py` exist to answer API
-questions in isolation before trusting an answer inside a build. Add to them
-rather than debugging inside `build_gear`.
+`tools/smoke_com.py`, `tools/probe_dimension.py`, `tools/probe_mate.py` and
+`tools/probe_gear_sense.py` exist to answer API questions in isolation before
+trusting an answer inside a build. Add to them rather than debugging inside
+`build_gear`.
 
 ---
 
 ## Testing
 
-274 tests, all pure Python, all fast. They are closed-form checks on the
+299 tests, all pure Python, all fast. They are closed-form checks on the
 geometry — cone distances agreeing between members, tooth tips landing on the
-mate's back cone, loft sections clearing the blank, the blank outline's shape —
-plus the validator, the preview arithmetic and the GUI's parameter plumbing.
+mate's back cone, loft sections clearing the blank, the blank outline's shape,
+the gear ratio solved back out of the rolling condition — plus the validator,
+the preview arithmetic and the GUI's parameter plumbing.
 
 `sw/` is not covered, because it needs a CAD seat. Anything in there is verified
 by building the anchor set in SOLIDWORKS and looking at it. **Carl does that

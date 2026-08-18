@@ -212,12 +212,17 @@ def test_build_report_formatting_survives_a_stub_result(app):
         interference_count = 0
         interference_volume_mm3 = 0.0
         assembly_path = r"C:\out\set.sldasm"
+        mates = ("pinion apex - assembly origin", "gear mate 17:43")
+        gear_ratio = (17.0, 43.0)
+        articulates = True
 
     lines = App._format_result(Result())
 
     assert lines[0] == "Build finished."
     assert any("17 teeth" in line for line in lines)
     assert any("interference: none" in line for line in lines)
+    assert any("gear mate 17:43" in line for line in lines)
+    assert any("the set turns" in line for line in lines)
 
 
 def test_a_failed_build_is_reported_in_the_messages_pane(app, monkeypatch):

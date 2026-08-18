@@ -53,6 +53,12 @@ from .session import (
 )
 
 
+# The reference axis is named so `sw.assembly` can mate against it. Kept here
+# next to the feature that creates it rather than in session.py, because it is
+# a fact about this part, not about the API.
+AXIS_FEATURE_NAME = "GearAxis"
+
+
 @dataclass
 class BuildResult:
     """What the build produced, and enough measurements to check it."""
@@ -188,13 +194,23 @@ def create_axis(model):
 
     Top Plane is XZ and Right Plane is YZ, so they meet along Z - which is the
     gear axis in the geometry module's coordinate system.
+
+    The axis is renamed because the assembly mates against it by name, and
+    "Axis1" is both unrecognisable in the tree and not guaranteed to be the
+    number a part picks up. Renaming is safe here: everything in this module
+    selects the feature *object*, never the name.
     """
     model.ClearSelection2(True)
     select_first(model, TOP_PLANE_NAMES, "PLANE")
     select_first(model, RIGHT_PLANE_NAMES, "PLANE", append=True)
     # InsertAxis2 lives on IModelDoc2, not IFeatureManager.
     require(model.InsertAxis2(True), "InsertAxis2")
-    return _last_feature(model)
+    axis = _last_feature(model)
+    try:
+        axis.Name = AXIS_FEATURE_NAME
+    except Exception:
+        pass
+    return axis
 
 
 _COORD_TOL = 1e-9    # mm; outline coordinates that "share" a value share it exactly

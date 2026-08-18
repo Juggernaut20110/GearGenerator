@@ -681,6 +681,16 @@ class App(ttk.Frame):
             f"({result.shaft_angle_error_deg:+.2e} deg error)"
         )
         lines.append(f"  gear clocked {result.clocking_deg:.4f} deg")
+        if result.mates:
+            num, den = result.gear_ratio
+            lines.append(
+                f"  {len(result.mates)} mates, gear mate {num:g}:{den:g}"
+            )
+            lines.append(
+                "  the set turns - drag either member in SOLIDWORKS"
+                if result.articulates
+                else "  WARNING: the set came back constrained, so it will not turn"
+            )
         if result.interference_count < 0:
             lines.append("  interference: detection unavailable")
         elif result.interference_count == 0:

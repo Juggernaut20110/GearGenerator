@@ -115,6 +115,48 @@ def test_contact_line_sits_at_pi_in_the_gear_frame():
     )
 
 
+# --- the gear mate ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("sigma_deg", [30.0, 45.0, 60.0, 90.0, 120.0, 135.0])
+@pytest.mark.parametrize("z1,z2", [(17, 43), (20, 20), (12, 60)])
+def test_velocity_ratio_is_the_tooth_ratio_at_every_shaft_angle(sigma_deg, z1, z2):
+    """The closed form claims every shaft angle term cancels. Check it numerically.
+
+    Solved here the long way round - from the rolling condition on the real
+    pitch angles - so this is an independent check of the algebra in the
+    docstring, not a restatement of it.
+    """
+    g = compute_set(
+        BevelSetParams.with_defaults(2.0, z1, z2, shaft_angle=sigma_deg)
+    )
+    sigma, d1 = g.params.sigma, g.pinion.pitch_angle
+
+    # w1 = w2 (cos S - sin S cot d1), from the two components of
+    # w1*a1 - w2*a2 = k*u with w2 = 1.
+    from_geometry = math.cos(sigma) - math.sin(sigma) / math.tan(d1)
+    assert mesh.angular_velocity_ratio(z1, z2) == pytest.approx(
+        from_geometry, rel=1e-12
+    )
+
+
+@pytest.mark.parametrize("z1,z2", [(17, 43), (20, 20), (12, 60)])
+def test_the_members_always_turn_in_opposite_senses(z1, z2):
+    assert mesh.angular_velocity_ratio(z1, z2) < 0.0
+
+
+def test_mate_ratio_is_the_tooth_counts_in_selection_order():
+    """Pinion entity is selected first, so its count is the numerator."""
+    assert mesh.gear_mate_ratio(17, 43) == (17.0, 43.0)
+
+
+@pytest.mark.parametrize("z1,z2", [(17, 43), (20, 20), (12, 60)])
+def test_mate_ratio_and_velocity_ratio_agree_in_magnitude(z1, z2):
+    """A gear mate holds w1*r1 = w2*r2, so w1/w2 must come back out as r2/r1."""
+    r1, r2 = mesh.gear_mate_ratio(z1, z2)
+    assert r2 / r1 == pytest.approx(abs(mesh.angular_velocity_ratio(z1, z2)))
+
+
 # --- transform packing -----------------------------------------------------
 
 
