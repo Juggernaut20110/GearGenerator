@@ -15,7 +15,15 @@ import pytest
 tk = pytest.importorskip("tkinter")
 
 from gears.bevel import preview                      # noqa: E402
-from gears.gui import App, FIELDS              # noqa: E402
+from gears.spur import preview as spur_preview     # noqa: E402
+from gears.spur.params import SpurSetParams        # noqa: E402
+from gears.gui import (                            # noqa: E402
+    BEVEL_FIELDS as FIELDS,
+    App,
+    KINDS,
+    _bevel_result_lines,
+    _spur_result_lines,
+)
 from gears.bevel.params import BevelSetParams        # noqa: E402
 
 
@@ -216,7 +224,7 @@ def test_build_report_formatting_survives_a_stub_result(app):
         gear_ratio = (17.0, 43.0)
         articulates = True
 
-    lines = App._format_result(Result())
+    lines = App._format_result(Result(), _bevel_result_lines)
 
     assert lines[0] == "Build finished."
     assert any("17 teeth" in line for line in lines)
@@ -233,3 +241,148 @@ def test_a_failed_build_is_reported_in_the_messages_pane(app, monkeypatch):
 
     assert "loft cut" in app.messages.get("1.0", "end")
     assert app.build_button.instate(["!disabled"])  # ready to try again
+
+
+# --- switching gear type ---------------------------------------------------
+
+
+def test_bevel_is_what_the_window_opens_on(app):
+    assert app.kind_key.get() == "bevel"
+    assert app.kind.key == "bevel"
+    assert isinstance(app._params, BevelSetParams)
+
+
+def visible(app):
+    """The field rows currently gridded, in order."""
+    return [
+        attr for attr, row in app.field_rows.items() if row[1].winfo_manager()
+    ]
+
+
+@pytest.mark.parametrize("key", ["bevel", "spur"])
+def test_only_the_active_type_s_rows_are_shown(app, key):
+    app.kind_key.set(key)
+    app.on_kind_change()
+    assert visible(app) == [f.attr for f in KINDS[key].fields]
+
+
+@pytest.mark.parametrize("key", ["bevel", "spur"])
+def test_only_the_active_type_s_scenes_are_offered(app, key):
+    app.kind_key.set(key)
+    app.on_kind_change()
+    shown = [k for k, b in app.scene_buttons.items() if b.winfo_manager()]
+    assert set(shown) == {k for k, _ in KINDS[key].preview.SCENE_LABELS}
+    assert app.scene_key.get() in shown
+
+
+def test_switching_type_keeps_the_module_and_tooth_counts(app):
+    """The three inputs both types share should survive the switch.
+
+    They cannot be carried by re-parsing the widgets: the fields only the new
+    type has are still empty at that point, so the parse fails and a naive
+    implementation falls back to a stub.
+    """
+    set_input(app, "z2", "31")
+    app.kind_key.set("spur")
+    app.on_kind_change()
+
+    assert isinstance(app._params, SpurSetParams)
+    assert (app._params.module, app._params.z1, app._params.z2) == (2.0, 17, 31)
+
+
+def test_switching_type_re_sizes_the_blank(app):
+    """A face width that suited a bevel set is not the one a spur set wants."""
+    bevel_width = app._params.face_width
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    assert app._params.face_width == pytest.approx(
+        SpurSetParams.with_defaults(2.0, 17, 43).face_width
+    )
+    assert app._params.face_width != pytest.approx(bevel_width)
+
+
+def test_switching_back_and_forth_stays_valid(app):
+    for key in ("spur", "bevel", "spur", "bevel"):
+        app.kind_key.set(key)
+        app.on_kind_change()
+        assert app._geo is not None
+        assert app._scene is not None
+        assert app._validation.ok
+        assert isinstance(app._params, KINDS[key].params_cls)
+
+
+def test_a_spur_set_computes_and_draws(app):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    assert app._geo.centre_distance == pytest.approx(60.0)
+    assert app._scene.key == "transverse"
+    assert "centre distance" in [r.label for r in spur_preview.derived_rows(app._geo)]
+    assert app.build_button.instate(["!disabled"])
+
+
+def test_the_helix_angle_and_hand_reach_the_geometry(app):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    set_input(app, "helix_angle", "15")
+    app.vars["hand"].set("left")
+    app.refresh()
+
+    assert app._params.helix_angle == pytest.approx(15.0)
+    assert app._geo.pinion.hand == "left"
+    assert app._geo.gear.hand == "right"
+    assert app._geo.axial_contact_ratio > 0.0
+
+
+def test_the_hand_combobox_refuses_anything_else(app):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    app.vars["hand"].set("sideways")
+    app.refresh()
+    assert app._geo is None
+    assert "must be one of right, left" in app.messages.get("1.0", "end")
+
+
+def test_auto_size_uses_the_active_type_s_rules(app):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    set_input(app, "helix_angle", "15")
+    set_input(app, "face_width", "8")
+    app.auto_size()
+
+    # A helical set is sized to at least one axial pitch, which 8 mm is not.
+    sized = SpurSetParams.with_defaults(2.0, 17, 43, helix_angle=15.0)
+    assert app._params.face_width == pytest.approx(sized.face_width)
+    assert app._params.helix_angle == pytest.approx(15.0)
+
+
+def test_a_spur_status_line_names_spur_quantities(app):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    status = app._status_text()
+    assert "a 60.000 mm" in status
+    assert "cones" not in status
+
+
+def test_the_spur_build_report_survives_a_stub_result():
+    class Part:
+        member, teeth, body_count, face_count = "pinion", 17, 1, 90
+        path = r"C:\out\pinion.sldprt"
+
+    class Result:
+        pinion = gear = Part()
+        measured_centre_distance_mm = 60.0
+        centre_distance_error_mm = 0.0
+        measured_axis_angle_deg = 0.0
+        clocking_deg = 0.0
+        interference_count = 0
+        interference_volume_mm3 = 0.0
+        assembly_path = r"C:\out\spur.sldasm"
+        mates = ("pinion origin - assembly origin", "gear mate 17:43")
+        gear_ratio = (17.0, 43.0)
+        articulates = True
+
+    lines = App._format_result(Result(), _spur_result_lines)
+    text = "\n".join(lines)
+    assert "centre distance 60.0000 mm measured" in text
+    assert "parallel is 0" in text
+    assert "the set turns" in text

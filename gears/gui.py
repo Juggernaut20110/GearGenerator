@@ -26,10 +26,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .bevel import preview
-from .bevel.geometry import compute_set
+from .bevel import preview as bevel_preview
+from .bevel.geometry import compute_set as bevel_compute_set
 from .bevel.params import BevelSetParams
-from .bevel.validate import ValidationResult, validate
+from .bevel.validate import validate as bevel_validate
+from .spur import preview as spur_preview
+from .spur.geometry import compute_set as spur_compute_set
+from .spur.params import SpurSetParams
+from .spur.validate import validate as spur_validate
+from .preview import Scene, View, draw_scale_bar, draw_scene, write_dxf
+from .validate import ValidationResult
 
 REFRESH_DELAY_MS = 120
 BUILD_POLL_MS = 150
@@ -39,17 +45,28 @@ ZOOM_MIN, ZOOM_MAX = 0.1, 40.0
 
 @dataclass(frozen=True)
 class Field:
-    """One editable input, and how to read it back out of its Entry."""
+    """One editable input, and how to read it back out of its widget.
+
+    `choices` turns the row into a combobox instead of an entry. Only `hand`
+    needs it, and it needs it because a helical pair meshes only if its members
+    are wound opposite ways - which makes the pinion's hand a real input rather
+    than a detail to leave at a default.
+    """
 
     attr: str
     label: str
     kind: type
     unit: str = ""
+    choices: tuple[str, ...] = ()
 
     def parse(self, text: str):
         text = text.strip()
         if not text:
             raise ValueError("is empty")
+        if self.choices:
+            if text not in self.choices:
+                raise ValueError("must be one of " + ", ".join(self.choices))
+            return text
         try:
             value = float(text)
         except ValueError:
@@ -61,7 +78,7 @@ class Field:
         return value
 
 
-FIELDS: tuple[Field, ...] = (
+BEVEL_FIELDS: tuple[Field, ...] = (
     Field("module", "Module (outer)", float, "mm"),
     Field("z1", "Pinion teeth z1", int),
     Field("z2", "Gear teeth z2", int),
@@ -73,8 +90,128 @@ FIELDS: tuple[Field, ...] = (
     Field("min_root_thickness", "Min root thickness", float, "mm"),
 )
 
+SPUR_FIELDS: tuple[Field, ...] = (
+    Field("module", "Normal module", float, "mm"),
+    Field("z1", "Pinion teeth z1", int),
+    Field("z2", "Gear teeth z2", int),
+    Field("pressure_angle", "Normal pressure angle", float, "deg"),
+    Field("helix_angle", "Helix angle", float, "deg"),
+    Field("hand", "Hand (pinion)", str, "", ("right", "left")),
+    Field("face_width", "Face width", float, "mm"),
+    Field("bore", "Bore diameter", float, "mm"),
+    Field("hub_thickness", "Hub thickness", float, "mm"),
+)
+
+# The order the rows are laid out in. Every field of every type appears once,
+# and the rows belonging to the other type are hidden rather than destroyed - so
+# switching type keeps whatever module and tooth counts were already typed.
+ALL_FIELDS: tuple[Field, ...] = (
+    BEVEL_FIELDS[:5] + SPUR_FIELDS[4:6] + BEVEL_FIELDS[5:]
+)
+
 # Fields `with_defaults` can size for us, and so the "Auto" button rewrites.
-AUTO_FIELDS = ("face_width", "bore", "hub_thickness", "min_root_thickness")
+BEVEL_AUTO = ("face_width", "bore", "hub_thickness", "min_root_thickness")
+SPUR_AUTO = ("face_width", "bore", "hub_thickness")
+
+
+def _bevel_status(p, geo) -> str:
+    return (
+        f"m {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
+        f"shaft {p.shaft_angle:g} deg   "
+        f"cones {geo.pinion.pitch_angle_deg:.3f} / {geo.gear.pitch_angle_deg:.3f} deg"
+    )
+
+
+def _spur_status(p, geo) -> str:
+    helix = (
+        "straight teeth" if not p.helix_angle
+        else f"helix {p.helix_angle:g} deg {p.hand}"
+    )
+    return (
+        f"m_n {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
+        f"{helix}   a {geo.centre_distance:.3f} mm   "
+        f"contact {geo.total_contact_ratio:.3f}"
+    )
+
+
+def _bevel_result_lines(result) -> list[str]:
+    return [
+        f"  shaft angle {result.measured_shaft_angle_deg:.4f} deg measured "
+        f"({result.shaft_angle_error_deg:+.2e} deg error)",
+    ]
+
+
+def _spur_result_lines(result) -> list[str]:
+    return [
+        f"  centre distance {result.measured_centre_distance_mm:.4f} mm measured "
+        f"({result.centre_distance_error_mm:+.2e} mm error)",
+        f"  axes {result.measured_axis_angle_deg:.6f} deg apart (parallel is 0)",
+    ]
+
+
+@dataclass(frozen=True)
+class GearKind:
+    """Everything the window needs to know in order to show one kind of gear.
+
+    A registry rather than a branch in each method: the window is the same
+    window either way, and every difference between the two is a value - which
+    fields to show, which scenes exist, what the status line says, which builder
+    to call.
+    """
+
+    key: str
+    label: str
+    params_cls: type
+    compute_set: object
+    validate: object
+    preview: object
+    fields: tuple[Field, ...]
+    auto_fields: tuple[str, ...]
+    auto_kwargs: tuple[str, ...]
+    default_scene: str
+    status: object
+    result_lines: object
+    builder: str            # the name to import out of `gears.sw`
+
+    def fallback(self):
+        """A minimal set to fall back on before anything has been parsed."""
+        return self.params_cls(
+            module=1.0, z1=12, z2=12, face_width=1.0, bore=1.0, hub_thickness=1.0
+        )
+
+
+KINDS: dict[str, GearKind] = {
+    "bevel": GearKind(
+        key="bevel",
+        label="Bevel",
+        params_cls=BevelSetParams,
+        compute_set=bevel_compute_set,
+        validate=bevel_validate,
+        preview=bevel_preview,
+        fields=BEVEL_FIELDS,
+        auto_fields=BEVEL_AUTO,
+        auto_kwargs=("pressure_angle", "shaft_angle"),
+        default_scene="developed",
+        status=_bevel_status,
+        result_lines=_bevel_result_lines,
+        builder="build_set",
+    ),
+    "spur": GearKind(
+        key="spur",
+        label="Spur",
+        params_cls=SpurSetParams,
+        compute_set=spur_compute_set,
+        validate=spur_validate,
+        preview=spur_preview,
+        fields=SPUR_FIELDS,
+        auto_fields=SPUR_AUTO,
+        auto_kwargs=("pressure_angle", "helix_angle", "hand"),
+        default_scene="transverse",
+        status=_spur_status,
+        result_lines=_spur_result_lines,
+        builder="build_spur_set",
+    ),
+}
 
 TEXT_COLOURS = {
     "error": "#b0202a",
@@ -90,15 +227,18 @@ class App(ttk.Frame):
     def __init__(self, master: tk.Misc):
         super().__init__(master, padding=8)
 
-        self.vars = {f.attr: tk.StringVar() for f in FIELDS}
+        # One variable per field name across both types. Shared on purpose:
+        # switching type keeps the module and tooth counts already typed.
+        self.vars = {f.attr: tk.StringVar() for f in ALL_FIELDS}
+        self.kind_key = tk.StringVar(value="bevel")
         self.member = tk.StringVar(value="pinion")
-        self.scene_key = tk.StringVar(value="developed")
+        self.scene_key = tk.StringVar(value=KINDS["bevel"].default_scene)
 
         self._loading = False           # suppress refresh while writing Entries
         self._pending_refresh: str | None = None
-        self._params: BevelSetParams | None = None
+        self._params = None
         self._geo = None
-        self._scene: preview.Scene | None = None
+        self._scene: Scene | None = None
         self._validation = ValidationResult()
 
         self._zoom = 1.0
@@ -112,7 +252,59 @@ class App(ttk.Frame):
         for var in self.vars.values():
             var.trace_add("write", self._on_input_change)
 
+        self._apply_kind()
         self.set_params(BevelSetParams.with_defaults(2.0, 17, 43))
+
+    # -- the active gear type -----------------------------------------------
+
+    @property
+    def kind(self) -> GearKind:
+        return KINDS[self.kind_key.get()]
+
+    def on_kind_change(self) -> None:
+        """Switch gear type: re-show the right rows, scenes and defaults.
+
+        The parameters are rebuilt through `with_defaults` rather than carried
+        across field by field. The shared names mean the same thing in both types
+        - module, tooth counts, pressure angle - but the sizing rules do not, and
+        a face width that suited a bevel set is not the one a helical spur set
+        wants. Auto-sizing is the honest answer and it is one the user can
+        immediately overtype.
+        """
+        kind = self.kind
+        self._apply_kind()
+
+        # The previous type's parameters, which still carry the three inputs
+        # both types share. Reading the widgets instead would fail: the fields
+        # only the new type has are still empty.
+        base = self._params or kind.fallback()
+        self.set_params(
+            kind.params_cls.with_defaults(base.module, base.z1, base.z2)
+        )
+
+    def _apply_kind(self) -> None:
+        """Show the active type's rows and scenes; hide the other type's."""
+        kind = self.kind
+        shown = {f.attr: f for f in kind.fields}
+
+        for attr, row in self.field_rows.items():
+            field = shown.get(attr)
+            if field is None:
+                for widget in row:
+                    widget.grid_remove()
+            else:
+                for widget in row:
+                    widget.grid()
+                row[0].configure(text=field.label)
+                row[2].configure(text=field.unit)
+
+        wanted = [key for key, _ in kind.preview.SCENE_LABELS]
+        for button in self.scene_buttons.values():
+            button.pack_forget()
+        for key in wanted:
+            self.scene_buttons[key].pack(side="left", padx=(4, 0))
+        if self.scene_key.get() not in wanted:
+            self.scene_key.set(kind.default_scene)
 
     # -- widgets ------------------------------------------------------------
 
@@ -144,24 +336,39 @@ class App(ttk.Frame):
         box = ttk.LabelFrame(parent, text="Inputs", padding=8)
         box.grid(row=0, column=0, sticky="ew")
 
-        self.entries: dict[str, tk.Entry] = {}
-        for row, field in enumerate(FIELDS):
-            ttk.Label(box, text=field.label).grid(row=row, column=0, sticky="w", pady=2)
-            entry = tk.Entry(
-                box,
-                textvariable=self.vars[field.attr],
-                width=11,
-                justify="right",
-                relief="solid",
-                borderwidth=1,
-                highlightthickness=0,
-            )
-            entry.grid(row=row, column=1, sticky="e", padx=(10, 4), pady=2)
-            ttk.Label(box, text=field.unit, width=4).grid(row=row, column=2, sticky="w")
-            self.entries[field.attr] = entry
+        # A row per field of *either* type, hidden by `_apply_kind` when it does
+        # not belong to the one on show.
+        self.entries: dict[str, tk.Misc] = {}
+        self.field_rows: dict[str, tuple] = {}
+        for row, field in enumerate(ALL_FIELDS):
+            label = ttk.Label(box, text=field.label)
+            label.grid(row=row, column=0, sticky="w", pady=2)
+            if field.choices:
+                widget = ttk.Combobox(
+                    box,
+                    textvariable=self.vars[field.attr],
+                    values=list(field.choices),
+                    width=9,
+                    state="readonly",
+                )
+            else:
+                widget = tk.Entry(
+                    box,
+                    textvariable=self.vars[field.attr],
+                    width=11,
+                    justify="right",
+                    relief="solid",
+                    borderwidth=1,
+                    highlightthickness=0,
+                )
+            widget.grid(row=row, column=1, sticky="e", padx=(10, 4), pady=2)
+            unit = ttk.Label(box, text=field.unit, width=4)
+            unit.grid(row=row, column=2, sticky="w")
+            self.entries[field.attr] = widget
+            self.field_rows[field.attr] = (label, widget, unit)
 
         ttk.Button(box, text="Auto-size blank", command=self.auto_size).grid(
-            row=len(FIELDS), column=0, columnspan=3, sticky="ew", pady=(8, 0)
+            row=len(ALL_FIELDS), column=0, columnspan=3, sticky="ew", pady=(8, 0)
         )
 
     def _make_actions(self, parent: ttk.Frame) -> None:
@@ -199,6 +406,15 @@ class App(ttk.Frame):
         bar = ttk.Frame(parent)
         bar.grid(row=0, column=0, sticky="ew")
 
+        ttk.Label(bar, text="Type").pack(side="left")
+        for key, kind in KINDS.items():
+            ttk.Radiobutton(
+                bar, text=kind.label, value=key, variable=self.kind_key,
+                command=self.on_kind_change,
+            ).pack(side="left", padx=(4, 0))
+
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
+
         ttk.Label(bar, text="Member").pack(side="left")
         for value, label in (("pinion", "Pinion"), ("gear", "Gear")):
             ttk.Radiobutton(
@@ -209,11 +425,16 @@ class App(ttk.Frame):
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
 
         ttk.Label(bar, text="View").pack(side="left")
-        for value, label in preview.SCENE_LABELS:
-            ttk.Radiobutton(
-                bar, text=label, value=value, variable=self.scene_key,
-                command=self._on_view_change,
-            ).pack(side="left", padx=(4, 0))
+        # One button per scene of either type; `_apply_kind` packs the right set.
+        self.scene_buttons: dict[str, ttk.Radiobutton] = {}
+        for kind in KINDS.values():
+            for value, label in kind.preview.SCENE_LABELS:
+                if value in self.scene_buttons:
+                    continue
+                self.scene_buttons[value] = ttk.Radiobutton(
+                    bar, text=label, value=value, variable=self.scene_key,
+                    command=self._on_view_change,
+                )
 
         self.build_button = ttk.Button(
             bar, text="Build in SOLIDWORKS", command=self.build_in_solidworks
@@ -270,24 +491,29 @@ class App(ttk.Frame):
 
     # -- parameters ---------------------------------------------------------
 
-    def set_params(self, p: BevelSetParams) -> None:
-        """Write a parameter set into the Entries and refresh once."""
+    def set_params(self, p) -> None:
+        """Write a parameter set into the inputs and refresh once."""
         self._loading = True
         try:
-            for field in FIELDS:
+            for field in self.kind.fields:
                 value = getattr(p, field.attr)
-                self.vars[field.attr].set(
-                    str(value) if field.kind is int else f"{value:g}"
-                )
+                if field.choices:
+                    text = str(value)
+                elif field.kind is int:
+                    text = str(value)
+                else:
+                    text = f"{value:g}"
+                self.vars[field.attr].set(text)
         finally:
             self._loading = False
         self.refresh()
 
-    def read_params(self) -> tuple[BevelSetParams | None, list[str]]:
-        """Parse the Entries. Returns (params or None, per-field parse errors)."""
+    def read_params(self):
+        """Parse the inputs. Returns (params or None, per-field parse errors)."""
+        kind = self.kind
         values: dict[str, object] = {}
         problems: list[str] = []
-        for field in FIELDS:
+        for field in kind.fields:
             try:
                 values[field.attr] = field.parse(self.vars[field.attr].get())
             except ValueError as exc:
@@ -295,24 +521,26 @@ class App(ttk.Frame):
         if problems:
             return None, problems
 
-        base = self._params or BevelSetParams(
-            module=1.0, z1=12, z2=12, face_width=1.0, bore=1.0, hub_thickness=1.0
-        )
+        base = self._params
+        if base is None or not isinstance(base, kind.params_cls):
+            base = kind.fallback()
         return dataclasses.replace(base, **values), []
 
     def auto_size(self) -> None:
-        """Reset face width, bore and hub to what `with_defaults` would pick."""
+        """Reset the blank dimensions to what `with_defaults` would pick."""
+        kind = self.kind
         p, problems = self.read_params()
         if p is None:
             self._show_messages(problems, None)
             return
-        sized = BevelSetParams.with_defaults(
+        sized = kind.params_cls.with_defaults(
             p.module, p.z1, p.z2,
-            pressure_angle=p.pressure_angle,
-            shaft_angle=p.shaft_angle,
+            **{name: getattr(p, name) for name in kind.auto_kwargs},
         )
         self.set_params(
-            dataclasses.replace(p, **{a: getattr(sized, a) for a in AUTO_FIELDS})
+            dataclasses.replace(
+                p, **{a: getattr(sized, a) for a in kind.auto_fields}
+            )
         )
 
     # -- refresh cycle ------------------------------------------------------
@@ -331,7 +559,9 @@ class App(ttk.Frame):
     def refresh(self) -> None:
         """Parse, validate, recompute, redraw. Safe to call at any time."""
         p, problems = self.read_params()
-        for field in FIELDS:
+        for field in self.kind.fields:
+            if field.choices:
+                continue            # a readonly combobox cannot be mistyped
             bad = any(msg.startswith(field.label + ":") for msg in problems)
             self.entries[field.attr].configure(
                 foreground=TEXT_COLOURS["error"] if bad else "black"
@@ -348,11 +578,11 @@ class App(ttk.Frame):
             return
 
         self._params = p
-        self._validation = validate(p)
+        self._validation = self.kind.validate(p)
 
         geo_error: str | None = None
         try:
-            self._geo = compute_set(p)
+            self._geo = self.kind.compute_set(p)
         except Exception as exc:                     # nonsense inputs, not a bug
             self._geo = None
             geo_error = f"geometry could not be computed: {exc}"
@@ -373,13 +603,7 @@ class App(ttk.Frame):
         warnings = len(self._validation.warnings)
         if self._geo is None:
             return "no geometry"
-        p = self._params
-        head = (
-            f"m {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
-            f"shaft {p.shaft_angle:g} deg   "
-            f"cones {self._geo.pinion.pitch_angle_deg:.3f} / "
-            f"{self._geo.gear.pitch_angle_deg:.3f} deg"
-        )
+        head = self.kind.status(self._params, self._geo)
         verdict = (
             "buildable" if not errors else f"{errors} error(s) - build blocked"
         )
@@ -452,7 +676,7 @@ class App(ttk.Frame):
     def _refresh_readout(self, geo) -> None:
         scroll_top = self.readout.yview()[0]
         self._clear_readout()
-        for row in preview.derived_rows(geo):
+        for row in self.kind.preview.derived_rows(geo):
             self.readout.insert(
                 "", "end",
                 values=(row.label, row.pinion, row.gear, row.unit),
@@ -471,7 +695,7 @@ class App(ttk.Frame):
             self._scene = None
             return
         try:
-            self._scene = preview.build_scene(
+            self._scene = self.kind.preview.build_scene(
                 self._geo, self.member.get(), self.scene_key.get()
             )
         except Exception as exc:                     # unbuildable profile, not a bug
@@ -486,8 +710,8 @@ class App(ttk.Frame):
         self._zoom, self._pan = 1.0, [0.0, 0.0]
         self._redraw()
 
-    def _view(self, width: float, height: float) -> preview.View:
-        return preview.View.fit(
+    def _view(self, width: float, height: float) -> View:
+        return View.fit(
             self._scene.bounds(), width, height,
             zoom=self._zoom, pan=tuple(self._pan),
         )
@@ -508,8 +732,8 @@ class App(ttk.Frame):
             return
 
         view = self._view(width, height)
-        preview.draw_scene(self.canvas, self._scene, view)
-        preview.draw_scale_bar(self.canvas, view, width, height)
+        draw_scene(self.canvas, self._scene, view)
+        draw_scale_bar(self.canvas, view, width, height)
 
     def _on_drag_start(self, event) -> None:
         self._drag = (event.x, event.y)
@@ -561,7 +785,7 @@ class App(ttk.Frame):
         )
         if not path:
             return
-        written = preview.write_dxf(path, self._scene)
+        written = write_dxf(path, self._scene)
         self._set_status(f"wrote {written}")
 
     def export_csv(self) -> None:
@@ -576,7 +800,7 @@ class App(ttk.Frame):
         )
         if not path:
             return
-        written = preview.write_csv(path, self._geo, self.member.get())
+        written = self.kind.preview.write_csv(path, self._geo, self.member.get())
         self._set_status(f"wrote {written}")
 
     def load_preset_dialog(self) -> None:
@@ -590,7 +814,7 @@ class App(ttk.Frame):
 
     def load_preset(self, path: Path) -> None:
         try:
-            self.set_params(BevelSetParams.from_json(path))
+            self.set_params(self.kind.params_cls.from_json(path))
         except Exception as exc:
             messagebox.showerror("Load parameters", f"Could not load {path}:\n\n{exc}")
             return
@@ -632,8 +856,11 @@ class App(ttk.Frame):
             return
 
         geo = self._geo
+        kind = self.kind
         self._build_thread = threading.Thread(
-            target=self._build_worker, args=(geo, Path(out_dir)), daemon=True
+            target=self._build_worker,
+            args=(geo, Path(out_dir), kind.builder, kind.result_lines),
+            daemon=True,
         )
         self._build_thread.start()
         self._update_buttons()
@@ -641,7 +868,7 @@ class App(ttk.Frame):
         self.append_message(["Build started - SOLIDWORKS is working."], "info")
         self.after(BUILD_POLL_MS, self._poll_build)
 
-    def _build_worker(self, geo, out_dir: Path) -> None:
+    def _build_worker(self, geo, out_dir: Path, builder: str, result_lines) -> None:
         """Runs off the UI thread. Formats its report before handing it back.
 
         Nothing COM-flavoured may cross back to the tkinter thread: by the time
@@ -649,7 +876,10 @@ class App(ttk.Frame):
         `CoUninitialize`, so any surviving interface pointer would be dead.
         """
         try:
-            from .sw import SwSession, build_set
+            from . import sw
+
+            SwSession = sw.SwSession
+            build = getattr(sw, builder)
         except ImportError as exc:
             self._build_queue.put(
                 ("error", [f"pywin32 is not available: {exc}",
@@ -659,15 +889,15 @@ class App(ttk.Frame):
 
         try:
             with SwSession() as session:
-                result = build_set(session, geo, out_dir)
-                lines = self._format_result(result)
+                result = build(session, geo, out_dir)
+                lines = self._format_result(result, result_lines)
         except Exception as exc:
             self._build_queue.put(("error", [f"{type(exc).__name__}: {exc}"]))
             return
         self._build_queue.put(("done", lines))
 
     @staticmethod
-    def _format_result(result) -> list[str]:
+    def _format_result(result, result_lines) -> list[str]:
         lines = ["Build finished."]
         for part in (result.pinion, result.gear):
             lines.append(
@@ -676,10 +906,7 @@ class App(ttk.Frame):
             )
             if part.path:
                 lines.append(f"    {part.path}")
-        lines.append(
-            f"  shaft angle {result.measured_shaft_angle_deg:.4f} deg measured "
-            f"({result.shaft_angle_error_deg:+.2e} deg error)"
-        )
+        lines.extend(result_lines(result))
         lines.append(f"  gear clocked {result.clocking_deg:.4f} deg")
         if result.mates:
             num, den = result.gear_ratio
