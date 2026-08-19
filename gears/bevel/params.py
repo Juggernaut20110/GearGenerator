@@ -6,14 +6,14 @@ downstream of `geometry.compute_set` works in radians.
 
 from __future__ import annotations
 
-import json
 import math
-from dataclasses import asdict, dataclass, field, fields
-from pathlib import Path
+from dataclasses import dataclass
+
+from ..params_io import JsonParams
 
 
 @dataclass(frozen=True)
-class BevelSetParams:
+class BevelSetParams(JsonParams):
     """The nine editable inputs, plus two form factors kept out of the GUI."""
 
     module: float               # mm, transverse module at the outer (large) end
@@ -79,13 +79,4 @@ class BevelSetParams:
         defaults.update(overrides)
         return cls(module=module, z1=z1, z2=z2, **defaults)
 
-    # --- persistence, used by the GUI's preset save/load ---
-
-    def to_json(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
-
-    @classmethod
-    def from_json(cls, path: str | Path) -> "BevelSetParams":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+    # Preset save/load for the GUI comes from JsonParams.

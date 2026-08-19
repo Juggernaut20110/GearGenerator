@@ -1,0 +1,440 @@
+"""Closed-form checks on the spur geometry engine. SOLIDWORKS is not involved."""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from gears.involute import inv, top_land
+from gears.spur.geometry import (
+    ADDENDUM_FACTOR,
+    DEDENDUM_FACTOR,
+    blank_outline,
+    compute_set,
+    end_overshoot,
+    guide_helix,
+    phase_at,
+    to_axial_3d,
+    tooth_space_section,
+    undercut_limit,
+)
+from gears.spur.params import SpurSetParams
+
+# The anchor cases, chosen to sit beside the bevel one so the numbers compare:
+# m=2, 17 x 43 teeth, 20 deg. Straight, and the same set given a 15 deg helix.
+ANCHOR = SpurSetParams.with_defaults(2.0, 17, 43)
+ANCHOR_HELICAL = SpurSetParams.with_defaults(2.0, 17, 43, helix_angle=15.0)
+
+MEMBERS = ["pinion", "gear"]
+BETAS = [0.0, 10.0, 15.0, 30.0]
+TOOTH_COUNTS = [(17, 43), (20, 20), (12, 60)]
+
+
+@pytest.fixture
+def geo():
+    return compute_set(ANCHOR)
+
+
+@pytest.fixture
+def helical():
+    return compute_set(ANCHOR_HELICAL)
+
+
+def sets(beta=0.0, z1=17, z2=43, **kw):
+    return compute_set(SpurSetParams.with_defaults(2.0, z1, z2, helix_angle=beta, **kw))
+
+
+# --- the transverse plane --------------------------------------------------
+
+
+def test_straight_teeth_leave_the_normal_values_alone(geo):
+    """At beta = 0 the transverse and normal quantities must coincide exactly."""
+    assert geo.transverse_module == pytest.approx(2.0, rel=1e-15)
+    assert geo.transverse_pressure_angle == pytest.approx(math.radians(20.0), rel=1e-15)
+    assert geo.axial_contact_ratio == 0.0
+    assert geo.axial_pitch == math.inf
+
+
+def test_anchor_transverse_conversions(helical):
+    assert helical.transverse_module == pytest.approx(2.0 / math.cos(math.radians(15)))
+    assert helical.transverse_module == pytest.approx(2.07055, abs=1e-5)
+    assert math.degrees(helical.transverse_pressure_angle) == pytest.approx(
+        20.6469, abs=1e-4
+    )
+
+
+@pytest.mark.parametrize("beta", BETAS)
+def test_transverse_pressure_angle_matches_its_definition(beta):
+    g = sets(beta)
+    p = g.params
+    assert math.tan(g.transverse_pressure_angle) == pytest.approx(
+        math.tan(p.alpha_n) / math.cos(p.beta), rel=1e-14
+    )
+
+
+# --- radii -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_base_radius_is_the_pitch_radius_times_cos_alpha_t(member, beta):
+    g = sets(beta)
+    m = g.member(member)
+    assert m.base_r == pytest.approx(
+        m.pitch_r * math.cos(g.transverse_pressure_angle), rel=1e-14
+    )
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_tooth_depths_are_measured_on_the_normal_module(member, beta):
+    """The depths are normal quantities even though the radii are transverse ones."""
+    g = sets(beta)
+    m = g.member(member)
+    assert m.tip_r - m.pitch_r == pytest.approx(ADDENDUM_FACTOR * 2.0, rel=1e-14)
+    assert m.pitch_r - m.root_r == pytest.approx(DEDENDUM_FACTOR * 2.0, rel=1e-14)
+
+
+@pytest.mark.parametrize("beta", BETAS)
+@pytest.mark.parametrize("z1,z2", TOOTH_COUNTS)
+def test_centre_distance_is_the_sum_of_the_pitch_radii(beta, z1, z2):
+    g = sets(beta, z1, z2)
+    assert g.centre_distance == pytest.approx(g.pinion.pitch_r + g.gear.pitch_r, rel=1e-14)
+
+
+@pytest.mark.parametrize("beta", BETAS)
+@pytest.mark.parametrize("z1,z2", TOOTH_COUNTS)
+def test_centre_distance_solved_back_out_of_the_base_radii(beta, z1, z2):
+    """a = (rb1 + rb2) / cos(alpha_t) - the involute's own statement of the same fact.
+
+    Two independent routes to the centre distance agreeing is what says the base
+    circles and the pressure angle belong to each other.
+    """
+    g = sets(beta, z1, z2)
+    from_base = (g.pinion.base_r + g.gear.base_r) / math.cos(
+        g.transverse_pressure_angle
+    )
+    assert from_base == pytest.approx(g.centre_distance, rel=1e-13)
+
+
+# --- tooth thickness -------------------------------------------------------
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_tooth_thickness_at_the_pitch_circle_is_half_the_pitch(member, beta):
+    """The defining property of a standard, unshifted tooth."""
+    g = sets(beta)
+    m = g.member(member)
+    assert top_land(m.pitch_r, m.base_r, m.psi0) == pytest.approx(
+        math.pi * g.transverse_module / 2.0, rel=1e-12
+    )
+
+
+@pytest.mark.parametrize("backlash", [0.0, 0.05, 0.2])
+def test_backlash_comes_straight_off_the_tooth_thickness(backlash):
+    g = compute_set(SpurSetParams.with_defaults(2.0, 17, 43, backlash=backlash))
+    m = g.pinion
+    assert top_land(m.pitch_r, m.base_r, m.psi0) == pytest.approx(
+        math.pi * g.transverse_module / 2.0 - backlash / 2.0, rel=1e-12
+    )
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_psi0_is_the_half_thickness_carried_back_to_the_base_circle(geo, member):
+    m = geo.member(member)
+    assert m.psi0 == pytest.approx(
+        top_land(m.pitch_r, m.base_r, m.psi0) / (2.0 * m.pitch_r)
+        + inv(geo.transverse_pressure_angle),
+        rel=1e-14,
+    )
+
+
+# --- contact ratio ---------------------------------------------------------
+
+
+def test_anchor_contact_ratios(geo, helical):
+    assert geo.transverse_contact_ratio == pytest.approx(1.6211, abs=1e-4)
+    assert helical.transverse_contact_ratio == pytest.approx(1.5480, abs=1e-4)
+    # with_defaults sizes a helical face width at exactly one axial pitch
+    assert helical.axial_contact_ratio == pytest.approx(1.0, abs=5e-4)
+
+
+@pytest.mark.parametrize("beta", BETAS)
+@pytest.mark.parametrize("z1,z2", TOOTH_COUNTS)
+def test_a_standard_pair_always_keeps_a_tooth_pair_in_contact(beta, z1, z2):
+    assert sets(beta, z1, z2).transverse_contact_ratio > 1.0
+
+
+def test_axial_contact_ratio_is_the_face_width_in_axial_pitches(helical):
+    assert helical.axial_contact_ratio == pytest.approx(
+        helical.params.face_width / helical.axial_pitch, rel=1e-12
+    )
+
+
+def test_undercut_limit_is_17_teeth_at_20_degrees_straight():
+    assert undercut_limit(math.radians(20.0), 0.0) == pytest.approx(17.0973, abs=1e-4)
+
+
+@pytest.mark.parametrize("beta", [10.0, 15.0, 30.0])
+def test_a_helix_lets_a_gear_carry_fewer_teeth_before_undercutting(beta):
+    g = sets(beta)
+    assert undercut_limit(g.transverse_pressure_angle, g.params.beta) < undercut_limit(
+        math.radians(20.0), 0.0
+    )
+
+
+# --- hand and twist --------------------------------------------------------
+
+
+@pytest.mark.parametrize("beta", BETAS)
+def test_the_two_members_are_cut_with_opposite_hands(beta):
+    """Forced, not conventional: the placement has no flip in it."""
+    g = sets(beta)
+    assert g.pinion.beta == pytest.approx(-g.gear.beta, rel=1e-15)
+    if beta != 0.0:
+        assert {g.pinion.hand, g.gear.hand} == {"right", "left"}
+    else:
+        assert g.pinion.hand == g.gear.hand == "none"
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_the_pinion_takes_the_hand_that_was_asked_for(hand):
+    g = compute_set(
+        SpurSetParams.with_defaults(2.0, 17, 43, helix_angle=15.0, hand=hand)
+    )
+    assert g.pinion.hand == hand
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_twist_is_the_face_width_over_the_lead(member, beta):
+    g = sets(beta)
+    m = g.member(member)
+    assert m.twist == pytest.approx(
+        g.params.face_width * math.tan(m.beta) / m.pitch_r, rel=1e-14
+    )
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_both_members_share_one_axial_pitch(helical, member):
+    """What actually has to match for two helical gears to mesh on parallel axes.
+
+    Not the twist angles - those differ, because the radii do. The axial pitch is
+    the distance along the axis for one full tooth pitch of twist, and it is the
+    same for both members precisely when the helix angles are equal and opposite.
+    """
+    m = helical.member(member)
+    axial_pitch = m.angular_pitch / abs(m.twist / helical.params.face_width)
+    assert axial_pitch == pytest.approx(helical.axial_pitch, rel=1e-12)
+
+
+def test_straight_teeth_do_not_twist(geo):
+    assert geo.pinion.twist == 0.0
+    assert geo.gear.twist == 0.0
+    assert phase_at(geo, "pinion", 999.0) == 0.0
+
+
+# --- the tooth space section -----------------------------------------------
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_section_loop_is_closed_and_non_degenerate(beta, member):
+    loop = tooth_space_section(sets(beta), member).loop_2d
+    assert len(loop) > 20
+    assert math.dist(loop[0], loop[-1]) > 1e-6      # closing point dropped, not repeated
+    for a, b in zip(loop, loop[1:]):
+        assert math.dist(a, b) > 1e-12
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_section_runs_counter_clockwise(beta, member):
+    loop = tooth_space_section(sets(beta), member).loop_2d
+    area = 0.5 * sum(
+        loop[i][0] * loop[(i + 1) % len(loop)][1]
+        - loop[(i + 1) % len(loop)][0] * loop[i][1]
+        for i in range(len(loop))
+    )
+    assert area > 0.0
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_section_is_symmetric_about_the_x_axis(beta, member):
+    """The space is centred on angle 0, so every point has a mirror partner."""
+    loop = tooth_space_section(sets(beta), member).loop_2d
+    ys = sorted(round(y, 9) for _, y in loop)
+    assert all(a == pytest.approx(-b, abs=1e-9) for a, b in zip(ys, reversed(ys)))
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_section_spans_exactly_root_to_cap(beta, member):
+    s = tooth_space_section(sets(beta), member)
+    radii = [math.hypot(x, y) for x, y in s.loop_2d]
+    assert min(radii) == pytest.approx(s.r_root, abs=1e-9)
+    assert max(radii) == pytest.approx(s.r_cap, abs=1e-9)
+    assert s.r_cap > s.r_tip
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_cut_cap_clears_the_blank_radially(geo, member):
+    """The cut must reach past the tip or it leaves a ring of uncut material."""
+    s = tooth_space_section(geo, member)
+    assert s.r_cap > geo.member(member).tip_r
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_root_fillet_is_fitted_for_the_anchor_case(geo, member):
+    assert tooth_space_section(geo, member).filleted
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_every_section_is_the_same_shape(beta, member):
+    """The one real simplification over the bevel case: only the phase changes.
+
+    A bevel section is a different size at every cone distance. A spur section
+    is not, so the builder can generate the profile once and place it twice.
+    """
+    g = sets(beta)
+    a = tooth_space_section(g, member, z=0.0)
+    b = tooth_space_section(g, member, z=g.params.face_width)
+    assert a.loop_2d == b.loop_2d
+    assert (a.r_root, a.r_tip, a.r_cap) == (b.r_root, b.r_tip, b.r_cap)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_the_back_section_is_the_front_one_rotated_by_the_twist(beta, member):
+    g = sets(beta)
+    m = g.member(member)
+    b = g.params.face_width
+    front = tooth_space_section(g, member, z=0.0).loop_3d()
+    back = tooth_space_section(g, member, z=b).loop_3d()
+    c, s = math.cos(m.twist), math.sin(m.twist)
+    for (x, y, z), q in zip(front, back):
+        assert z == pytest.approx(0.0, abs=1e-12)
+        assert math.dist((x * c - y * s, x * s + y * c, b), q) < 1e-12
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_clocking_reference_plane_is_unrotated(geo, member):
+    """z = 0 is where a pair is phased, so nothing may have twisted by it."""
+    for g in (geo, compute_set(ANCHOR_HELICAL)):
+        assert tooth_space_section(g, member, z=0.0).phase == 0.0
+
+
+# --- overshoot and the guide curve -----------------------------------------
+
+
+@pytest.mark.parametrize("beta", BETAS)
+def test_sections_are_pushed_clear_of_both_end_faces(beta):
+    """A cut finishing tangent to a real face is rejected as zero-thickness."""
+    g = sets(beta)
+    ov = end_overshoot(g)
+    assert ov > 0.0
+    assert -ov < 0.0
+    assert g.params.face_width + ov > g.params.face_width
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", [10.0, 15.0, 30.0])
+def test_the_guide_helix_touches_the_cap_vertex_of_both_end_sections(beta, member):
+    """The property a guided loft cut depends on.
+
+    A guide curve that merely passes *near* a spline is the classic way such a
+    loft fails, so `split_cap` puts a real vertex on the space centreline and the
+    guide is generated to pass through it. If this ever stops holding, the loft
+    stops being buildable - which is why it is asserted here rather than
+    discovered in SOLIDWORKS.
+    """
+    g = sets(beta)
+    ov = end_overshoot(g)
+    z_lo, z_hi = -ov, g.params.face_width + ov
+    guide = guide_helix(g, member, z_lo, z_hi)
+
+    for z in (z_lo, z_hi):
+        segments = tooth_space_section(g, member, z=z, split_cap=True).segments_3d()
+        vertex = segments["cap_neg"][-1]
+        assert segments["cap_pos"][0] == vertex
+        assert min(math.dist(vertex, point) for point in guide) < 1e-9
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", [10.0, 15.0, 30.0])
+def test_the_guide_is_a_helix_of_constant_radius(beta, member):
+    g = sets(beta)
+    guide = guide_helix(g, member, 0.0, g.params.face_width)
+    r_cap = tooth_space_section(g, member).r_cap
+    for x, y, _ in guide:
+        assert math.hypot(x, y) == pytest.approx(r_cap, abs=1e-12)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_splitting_the_cap_does_not_change_the_loop(geo, member):
+    plain = tooth_space_section(geo, member, split_cap=False)
+    split = tooth_space_section(geo, member, split_cap=True)
+    assert plain.loop_2d == split.loop_2d
+    assert "cap" not in split.segments
+    assert split.segments["cap_neg"] + split.segments["cap_pos"][1:] == (
+        plain.segments["cap"]
+    )
+
+
+def test_to_axial_3d_is_a_plain_lift_when_nothing_has_twisted():
+    assert to_axial_3d(3.0, 4.0, 0.0, 7.0) == pytest.approx((3.0, 4.0, 7.0))
+
+
+# --- the blank -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_blank_runs_from_the_bore_to_the_tip_and_back(beta, member):
+    g = sets(beta)
+    outline = blank_outline(g, member)
+    m = g.member(member)
+    radii = [r for r, _ in outline]
+    heights = [z for _, z in outline]
+    assert min(radii) == pytest.approx(g.params.bore / 2.0)
+    assert max(radii) == pytest.approx(m.tip_r)
+    assert min(heights) == 0.0
+    assert max(heights) == pytest.approx(g.params.face_width + g.params.hub_thickness)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_blank_front_face_sits_at_the_origin(geo, member):
+    """Front face at z = 0 is what the whole coordinate system is anchored on."""
+    outline = blank_outline(geo, member)
+    assert outline[0][1] == 0.0
+    assert outline[1][1] == 0.0
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_blank_covers_the_full_face_width_at_the_tip_radius(geo, member):
+    outline = blank_outline(geo, member)
+    m = geo.member(member)
+    at_tip = [z for r, z in outline if r == pytest.approx(m.tip_r)]
+    assert min(at_tip) == 0.0
+    assert max(at_tip) == pytest.approx(geo.params.face_width)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_the_hub_never_eats_into_the_teeth(geo, member):
+    """A boss standing proud of the root circle would bridge the tooth spaces."""
+    outline = blank_outline(geo, member)
+    behind = [r for r, z in outline if z > geo.params.face_width + 1e-9]
+    assert behind
+    assert max(behind) <= geo.member(member).root_r + 1e-9
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_no_hub_leaves_a_plain_cylinder(member):
+    g = compute_set(SpurSetParams.with_defaults(2.0, 17, 43, hub_thickness=0.0))
+    outline = blank_outline(g, member)
+    assert len(outline) == 4
+    assert max(z for _, z in outline) == pytest.approx(g.params.face_width)
