@@ -39,6 +39,7 @@ SW_SAVE_AS_OPTIONS_SILENT = 1     # swSaveAsOptions_e
 # not in the order the toolbar lists them, and swMateGEAR sits between
 # swMateCAMFOLLOWER and swMateWIDTH.
 SW_MATE_COINCIDENT = 0            # swMateType_e
+SW_MATE_DISTANCE = 5
 SW_MATE_ANGLE = 6
 SW_MATE_GEAR = 10
 
