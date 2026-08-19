@@ -169,7 +169,7 @@ def test_auto_size_rewrites_only_the_blank_fields(app):
 SHARED_SCENES = {"trace"}
 
 
-@pytest.mark.parametrize("kind_key", ["bevel", "spur"])
+@pytest.mark.parametrize("kind_key", ["bevel", "spur", "planetary"])
 def test_every_field_round_trips_through_format_and_parse(kind_key):
     """`format` writes the widget, `parse` reads it back - they must agree.
 
@@ -279,6 +279,17 @@ def test_build_report_formatting_survives_a_stub_result(app):
         mates = ("pinion apex - assembly origin", "gear mate 17:43")
         gear_ratio = (17.0, 43.0)
         articulates = True
+
+        # Mirrors the real result classes. The formatter reads these rather
+        # than a fixed pinion and gear, because a planetary build has three
+        # parts and two meshes.
+        @property
+        def parts(self):
+            return (self.pinion, self.gear)
+
+        @property
+        def gear_ratios(self):
+            return (self.gear_ratio,)
 
     lines = App._format_result(Result(), _bevel_result_lines)
 
@@ -437,8 +448,119 @@ def test_the_spur_build_report_survives_a_stub_result():
         gear_ratio = (17.0, 43.0)
         articulates = True
 
+        # Mirrors the real result classes. The formatter reads these rather
+        # than a fixed pinion and gear, because a planetary build has three
+        # parts and two meshes.
+        @property
+        def parts(self):
+            return (self.pinion, self.gear)
+
+        @property
+        def gear_ratios(self):
+            return (self.gear_ratio,)
+
     lines = App._format_result(Result(), _spur_result_lines)
     text = "\n".join(lines)
     assert "centre distance 60.0000 mm measured" in text
     assert "parallel is 0" in text
     assert "the set turns" in text
+
+
+# --- three members rather than two -----------------------------------------
+
+
+def test_each_type_shows_only_its_own_member_buttons(app):
+    """A pair has a pinion and a gear; a planetary train has three members."""
+    for key, expected in (
+        ("bevel", ("pinion", "gear")),
+        ("spur", ("pinion", "gear")),
+        ("planetary", ("sun", "planet", "ring")),
+    ):
+        app.kind_key.set(key)
+        app.on_kind_change()
+        assert KINDS[key].members == expected
+        assert app.member.get() in expected
+        shown = {
+            name for name, button in app.member_buttons.items()
+            if button.winfo_manager()
+        }
+        assert shown == set(expected)
+
+
+def test_the_third_readout_column_appears_only_for_a_planetary_set(app):
+    """A gear pair's readout must look exactly as it did before trains existed."""
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    assert "third" not in app.readout.cget("displaycolumns")
+    assert app.readout.heading("first")["text"] == "Pinion"
+
+    app.kind_key.set("planetary")
+    app.on_kind_change()
+    assert "third" in app.readout.cget("displaycolumns")
+    assert app.readout.heading("first")["text"] == "Sun"
+    assert app.readout.heading("third")["text"] == "Ring"
+
+
+def test_switching_to_planetary_carries_the_tooth_counts_across(app):
+    """The field names differ - z1/z2 against z_sun/z_planet - so this is wiring.
+
+    `GearKind.count_attrs` is what makes it work, and reading the counts through
+    the kind that *wrote* the params object is what makes it work in both
+    directions.
+    """
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    set_input(app, "z1", "24")
+    set_input(app, "z2", "18")
+
+    app.kind_key.set("planetary")
+    app.on_kind_change()
+    assert (app._params.z_sun, app._params.z_planet) == (24, 18)
+    assert app._params.z_ring == 60
+
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    assert (app._params.z1, app._params.z2) == (24, 18)
+
+
+def test_a_planetary_set_computes_and_draws(app):
+    app.kind_key.set("planetary")
+    app.on_kind_change()
+    set_input(app, "z_sun", "24")
+    set_input(app, "z_planet", "18")
+    set_input(app, "n_planets", "3")
+
+    assert app._validation.ok
+    assert app._geo is not None
+    assert app._geo.ring.z == 60
+
+    app.scene_key.set("train")
+    app._on_view_change()
+    assert app._scene is not None
+    assert app._scene.key == "train"
+    # Sun + ring + every planet, so a good deal more than a pair's two profiles.
+    assert len(app._scene.polylines) > 100
+
+
+def test_a_failed_assembly_condition_blocks_the_build_button(app):
+    app.kind_key.set("planetary")
+    app.on_kind_change()
+    set_input(app, "z_sun", "27")
+    set_input(app, "z_planet", "17")
+    set_input(app, "n_planets", "3")
+
+    assert not app._validation.ok
+    assert app.build_button.instate(["disabled"])
+    assert "not divisible" in app.messages.get("1.0", "end")
+
+
+def test_the_planetary_status_line_names_train_quantities(app):
+    app.kind_key.set("planetary")
+    app.on_kind_change()
+    set_input(app, "z_sun", "24")
+    set_input(app, "z_planet", "18")
+
+    status = app.status.cget("text")
+    assert "ring 60" in status
+    assert "3.500:1 with the ring held" in status
+    assert "assembles" in status

@@ -30,6 +30,10 @@ from .bevel import preview as bevel_preview
 from .bevel.geometry import compute_set as bevel_compute_set
 from .bevel.params import BevelSetParams
 from .bevel.validate import validate as bevel_validate
+from .planetary import preview as planetary_preview
+from .planetary.geometry import compute_set as planetary_compute_set
+from .planetary.params import PlanetarySetParams
+from .planetary.validate import validate as planetary_validate
 from .spur import preview as spur_preview
 from .spur.geometry import compute_set as spur_compute_set
 from .spur.params import SpurSetParams
@@ -126,6 +130,20 @@ SPUR_FIELDS: tuple[Field, ...] = (
     Field("rim_thickness", "Ring rim thickness", float, "mm"),
 )
 
+PLANETARY_FIELDS: tuple[Field, ...] = (
+    Field("module", "Normal module", float, "mm"),
+    Field("z_sun", "Sun teeth", int),
+    Field("z_planet", "Planet teeth", int),
+    Field("n_planets", "Number of planets", int),
+    Field("pressure_angle", "Normal pressure angle", float, "deg"),
+    Field("helix_angle", "Helix angle", float, "deg"),
+    Field("hand", "Hand (sun)", str, "", ("right", "left")),
+    Field("face_width", "Face width", float, "mm"),
+    Field("bore", "Sun bore diameter", float, "mm"),
+    Field("hub_thickness", "Hub thickness", float, "mm"),
+    Field("rim_thickness", "Ring rim thickness", float, "mm"),
+)
+
 # The order the rows are laid out in. Every field of every type appears once,
 # and the rows belonging to the other type are hidden rather than destroyed - so
 # switching type keeps whatever module and tooth counts were already typed.
@@ -136,11 +154,11 @@ SPUR_FIELDS: tuple[Field, ...] = (
 # spur set is still there if you switch to a spiral bevel one.
 def _ordered_fields() -> tuple[Field, ...]:
     seen: dict[str, Field] = {}
-    for field in BEVEL_FIELDS + SPUR_FIELDS:
+    for field in BEVEL_FIELDS + SPUR_FIELDS + PLANETARY_FIELDS:
         seen.setdefault(field.attr, field)
     order = (
-        "module", "z1", "z2", "internal", "pressure_angle",
-        "shaft_angle", "spiral_angle", "helix_angle", "hand",
+        "module", "z1", "z2", "z_sun", "z_planet", "n_planets", "internal",
+        "pressure_angle", "shaft_angle", "spiral_angle", "helix_angle", "hand",
         "face_width", "bore", "hub_thickness", "rim_thickness",
         "min_root_thickness",
     )
@@ -152,6 +170,7 @@ ALL_FIELDS: tuple[Field, ...] = _ordered_fields()
 # Fields `with_defaults` can size for us, and so the "Auto" button rewrites.
 BEVEL_AUTO = ("face_width", "bore", "hub_thickness", "min_root_thickness")
 SPUR_AUTO = ("face_width", "bore", "hub_thickness", "rim_thickness")
+PLANETARY_AUTO = ("face_width", "bore", "hub_thickness", "rim_thickness")
 
 
 def _bevel_status(p, geo) -> str:
@@ -179,6 +198,20 @@ def _spur_status(p, geo) -> str:
     )
 
 
+def _planetary_status(p, geo) -> str:
+    helix = (
+        "straight teeth" if not p.helix_angle
+        else f"helix {p.helix_angle:g} deg {p.hand}"
+    )
+    fits = "assembles" if p.assembly_remainder == 0 else "WILL NOT ASSEMBLE"
+    return (
+        f"m_n {p.module:g}   sun {p.z_sun} / {p.n_planets} planets of "
+        f"{p.z_planet} / ring {p.z_ring}   {helix}   "
+        f"a {geo.centre_distance:.3f} mm   "
+        f"{p.ratio_carrier_to_sun:.3f}:1 with the ring held   {fits}"
+    )
+
+
 def _bevel_result_lines(result) -> list[str]:
     return [
         f"  shaft angle {result.measured_shaft_angle_deg:.4f} deg measured "
@@ -191,6 +224,14 @@ def _spur_result_lines(result) -> list[str]:
         f"  centre distance {result.measured_centre_distance_mm:.4f} mm measured "
         f"({result.centre_distance_error_mm:+.2e} mm error)",
         f"  axes {result.measured_axis_angle_deg:.6f} deg apart (parallel is 0)",
+    ]
+
+
+def _planetary_result_lines(result) -> list[str]:
+    return [
+        f"  orbit radius {result.centre_distance_mm:.4f} mm, "
+        f"{len(result.planets)} planets",
+        f"  worst planet position error {result.worst_position_error_mm:+.2e} mm",
     ]
 
 
@@ -218,11 +259,24 @@ class GearKind:
     result_lines: object
     builder: str            # the name to import out of `gears.sw`
 
+    # The members this type has, in display order. A pair has two; a planetary
+    # train has three, and the Member radio buttons follow rather than being
+    # hard-coded to pinion and gear.
+    members: tuple[str, ...] = ("pinion", "gear")
+
+    # Which two fields carry the tooth counts. Both types of pair call them z1
+    # and z2; a planetary set calls them z_sun and z_planet and derives the
+    # third. Named here so switching type can carry the counts across without
+    # knowing which type it is switching between.
+    count_attrs: tuple[str, str] = ("z1", "z2")
+
+    def counts(self, params) -> tuple[int, int]:
+        """The two tooth counts of a params object of *this* kind."""
+        return tuple(getattr(params, name) for name in self.count_attrs)
+
     def fallback(self):
         """A minimal set to fall back on before anything has been parsed."""
-        return self.params_cls(
-            module=1.0, z1=12, z2=12, face_width=1.0, bore=1.0, hub_thickness=1.0
-        )
+        return self.params_cls.with_defaults(1.0, 12, 12)
 
 
 KINDS: dict[str, GearKind] = {
@@ -260,6 +314,23 @@ KINDS: dict[str, GearKind] = {
         result_lines=_spur_result_lines,
         builder="build_spur_set",
     ),
+    "planetary": GearKind(
+        key="planetary",
+        label="Planetary",
+        params_cls=PlanetarySetParams,
+        compute_set=planetary_compute_set,
+        validate=planetary_validate,
+        preview=planetary_preview,
+        fields=PLANETARY_FIELDS,
+        auto_fields=PLANETARY_AUTO,
+        auto_kwargs=("pressure_angle", "helix_angle", "hand", "n_planets"),
+        default_scene="train",
+        status=_planetary_status,
+        result_lines=_planetary_result_lines,
+        builder="build_planetary_set",
+        members=("sun", "planet", "ring"),
+        count_attrs=("z_sun", "z_planet"),
+    ),
 }
 
 TEXT_COLOURS = {
@@ -296,6 +367,7 @@ class App(ttk.Frame):
 
         self._build_queue: queue.Queue = queue.Queue()
         self._build_thread: threading.Thread | None = None
+        self._previous_kind = KINDS[self.kind_key.get()]
 
         self._make_widgets()
         for var in self.vars.values():
@@ -320,16 +392,23 @@ class App(ttk.Frame):
         wants. Auto-sizing is the honest answer and it is one the user can
         immediately overtype.
         """
+        previous = self._previous_kind
         kind = self.kind
         self._apply_kind()
 
-        # The previous type's parameters, which still carry the three inputs
-        # both types share. Reading the widgets instead would fail: the fields
-        # only the new type has are still empty.
-        base = self._params or kind.fallback()
-        self.set_params(
-            kind.params_cls.with_defaults(base.module, base.z1, base.z2)
-        )
+        # The previous type's parameters, which still carry the inputs every
+        # type shares. Reading the widgets instead would fail: the fields only
+        # the new type has are still empty.
+        #
+        # The counts are read through the kind they were *written* by, because
+        # the field names differ - a spur set has z1 and z2 where a planetary
+        # set has z_sun and z_planet - and the object in hand is still the old
+        # type's.
+        base = self._params
+        if base is None or not isinstance(base, previous.params_cls):
+            base, previous = kind.fallback(), kind
+        first, second = previous.counts(base)
+        self.set_params(kind.params_cls.with_defaults(base.module, first, second))
 
     def _apply_kind(self) -> None:
         """Show the active type's rows and scenes; hide the other type's."""
@@ -347,6 +426,13 @@ class App(ttk.Frame):
                 row[0].configure(text=field.label)
                 row[2].configure(text=field.unit)
 
+        for button in self.member_buttons.values():
+            button.pack_forget()
+        for value in kind.members:
+            self.member_buttons[value].pack(side="left", padx=(4, 0))
+        if self.member.get() not in kind.members:
+            self.member.set(kind.members[0])
+
         wanted = [key for key, _ in kind.preview.SCENE_LABELS]
         for button in self.scene_buttons.values():
             button.pack_forget()
@@ -354,6 +440,10 @@ class App(ttk.Frame):
             self.scene_buttons[key].pack(side="left", padx=(4, 0))
         if self.scene_key.get() not in wanted:
             self.scene_key.set(kind.default_scene)
+
+        # Remembered so the *next* switch can read the counts out of the params
+        # object this one leaves behind, whose field names are this type's.
+        self._previous_kind = kind
 
     # -- widgets ------------------------------------------------------------
 
@@ -465,11 +555,18 @@ class App(ttk.Frame):
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
 
         ttk.Label(bar, text="Member").pack(side="left")
-        for value, label in (("pinion", "Pinion"), ("gear", "Gear")):
-            ttk.Radiobutton(
-                bar, text=label, value=value, variable=self.member,
-                command=self._on_view_change,
-            ).pack(side="left", padx=(4, 0))
+        # One button per member name of any type; `_apply_kind` packs the set
+        # the active type actually has. A pair shows Pinion and Gear, a
+        # planetary train shows Sun, Planet and Ring.
+        self.member_buttons: dict[str, ttk.Radiobutton] = {}
+        for kind in KINDS.values():
+            for value in kind.members:
+                if value in self.member_buttons:
+                    continue
+                self.member_buttons[value] = ttk.Radiobutton(
+                    bar, text=value.capitalize(), value=value,
+                    variable=self.member, command=self._on_view_change,
+                )
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
 
@@ -519,12 +616,16 @@ class App(ttk.Frame):
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
 
-        columns = ("quantity", "pinion", "gear", "unit")
+        # Three value columns. A gear pair fills two and leaves the third
+        # empty; `_refresh_readout` hides it entirely for such a type, so the
+        # window looks exactly as it did before planetary sets existed.
+        columns = ("quantity", "first", "second", "third", "unit")
         self.readout = ttk.Treeview(box, columns=columns, show="headings", height=11)
         for column, heading, width, anchor in (
             ("quantity", "Quantity", 210, "w"),
-            ("pinion", "Pinion", 105, "e"),
-            ("gear", "Gear", 105, "e"),
+            ("first", "Pinion", 105, "e"),
+            ("second", "Gear", 105, "e"),
+            ("third", "", 105, "e"),
             ("unit", "Unit", 45, "w"),
         ):
             self.readout.heading(column, text=heading)
@@ -718,10 +819,25 @@ class App(ttk.Frame):
     def _refresh_readout(self, geo) -> None:
         scroll_top = self.readout.yview()[0]
         self._clear_readout()
-        for row in self.kind.preview.derived_rows(geo):
+
+        rows = self.kind.preview.derived_rows(geo)
+        # A pair never sets the third column, so it is displayed only for a type
+        # that has something to put there rather than as a permanent blank.
+        wide = any(row.third for row in rows)
+        self.readout.configure(
+            displaycolumns=("quantity", "first", "second", "third", "unit")
+            if wide else ("quantity", "first", "second", "unit")
+        )
+        heads = (
+            ("Sun", "Planet", "Ring") if wide else ("Pinion", "Gear", "")
+        )
+        for column, heading in zip(("first", "second", "third"), heads):
+            self.readout.heading(column, text=heading)
+
+        for row in rows:
             self.readout.insert(
                 "", "end",
-                values=(row.label, row.pinion, row.gear, row.unit),
+                values=(row.label, *row.values, row.unit),
                 tags=("header",) if row.header else (),
             )
         self.readout.yview_moveto(scroll_top)
@@ -941,7 +1057,11 @@ class App(ttk.Frame):
     @staticmethod
     def _format_result(result, result_lines) -> list[str]:
         lines = ["Build finished."]
-        for part in (result.pinion, result.gear):
+        # `parts` is what every result object offers: a pair returns its two
+        # members, a planetary train its sun, one planet and its ring. Reading
+        # the attribute rather than a fixed pair is what lets one formatter
+        # serve a set with three members in it.
+        for part in result.parts:
             lines.append(
                 f"  {part.member}: {part.teeth} teeth, {part.body_count} body, "
                 f"{part.face_count} faces"
@@ -951,9 +1071,11 @@ class App(ttk.Frame):
         lines.extend(result_lines(result))
         lines.append(f"  gear clocked {result.clocking_deg:.4f} deg")
         if result.mates:
-            num, den = result.gear_ratio
             lines.append(
-                f"  {len(result.mates)} mates, gear mate {num:g}:{den:g}"
+                f"  {len(result.mates)} mates, "
+                + ", ".join(
+                    f"gear mate {num:g}:{den:g}" for num, den in result.gear_ratios
+                )
             )
             lines.append(
                 "  the set turns - drag either member in SOLIDWORKS"

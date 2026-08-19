@@ -116,6 +116,21 @@ class SpurSetResult:
         return self.measured_centre_distance_mm - self.centre_distance_mm
 
     @property
+    def parts(self) -> tuple:
+        """Every part this build produced, in the order it was built.
+
+        A pair has two. A planetary train has three distinct parts, one of
+        which is inserted several times, so the report formatter reads this
+        rather than assuming a pinion and a gear.
+        """
+        return (self.pinion, self.gear)
+
+    @property
+    def gear_ratios(self) -> tuple[tuple[float, float], ...]:
+        """Every gear mate's ratio. A pair has one mesh; a train has two."""
+        return (self.gear_ratio,) if self.gear_ratio else ()
+
+    @property
     def articulates(self) -> bool:
         """Both members still free to spin, and a gear mate tying them together.
 

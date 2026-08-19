@@ -255,13 +255,26 @@ def draw_scale_bar(canvas, view: View, width: float, height: float) -> None:
 
 @dataclass(frozen=True)
 class Row:
-    """One line of the derived-value readout."""
+    """One line of the derived-value readout.
+
+    Two value columns, because a gear pair has two members - and a third that a
+    pair simply never sets. A planetary train has three members, and rather than
+    give it a readout of its own it fills in `third`; the window then shows the
+    extra column only for a type that populates it, so the pair-shaped types are
+    completely unaffected.
+    """
 
     label: str
     pinion: str = ""
     gear: str = ""
     unit: str = ""
     header: bool = False
+    third: str = ""
+
+    @property
+    def values(self) -> tuple[str, ...]:
+        """The value columns this row actually carries, in display order."""
+        return (self.pinion, self.gear, self.third)
 
 
 def fmt(value: float, places: int = 4) -> str:

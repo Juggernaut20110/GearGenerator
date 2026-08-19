@@ -18,9 +18,14 @@ import sys
 from pathlib import Path
 
 from .bevel import report as bevel_report
+from .planetary import report as planetary_report
 from .spur import report as spur_report
 
-TYPES = {"bevel": bevel_report, "spur": spur_report}
+TYPES = {
+    "bevel": bevel_report,
+    "spur": spur_report,
+    "planetary": planetary_report,
+}
 
 # Flags every type shares, and so never belong to only one of them.
 #
@@ -35,13 +40,26 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="gears", description=__doc__)
     ap.add_argument("--type", choices=sorted(TYPES), default="bevel")
     ap.add_argument("--module", type=float, required=True, help="module, mm")
-    ap.add_argument("--z1", type=int, required=True, help="pinion tooth count")
-    ap.add_argument("--z2", type=int, required=True, help="gear tooth count")
+    ap.add_argument(
+        "--z1", type=int, required=True,
+        help="pinion tooth count (the SUN, for a planetary set)",
+    )
+    ap.add_argument(
+        "--z2", type=int, required=True,
+        help="gear tooth count (a PLANET, for a planetary set)",
+    )
     ap.add_argument("--alpha", type=float, default=20.0, help="pressure angle, deg")
     ap.add_argument("--face-width", type=float, help="mm (default: auto)")
     ap.add_argument("--bore", type=float, help="mm (default: auto)")
     ap.add_argument("--hub", type=float, help="hub/backing thickness, mm (default: auto)")
-    ap.add_argument("--member", choices=("pinion", "gear"), default="pinion")
+    # Every member name of every type. Which ones are meaningful depends on
+    # the type, and each report module says so - a planetary set has a sun,
+    # planets and a ring, and maps the pair-shaped default onto its own.
+    ap.add_argument(
+        "--member",
+        choices=("pinion", "gear", "sun", "planet", "ring"),
+        default="pinion",
+    )
     ap.add_argument(
         "--hand",
         choices=("right", "left"),
