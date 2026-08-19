@@ -8,41 +8,18 @@ textbook proportions, and the tool should not refuse to draw them.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 
+from ..validate import (
+    MAX_PRESSURE_ANGLE,
+    MIN_PRESSURE_ANGLE,
+    MIN_TEETH,
+    Issue,
+    ValidationResult,
+)
 from .geometry import compute_set
 from .params import BevelSetParams
 
-# Practical bounds. Deliberately generous - these are sanity rails, not a
-# design standard.
-MIN_TEETH = 6
-MIN_PRESSURE_ANGLE = 14.5
-MAX_PRESSURE_ANGLE = 25.0
-
-
-@dataclass(frozen=True)
-class Issue:
-    field: str
-    message: str
-
-    def __str__(self) -> str:
-        return f"{self.field}: {self.message}"
-
-
-@dataclass
-class ValidationResult:
-    errors: list[Issue] = field(default_factory=list)
-    warnings: list[Issue] = field(default_factory=list)
-
-    @property
-    def ok(self) -> bool:
-        return not self.errors
-
-    def error(self, field_: str, message: str) -> None:
-        self.errors.append(Issue(field_, message))
-
-    def warn(self, field_: str, message: str) -> None:
-        self.warnings.append(Issue(field_, message))
+__all__ = ["Issue", "ValidationResult", "validate"]
 
 
 def _check_basics(p: BevelSetParams, r: ValidationResult) -> None:
