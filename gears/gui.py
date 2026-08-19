@@ -1,4 +1,4 @@
-"""tkinter front end: nine inputs, live derived values, and a 2D preview.
+"""tkinter front end: a gear type, its inputs, live derived values, a preview.
 
 Everything here is presentation. The rules it enforces come from `validate`,
 the numbers from `geometry`, and the drawing from `preview`; this module owns
@@ -347,7 +347,7 @@ class App(ttk.Frame):
     def __init__(self, master: tk.Misc):
         super().__init__(master, padding=8)
 
-        # One variable per field name across both types. Shared on purpose:
+        # One variable per field name across every type. Shared on purpose:
         # switching type keeps the module and tooth counts already typed.
         self.vars = {f.attr: tk.StringVar() for f in ALL_FIELDS}
         self.kind_key = tk.StringVar(value="bevel")
@@ -386,7 +386,7 @@ class App(ttk.Frame):
         """Switch gear type: re-show the right rows, scenes and defaults.
 
         The parameters are rebuilt through `with_defaults` rather than carried
-        across field by field. The shared names mean the same thing in both types
+        across field by field. The shared names mean the same thing in every type
         - module, tooth counts, pressure angle - but the sizing rules do not, and
         a face width that suited a bevel set is not the one a helical spur set
         wants. Auto-sizing is the honest answer and it is one the user can
@@ -1112,7 +1112,7 @@ class App(ttk.Frame):
 
 def main(argv=None) -> int:
     root = tk.Tk()
-    root.title("Bevel gear generator")
+    root.title("Gear generator")
     root.minsize(1060, 720)
 
     app = App(root)

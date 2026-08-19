@@ -1,14 +1,22 @@
 """Dump derived gear geometry to the terminal, with no SOLIDWORKS involved.
 
     .venv\\Scripts\\python.exe -m gears --module 2 --z1 17 --z2 43
+    .venv\\Scripts\\python.exe -m gears --module 2 --z1 17 --z2 43 --spiral 35
     .venv\\Scripts\\python.exe -m gears --type spur --module 2 --z1 17 --z2 43 --beta 15
+    .venv\\Scripts\\python.exe -m gears --type spur --module 2 --z1 18 --z2 60 --internal
+    .venv\\Scripts\\python.exe -m gears --type planetary --module 2 --z1 24 --z2 18
     .venv\\Scripts\\python.exe -m gears --module 2 --z1 17 --z2 43 \\
         --csv out/pinion_outer.csv --member pinion --end outer
 
 `--type` picks the gear type and defaults to bevel, which is what the tool
-generated before there was a choice. Flags belonging to the other type are
-refused rather than ignored, so a mistyped `--sigma` on a spur set is not
-silently dropped.
+generated before there was a choice. Flags belonging to another type are refused
+rather than ignored, so a mistyped `--sigma` on a spur set is not silently
+dropped - and a flag two types genuinely share, like `--beta`, is refused only
+by the third.
+
+For a planetary set `--z1` and `--z2` are the sun and the planet; `--z-sun` and
+`--z-planet` say the same thing more plainly. The ring is derived from them and
+has no flag of its own.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ TYPES = {
 # Flags every type shares, and so never belong to only one of them.
 #
 # `hand` joined this list when spiral bevel arrived. It means the same thing in
-# both types - which way the PINION's teeth wind, with the gear taking the other
+# every type - which way the first member's teeth wind, with the rest following
 # - so it is defined once here rather than twice, which argparse would refuse
 # anyway.
 COMMON_FLAGS = ("type", "module", "z1", "z2", "csv", "hand")
