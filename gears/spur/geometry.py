@@ -190,7 +190,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 addendum=addendum,
                 dedendum=dedendum,
                 virtual_teeth=z / math.cos(beta) ** 3,
-                twist=p.face_width * math.tan(beta) / pitch_r,
+                # The + 0.0 turns the gear's -0.0 into 0.0 when there is no
+                # helix. Harmless arithmetically, but -0.0 prints as "-0.0000"
+                # in the report and reads as a real, tiny, negative twist.
+                twist=p.face_width * math.tan(beta) / pitch_r + 0.0,
                 psi0=psi0,
                 half_pitch=half_pitch,
             )
