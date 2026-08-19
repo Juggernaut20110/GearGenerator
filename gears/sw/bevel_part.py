@@ -30,6 +30,7 @@ from .common import (
     BlankVariable,
     BuildResult,
     axial_position,
+    axis_datum,
     close_and_revolve_blank,
     constrain_blank,
     create_axis,
@@ -44,17 +45,6 @@ from .common import (
 from .session import DimensionFlags, add_dimension, mm
 
 __all__ = ["AXIS_FEATURE_NAME", "BuildResult", "build_gear"]
-
-
-def _axis_apex(axis):
-    """The centreline endpoint sitting at the pitch apex.
-
-    The apex is the sketch origin, so it is whichever endpoint is at (0, 0) in
-    sketch space. Taking the nearer of the two rather than assuming
-    `CreateCenterLine` kept its arguments in the order they were given.
-    """
-    a, b = axis.GetStartPoint2(), axis.GetEndPoint2()
-    return a if math.hypot(a.X, a.Y) <= math.hypot(b.X, b.Y) else b
 
 
 def _section_curves(section) -> list[tuple[str, list]]:
@@ -154,7 +144,7 @@ def _dimension_blank(app, model, geo: SetGeometry, member: str, axis, lines, out
     """
     p = geo.params
     m = geo.member(member)
-    apex = _axis_apex(axis)
+    apex = axis_datum(axis)
 
     # Line i runs from outline[i] to outline[i+1], so the root rim - when there
     # is one - displaces the flat back and everything behind it by one.

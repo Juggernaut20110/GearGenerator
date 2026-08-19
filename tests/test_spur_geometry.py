@@ -438,3 +438,57 @@ def test_no_hub_leaves_a_plain_cylinder(member):
     outline = blank_outline(g, member)
     assert len(outline) == 4
     assert max(z for _, z in outline) == pytest.approx(g.params.face_width)
+
+
+# --- what the blank dimension plan assumes ---------------------------------
+#
+# gears/sw/spur_part.py indexes into this outline by position and counts on the
+# horizontal/vertical alternation for its degree-of-freedom arithmetic. Both are
+# properties of the geometry, so both can be pinned here rather than discovered
+# when require_fully_defined refuses a sketch in SOLIDWORKS.
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("hub", [0.0, 5.0])
+def test_blank_outline_has_the_length_the_builder_switches_on(member, hub):
+    g = compute_set(SpurSetParams.with_defaults(2.0, 17, 43, hub_thickness=hub))
+    outline = blank_outline(g, member)
+    assert len(outline) == (6 if hub else 4)
+    assert (len(outline) > 4) is bool(hub)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_blank_outline_vertices_are_where_the_dimensions_look_for_them(member):
+    g = compute_set(SpurSetParams.with_defaults(2.0, 17, 43, hub_thickness=5.0))
+    outline = blank_outline(g, member)
+    p, m = g.params, g.member(member)
+
+    assert outline[0] == (pytest.approx(p.bore / 2.0), 0.0)          # bore, front
+    assert outline[1] == (pytest.approx(m.tip_r), 0.0)               # tip, front
+    assert outline[2][1] == pytest.approx(p.face_width)              # back face
+    assert outline[3][1] == pytest.approx(p.face_width)              # hub radius
+    assert outline[4][1] == pytest.approx(p.face_width + p.hub_thickness)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("hub", [0.0, 5.0])
+def test_blank_segments_alternate_horizontal_and_vertical(member, hub):
+    """Every segment gets exactly one relation, which is what the DOF count assumes.
+
+    A segment that was neither flat nor cylindrical would take no relation at
+    all, and the sketch would come out one degree of freedom short of defined
+    with nothing in the dimension plan to absorb it.
+    """
+    g = compute_set(SpurSetParams.with_defaults(2.0, 17, 43, hub_thickness=hub))
+    outline = blank_outline(g, member)
+    n = len(outline)
+
+    kinds = []
+    for i in range(n):
+        (r1, z1), (r2, z2) = outline[i], outline[(i + 1) % n]
+        horizontal = abs(z1 - z2) < 1e-9
+        vertical = abs(r1 - r2) < 1e-9
+        assert horizontal != vertical, f"segment {i} is neither flat nor cylindrical"
+        kinds.append("H" if horizontal else "V")
+
+    assert kinds == ["H", "V"] * (n // 2)

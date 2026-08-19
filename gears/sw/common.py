@@ -211,6 +211,18 @@ class BlankVariable:
     what: str
 
 
+def axis_datum(axis):
+    """The centreline endpoint sitting at the sketch origin.
+
+    Every axial dimension measures from it - the pitch apex on a bevel blank,
+    the front face on a spur one - so it is whichever endpoint is at (0, 0) in
+    sketch space. Taking the nearer of the two rather than assuming
+    `CreateCenterLine` kept its arguments in the order they were given.
+    """
+    a, b = axis.GetStartPoint2(), axis.GetEndPoint2()
+    return a if math.hypot(a.X, a.Y) <= math.hypot(b.X, b.Y) else b
+
+
 def radial_position(r: float, z: float) -> tuple[float, float, float]:
     """Put a radial dimension halfway between the axis and what it measures."""
     return (mm(0.5 * r), 0.0, mm(z))

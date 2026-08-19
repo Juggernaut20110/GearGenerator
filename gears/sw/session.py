@@ -98,6 +98,12 @@ CONSTRAINED_STATUS_NAMES = {
 # Marks used by the feature calls. These are not arbitrary: the API looks for
 # specific mark values in the selection list.
 MARK_LOFT_PROFILE = 1
+# Guide curves for a loft go in under their own mark. 2 is what the API
+# reference gives; unlike every other constant here it has NOT been read out of
+# swconst.tlb, because guide curves have no enum - the mark is just a number the
+# feature looks for. `tools/probe_helix_loft.py` exists to confirm it against a
+# real loft before a build depends on it.
+MARK_LOFT_GUIDE = 2
 MARK_PATTERN_AXIS = 1
 MARK_PATTERN_FEATURE = 4
 MARK_MATE_ENTITY = 1
