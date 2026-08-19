@@ -178,7 +178,10 @@ def build_set(
     floating, which is the older behaviour and is worth having when a mate is
     the thing under suspicion.
     """
-    out_dir = Path(out_dir)
+    # Absolute: SaveAs3 refuses a relative path with a bare "error 1" that says
+    # nothing about what is wrong with it. `tools/build_set.py` already resolves
+    # its own argument; this is the guard for every other caller.
+    out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pinion_path = out_dir / part_filename(geo, "pinion")
