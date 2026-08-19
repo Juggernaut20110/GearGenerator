@@ -8,18 +8,41 @@ produces them.
 
 from __future__ import annotations
 
+import math
+
 from ..report_format import emit_issues, row as _row
-from .geometry import blank_outline, compute_set, tooth_space_section
+from .geometry import (
+    blank_outline,
+    compute_set,
+    phase_at_cone_distance,
+    section_count,
+    tooth_space_section,
+)
 from .params import BevelSetParams
 from .validate import validate
 
 # Flags this type owns. The dispatcher uses these to refuse a flag that belongs
 # to the other type rather than silently ignoring it.
-FLAGS = ("alpha", "sigma", "face_width", "bore", "hub", "min_root", "member", "end")
+FLAGS = (
+    "alpha", "sigma", "spiral", "cutter_radius", "face_width", "bore", "hub",
+    "min_root", "member", "end",
+)
 
 
 def add_arguments(ap) -> None:
     ap.add_argument("--sigma", type=float, default=90.0, help="shaft angle, deg")
+    ap.add_argument(
+        "--spiral",
+        type=float,
+        default=0.0,
+        help="mean spiral angle, deg (0 = straight bevel)",
+    )
+    ap.add_argument(
+        "--cutter-radius",
+        type=float,
+        help="face-milling cutter radius, mm (default: Am). "
+             "Given with --spiral 0 this is a Zerol set",
+    )
     ap.add_argument(
         "--min-root",
         type=float,
@@ -29,7 +52,14 @@ def add_arguments(ap) -> None:
 
 
 def params_from_args(args) -> BevelSetParams:
-    overrides = {"pressure_angle": args.alpha, "shaft_angle": args.sigma}
+    overrides = {
+        "pressure_angle": args.alpha,
+        "shaft_angle": args.sigma,
+        "spiral_angle": args.spiral,
+        "hand": args.hand,
+    }
+    if args.cutter_radius is not None:
+        overrides["cutter_radius"] = args.cutter_radius
     if args.face_width is not None:
         overrides["face_width"] = args.face_width
     if args.bore is not None:
@@ -50,6 +80,10 @@ def print_report(geo) -> None:
     print(_row("teeth", p.z1, p.z2))
     print(_row("pressure angle", f(p.pressure_angle), "", "deg"))
     print(_row("shaft angle", f(p.shaft_angle), "", "deg"))
+    print(_row("spiral angle (mean)", f(p.spiral_angle), "", "deg"))
+    if p.is_curved:
+        print(_row("hand (pinion)", p.hand))
+        print(_row("cutter radius", f(p.cutter_radius or 0.0), "", "mm"))
     print(_row("face width", f(p.face_width), "", "mm"))
     print(_row("bore", f(p.bore), "", "mm"))
     print(_row("hub thickness", f(p.hub_thickness), "", "mm"))
@@ -65,6 +99,17 @@ def print_report(geo) -> None:
     print(_row("working depth", f(geo.working_depth), "", "mm"))
     print(_row("whole depth", f(geo.whole_depth), "", "mm"))
     print(_row("clearance", f(geo.clearance), "", "mm"))
+
+    if geo.trace is not None:
+        t = geo.trace
+        deg = lambda A: f(math.degrees(abs(t.spiral_angle_at(A))))  # noqa: E731
+        print("\nSPIRAL")
+        print(_row("cutter radius", f(t.cutter_radius), "", "mm"))
+        print(_row("cutter offset rho", f(t.centre_distance), "", "mm"))
+        print(_row("spiral angle at toe", deg(geo.inner_cone_dist), "", "deg"))
+        print(_row("spiral angle at mean", deg(geo.mean_cone_dist), "", "deg"))
+        print(_row("spiral angle at heel", deg(geo.outer_cone_dist), "", "deg"))
+        print(_row("contact ratio, face", f(geo.face_contact_ratio)))
 
     print(f"\nMEMBERS{'':<21}{'PINION':>14}{'GEAR':>14}")
     a, b = geo.pinion, geo.gear
@@ -84,6 +129,20 @@ def print_report(geo) -> None:
     print(_row("outer root to apex", f(a.root_to_apex), f(b.root_to_apex), "mm"))
     print(_row("outer root radius", f(a.outer_root_radius), f(b.outer_root_radius), "mm"))
     print(_row("mounting distance", f(a.mounting_distance), f(b.mounting_distance), "mm"))
+
+    if geo.trace is not None:
+        sweeps = [
+            phase_at_cone_distance(geo, name, geo.outer_cone_dist)
+            - phase_at_cone_distance(geo, name, geo.inner_cone_dist)
+            for name in ("pinion", "gear")
+        ]
+        print(_row("sweep over the face",
+                   f(math.degrees(sweeps[0])), f(math.degrees(sweeps[1])), "deg"))
+        print(_row("as angular pitches",
+                   f(abs(sweeps[0]) / a.angular_pitch),
+                   f(abs(sweeps[1]) / b.angular_pitch)))
+        print(_row("loft sections",
+                   section_count(geo, "pinion"), section_count(geo, "gear")))
 
 
 def report(args) -> tuple[object, object, list]:

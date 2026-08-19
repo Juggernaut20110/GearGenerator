@@ -1,16 +1,23 @@
-"""Build one bevel gear as a SOLIDWORKS part.
+"""Build one bevel gear, straight or spiral, as a SOLIDWORKS part.
 
 Sequence, matching the plan:
 
 1. reference axis along Z (intersection of the Top and Right planes)
 2. blank: meridian outline sketched on the Top Plane, fully dimensioned with
    driving dimensions, revolved 360 degrees
-3. two 3D sketches - the tooth-space section at each end of the face width
-4. loft cut between them
+3. 3D sketches of the tooth-space section, two for a straight gear and as many
+   as the trace needs for a spiral one
+4. loft cut through them, with a guide curve when the teeth are spiral
 5. circular pattern of that cut, z instances about the axis
 
 Coordinates come out of `geometry` in millimetres with the pitch apex at the
 origin and the gear axis along +Z; `mm()` converts at every API boundary.
+
+**The blank does not change between the two.** A spiral changes where along the
+face each section sits about the axis, not the meridian outline it is cut out
+of, so the whole dimension plan below - every driving dimension, every global
+variable, the derived `BackFaceToApex` - is untouched by this feature and the
+straight gear it was written for still comes out byte for byte the same.
 """
 
 from __future__ import annotations
@@ -20,7 +27,8 @@ import math
 from ..bevel.geometry import (
     SetGeometry,
     blank_outline,
-    end_overshoot,
+    guide_spiral,
+    section_cone_distances,
     to_cone_3d,
     tooth_space_section,
 )
@@ -42,7 +50,7 @@ from .common import (
     radial_position,
     sketch_blank_outline,
 )
-from .session import DimensionFlags, add_dimension, mm
+from .session import MARK_LOFT_GUIDE, DimensionFlags, add_dimension, mm
 
 __all__ = ["AXIS_FEATURE_NAME", "BuildResult", "build_gear"]
 
@@ -54,6 +62,12 @@ def _section_curves(section) -> list[tuple[str, list]]:
     are tangent by construction, and splitting them would drop a spline
     endpoint in the middle of a smooth run. The corners that are genuinely
     sharp - flank to riser, riser to cap - stay separate so they stay sharp.
+
+    The cap arrives already split in two when the section was built with
+    `split_cap`, and the two halves stay separate here so the vertex between
+    them survives into the sketch. That vertex is what the guide curve passes
+    through on a spiral gear, and a guide that only passes *near* a spline is
+    the classic way a guided loft fails.
     """
     seg = section.segments
 
@@ -64,10 +78,15 @@ def _section_curves(section) -> list[tuple[str, list]]:
             return first
         return first + second[1:]  # drop the shared junction point
 
+    cap = (
+        [("cap_neg", seg["cap_neg"]), ("cap_pos", seg["cap_pos"])]
+        if "cap_neg" in seg
+        else [("cap", seg["cap"])]
+    )
     ordered = [
         ("flank_neg", join(seg["fillet_neg"], seg["flank_neg"])),
         ("riser_neg", seg["riser_neg"]),
-        ("cap", seg["cap"]),
+        *cap,
         ("riser_pos", seg["riser_pos"]),
         ("flank_pos", join(seg["flank_pos"], seg["fillet_pos"])),
         ("root", seg["root"]),
@@ -75,23 +94,46 @@ def _section_curves(section) -> list[tuple[str, list]]:
     return [
         (
             name,
-            [to_cone_3d(x, y, section.pitch_angle, section.cone_apex_z) for x, y in pts],
+            [
+                to_cone_3d(
+                    x, y, section.pitch_angle, section.cone_apex_z, section.phase
+                )
+                for x, y in pts
+            ],
         )
         for name, pts in ordered
     ]
 
 
-def _draw_section(model, geo: SetGeometry, member: str, end: str):
+def _draw_section(model, geo: SetGeometry, member: str, cone_dist: float, split_cap: bool):
     """Draw one tooth-space section as a 3D sketch; return the sketch feature.
 
-    The section is pushed past the end of the face width by `end_overshoot`, so
-    the loft cut starts and finishes clear of the blank rather than tangent to
-    one of its faces.
+    `cone_dist` is already pushed past the end of the face width at the two ends
+    by `end_overshoot`, so the loft cut starts and finishes clear of the blank
+    rather than tangent to one of its faces.
     """
     section = tooth_space_section(
-        geo, member, end, overshoot=end_overshoot(geo, member)
+        geo, member, cone_dist=cone_dist, split_cap=split_cap
     )
-    return draw_curves_3d(model, _section_curves(section), f"{end} section")
+    return draw_curves_3d(
+        model, _section_curves(section), f"section at A={cone_dist:.4f}"
+    )
+
+
+def _draw_guide(model, geo: SetGeometry, member: str, a_hi: float, a_lo: float):
+    """Draw the curve the loft is guided along, as a single 3D spline.
+
+    Sampled rather than built from any feature SOLIDWORKS offers, for the same
+    reason the spur builder samples its helix: this builder already knows how to
+    write a 3D sketch through points, and a sampled curve needs no agreement
+    with SOLIDWORKS about pitch, start angle or hand.
+
+    It is a conical spiral rather than a helix - the cap radius shrinks toward
+    the toe as the section scales - so there is no feature that would have built
+    it anyway.
+    """
+    points = guide_spiral(geo, member, a_hi, a_lo)
+    return draw_curves_3d(model, [("guide spiral", points)], "loft guide")
 
 
 def _angle_position(a, b) -> tuple[float, float, float]:
@@ -262,13 +304,31 @@ def build_gear(
     axis_feat = create_axis(model)
     build_blank(session.app, model, geo, member)
 
-    # Two sections, one at each end of the face width. Both are pure conical
-    # surfaces through the pitch apex, so the ruled surface the loft puts between
-    # them is the tooth flank exactly - no guide curve is needed or wanted.
-    outer_sketch = _draw_section(model, geo, member, "outer")
-    inner_sketch = _draw_section(model, geo, member, "inner")
+    # A straight bevel gear takes two sections, one at each end of the face
+    # width: both are pure conical surfaces through the pitch apex, so the ruled
+    # surface the loft puts between them is the tooth flank exactly, and no
+    # guide curve is needed or wanted.
+    #
+    # A spiral one takes as many as `section_cone_distances` asks for - 11 per
+    # member on the anchor set - because consecutive sections are rotated
+    # relative to each other and a loft chords straight between them while the
+    # tooth trace is an arc. The guide pins the cap exactly and leaves the rest
+    # interpolated, which is why it is not a substitute for the extra sections;
+    # the spur builder paid for that lesson and the note beside
+    # MAX_SECTION_SAGITTA_MM records what it cost.
+    spiral = geo.trace is not None
+    distances = section_cone_distances(geo, member)
 
-    cut = loft_cut(model, (outer_sketch, inner_sketch))
+    sections = [
+        _draw_section(model, geo, member, A, split_cap=spiral) for A in distances
+    ]
+    guides = (
+        (_draw_guide(model, geo, member, distances[0], distances[-1]),)
+        if spiral
+        else ()
+    )
+
+    cut = loft_cut(model, sections, guides, guide_mark=MARK_LOFT_GUIDE)
     drop_offcut(model)
     pattern_teeth(model, cut, axis_feat, m.z)
 

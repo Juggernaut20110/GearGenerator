@@ -1,10 +1,19 @@
-"""Milestone 4: build a complete bevel gear set in SOLIDWORKS.
+"""Milestone 4: build a complete bevel gear set in SOLIDWORKS, straight or spiral.
 
 Produces two parts and an assembly with the teeth meshing.
 
     .venv\\Scripts\\python.exe tools\\build_set.py --module 2 --z1 17 --z2 43
     .venv\\Scripts\\python.exe tools\\build_set.py --module 3 --z1 20 --z2 20 \\
         --sigma 60 --out out\\miter60
+    .venv\\Scripts\\python.exe tools\\build_set.py --spiral 35
+
+The assembly is placed and mated exactly as a straight pair is - a spiral
+changes the tooth, not where the two members sit or how they are held. What it
+does change is the build time: 11 loft sections per member on the anchor set
+against two for a straight pair.
+
+`--hand` is the **pinion's**; the gear takes the other, and that falls out of
+the construction rather than being imposed. See `gears/bevel/geometry.py`.
 """
 
 from __future__ import annotations
@@ -16,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gears.bevel.geometry import compute_set          # noqa: E402
+from gears.bevel.geometry import compute_set, section_count   # noqa: E402
 from gears.bevel.params import BevelSetParams         # noqa: E402
 from gears.bevel.validate import validate             # noqa: E402
 from gears.sw import SwError, SwSession, build_set  # noqa: E402
@@ -29,6 +38,17 @@ def main(argv=None) -> int:
     ap.add_argument("--z2", type=int, default=43)
     ap.add_argument("--alpha", type=float, default=20.0)
     ap.add_argument("--sigma", type=float, default=90.0)
+    ap.add_argument(
+        "--spiral", type=float, default=0.0,
+        help="mean spiral angle, deg (0 = straight bevel)",
+    )
+    ap.add_argument(
+        "--hand", choices=("right", "left"), default="right",
+        help="the PINION's hand; the gear always takes the other",
+    )
+    ap.add_argument(
+        "--cutter-radius", type=float, help="face-milling cutter radius, mm"
+    )
     ap.add_argument("--face-width", type=float)
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
@@ -45,8 +65,14 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
 
-    overrides = {"pressure_angle": args.alpha, "shaft_angle": args.sigma}
+    overrides = {
+        "pressure_angle": args.alpha,
+        "shaft_angle": args.sigma,
+        "spiral_angle": args.spiral,
+        "hand": args.hand,
+    }
     for key, value in (
+        ("cutter_radius", args.cutter_radius),
         ("face_width", args.face_width),
         ("bore", args.bore),
         ("hub_thickness", args.hub),
@@ -71,6 +97,16 @@ def main(argv=None) -> int:
         f"cone angles {geo.pinion.pitch_angle_deg:.3f} / "
         f"{geo.gear.pitch_angle_deg:.3f} deg"
     )
+    if geo.trace is not None:
+        print(
+            f"  spiral {p.spiral_angle:g} deg {p.hand} pinion, "
+            f"{p.cutter_radius:.3f} mm cutter, "
+            f"face contact ratio {geo.face_contact_ratio:.3f}"
+        )
+        print(
+            f"  loft sections: pinion {section_count(geo, 'pinion')}, "
+            f"gear {section_count(geo, 'gear')} - both slower than a straight pair"
+        )
 
     with SwSession() as session:
         try:

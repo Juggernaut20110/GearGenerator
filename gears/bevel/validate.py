@@ -16,10 +16,22 @@ from ..validate import (
     Issue,
     ValidationResult,
 )
-from .geometry import compute_set
+from .geometry import compute_set, phase_at_cone_distance, section_count
 from .params import BevelSetParams
 
 __all__ = ["Issue", "ValidationResult", "validate"]
+
+# Past this a spiral bevel gear is throwing more axial thrust at its bearings
+# than the smoother mesh is worth. 35 is the Gleason standard and the usual
+# answer; the band either side of it is where design choices actually live.
+MAX_SPIRAL_ANGLE = 45.0
+HIGH_SPIRAL_ANGLE = 40.0
+
+# The Gleason face-width limit for a spiral set, as a fraction of Ao. Tighter
+# than the straight limit of a third, because a spiral tooth's contact sweeps
+# along the face as well as up the profile: the toe end of too wide a face
+# carries load at a spiral angle well away from the one it was designed at.
+SPIRAL_FACE_FRACTION = 0.30
 
 
 def _check_basics(p: BevelSetParams, r: ValidationResult) -> None:
@@ -45,6 +57,15 @@ def _check_basics(p: BevelSetParams, r: ValidationResult) -> None:
         r.error("hub_thickness", "cannot be negative")
     if p.min_root_thickness < 0:
         r.error("min_root_thickness", "cannot be negative")
+    if not (-MAX_SPIRAL_ANGLE <= p.spiral_angle <= MAX_SPIRAL_ANGLE):
+        r.error(
+            "spiral_angle",
+            f"must be between -{MAX_SPIRAL_ANGLE} and {MAX_SPIRAL_ANGLE} degrees",
+        )
+    if p.hand not in ("right", "left"):
+        r.error("hand", "must be 'right' or 'left'")
+    if p.cutter_radius is not None and p.cutter_radius <= 0:
+        r.error("cutter_radius", "must be greater than zero")
 
 
 def validate(p: BevelSetParams) -> ValidationResult:
@@ -82,14 +103,21 @@ def validate(p: BevelSetParams) -> ValidationResult:
         )
         return result
 
-    face_limit = min(geo.outer_cone_dist / 3.0, 10.0 * p.module)
+    # A curved tooth gets the tighter Gleason limit; see SPIRAL_FACE_FRACTION.
+    cone_fraction, cone_label = (
+        (SPIRAL_FACE_FRACTION, "0.30*Ao") if p.is_curved else (1.0 / 3.0, "Ao/3")
+    )
+    face_limit = min(cone_fraction * geo.outer_cone_dist, 10.0 * p.module)
     if p.face_width > face_limit:
         result.warn(
             "face_width",
             f"{p.face_width:.2f} mm exceeds the usual limit of "
-            f"min(Ao/3, 10*m) = {face_limit:.2f} mm; the teeth get very small "
-            "at the inner end",
+            f"min({cone_label}, 10*m) = {face_limit:.2f} mm; the teeth get very "
+            "small at the inner end",
         )
+
+    # --- the spiral tooth trace --------------------------------------------
+    _check_trace(geo, p, result)
 
     # --- bore vs. the material actually available --------------------------
     min_wall = max(p.module, 1.0)
@@ -122,7 +150,7 @@ def validate(p: BevelSetParams) -> ValidationResult:
         result.warn(
             "z2",
             f"gear ratio {ratio:.2f}:1 is outside the usual 1:10 to 10:1 range "
-            "for straight bevels",
+            "for bevels",
         )
 
     # --- material under the teeth at the heel ------------------------------
@@ -189,3 +217,79 @@ def validate(p: BevelSetParams) -> ValidationResult:
             )
 
     return result
+
+
+def _check_trace(geo, p: BevelSetParams, result: ValidationResult) -> None:
+    """Whether the spiral tooth trace is one a cutter could actually sweep.
+
+    Silent for a straight bevel gear, which has no trace at all.
+    """
+    trace = geo.trace
+    if trace is None:
+        return
+
+    # --- does the arc even span the face? ----------------------------------
+    #
+    # A circle of radius r_c centred rho from the crown centre only has points
+    # between crown radii |rho - r_c| and rho + r_c. Ask for a face outside that
+    # band and there is no trace there to follow - the geometry would clamp to
+    # the nearest end and quietly hand back a tooth that stops curving, which is
+    # the kind of wrong that looks right in a preview. So this is an error.
+    if not trace.reaches(geo.inner_cone_dist, geo.outer_cone_dist):
+        lo = abs(trace.centre_distance - trace.cutter_radius)
+        hi = trace.centre_distance + trace.cutter_radius
+        result.error(
+            "cutter_radius",
+            f"a {trace.cutter_radius:.2f} mm cutter at {p.spiral_angle:g} deg "
+            f"sweeps an arc spanning cone distances {lo:.2f} to {hi:.2f} mm, "
+            f"which does not cover the face from {geo.inner_cone_dist:.2f} to "
+            f"{geo.outer_cone_dist:.2f} mm",
+        )
+        return
+
+    # --- how hard the spiral angle swings across the face -------------------
+    psi_i = math.degrees(abs(trace.spiral_angle_at(geo.inner_cone_dist)))
+    psi_o = math.degrees(abs(trace.spiral_angle_at(geo.outer_cone_dist)))
+    if psi_o - psi_i > 20.0:
+        result.warn(
+            "cutter_radius",
+            f"the spiral angle runs {psi_i:.1f} deg at the toe to {psi_o:.1f} "
+            f"at the heel, a {psi_o - psi_i:.1f} deg swing; a cutter nearer "
+            f"Am = {geo.mean_cone_dist:.2f} mm would flatten it",
+        )
+    if psi_o >= 90.0 - 1e-9:
+        result.error(
+            "cutter_radius",
+            f"the trace stands at {psi_o:.1f} deg to the cone generator at the "
+            "heel, which is tangent to the pitch circle - no tooth runs that way",
+        )
+
+    if abs(p.spiral_angle) >= HIGH_SPIRAL_ANGLE:
+        result.warn(
+            "spiral_angle",
+            f"{abs(p.spiral_angle):g} deg is a hard spiral; the axial thrust it "
+            "throws at the bearings grows with the tangent and 35 deg is the "
+            "usual answer",
+        )
+
+    # --- how far the tooth travels round the gear --------------------------
+    #
+    # Reported rather than refused. A small pinion at a normal spiral angle
+    # genuinely sweeps more than one angular pitch - the anchor 17-tooth pinion
+    # crosses 38.790 degrees against a pitch of 21.176 - and that is what the
+    # gear is, not a mistake. What it does cost is loft sections, so the number
+    # is worth putting in front of someone before they wait for the build.
+    for member in (geo.pinion, geo.gear):
+        sweep = abs(
+            phase_at_cone_distance(geo, member.name, geo.outer_cone_dist)
+            - phase_at_cone_distance(geo, member.name, geo.inner_cone_dist)
+        )
+        pitches = sweep / member.angular_pitch
+        if pitches > 2.0:
+            result.warn(
+                member.name,
+                f"the tooth sweeps {math.degrees(sweep):.1f} deg over the face, "
+                f"{pitches:.1f} angular pitches; the loft will need "
+                f"{section_count(geo, member.name)} sections and the tooth wraps "
+                "a long way round the blank",
+            )

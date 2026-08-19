@@ -162,6 +162,13 @@ def test_auto_size_rewrites_only_the_blank_fields(app):
     assert (app._params.module, app._params.z1) == (2.0, 17)
 
 
+# The one scene that is not a view of a single member. A bevel pair's tooth
+# trace is one arc in the shared crown plane - both members map that same curve
+# onto their own cones, which is the meshing condition - so titling it after
+# whichever member happens to be selected would state something untrue.
+SHARED_SCENES = {"trace"}
+
+
 def test_switching_member_and_view_rebuilds_the_scene(app):
     for key, _label in preview.SCENE_LABELS:
         for member in ("pinion", "gear"):
@@ -170,7 +177,21 @@ def test_switching_member_and_view_rebuilds_the_scene(app):
             app._on_view_change()
             assert app._scene is not None
             assert app._scene.key == key
-            assert app._scene.title.startswith(member)
+            if key in SHARED_SCENES:
+                assert app._scene.title.startswith("both members")
+            else:
+                assert app._scene.title.startswith(member)
+
+
+def test_a_shared_scene_draws_the_same_thing_for_either_member(app):
+    """The claim `SHARED_SCENES` makes, checked rather than asserted in a comment."""
+    drawn = {}
+    for member in ("pinion", "gear"):
+        app.member.set(member)
+        app.scene_key.set("trace")
+        app._on_view_change()
+        drawn[member] = [list(line.points) for line in app._scene.polylines]
+    assert drawn["pinion"] == drawn["gear"]
 
 
 def test_switching_view_resets_zoom_and_pan(app):

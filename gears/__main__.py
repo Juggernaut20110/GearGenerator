@@ -23,7 +23,12 @@ from .spur import report as spur_report
 TYPES = {"bevel": bevel_report, "spur": spur_report}
 
 # Flags every type shares, and so never belong to only one of them.
-COMMON_FLAGS = ("type", "module", "z1", "z2", "csv")
+#
+# `hand` joined this list when spiral bevel arrived. It means the same thing in
+# both types - which way the PINION's teeth wind, with the gear taking the other
+# - so it is defined once here rather than twice, which argparse would refuse
+# anyway.
+COMMON_FLAGS = ("type", "module", "z1", "z2", "csv", "hand")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--bore", type=float, help="mm (default: auto)")
     ap.add_argument("--hub", type=float, help="hub/backing thickness, mm (default: auto)")
     ap.add_argument("--member", choices=("pinion", "gear"), default="pinion")
+    ap.add_argument(
+        "--hand",
+        choices=("right", "left"),
+        default="right",
+        help="the PINION's hand; the gear always takes the other",
+    )
     ap.add_argument("--csv", type=Path, help="write the section's points to this file")
 
     for module in TYPES.values():

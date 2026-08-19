@@ -49,8 +49,9 @@ def test_every_type_prints_the_same_three_sections(gear_type, capsys):
         (["--type", "spur", "--min-root", "0.5"], "--min-root"),
         (["--type", "spur", "--end", "inner"], "--end"),
         (["--type", "bevel", "--beta", "15"], "--beta"),
-        (["--type", "bevel", "--hand", "left"], "--hand"),
         (["--type", "bevel", "--backlash", "0.1"], "--backlash"),
+        (["--type", "spur", "--spiral", "35"], "--spiral"),
+        (["--type", "spur", "--cutter-radius", "40"], "--cutter-radius"),
     ],
 )
 def test_a_flag_from_the_other_type_is_refused(argv, offender, capsys):
@@ -59,6 +60,18 @@ def test_a_flag_from_the_other_type_is_refused(argv, offender, capsys):
         main(argv + ANCHOR)
     assert exit_info.value.code == 2
     assert offender in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("gear_type", ["bevel", "spur"])
+def test_hand_belongs_to_both_types_and_is_refused_by_neither(gear_type):
+    """It used to be a spur flag; spiral bevel gave it a second owner.
+
+    Both types mean the same thing by it - which way the pinion's teeth wind,
+    with the gear taking the other - so it moved into the shared parser. A
+    regression here would show up as `--hand` being rejected on whichever type
+    lost it, which is exactly the silent-wrong-answer the guard exists to stop.
+    """
+    assert main(["--type", gear_type, "--hand", "left"] + ANCHOR) == 0
 
 
 @pytest.mark.parametrize("form", ["--beta 15", "--beta=15"])

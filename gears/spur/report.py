@@ -15,18 +15,12 @@ from .geometry import blank_outline, compute_set, end_overshoot, tooth_space_sec
 from .params import SpurSetParams
 from .validate import validate
 
-FLAGS = ("alpha", "beta", "hand", "face_width", "bore", "hub", "member", "backlash")
+FLAGS = ("alpha", "beta", "face_width", "bore", "hub", "member", "backlash")
 
 
 def add_arguments(ap) -> None:
     ap.add_argument(
         "--beta", type=float, default=0.0, help="helix angle, deg (0 = straight)"
-    )
-    ap.add_argument(
-        "--hand",
-        choices=("right", "left"),
-        default="right",
-        help="the PINION's hand; the gear always takes the other",
     )
     ap.add_argument("--backlash", type=float, default=0.0, help="circular backlash, mm")
 

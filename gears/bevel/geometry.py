@@ -1,4 +1,4 @@
-"""Straight bevel gear geometry. Pure math - no COM, no GUI, no file I/O.
+"""Bevel gear geometry, straight and spiral. Pure math - no COM, no GUI, no I/O.
 
 Units are millimetres and radians throughout. The SOLIDWORKS layer converts to
 metres at its own boundary; nothing here knows about that.
@@ -8,6 +8,24 @@ metres at its own boundary; nothing here knows about that.
 The gear axis is +Z and the **pitch apex sits at the origin**. The toothed body
 extends toward +Z. Putting the apex at the origin is what makes the inner
 section a plain uniform scaling of the outer one (see `SECTION_SCALE` below).
+
+The tooth trace
+---------------
+A straight bevel tooth runs along a cone generator; a spiral one follows a
+circular arc laid in the generating crown gear's plane. That arc is `CrownTrace`,
+and it enters the geometry as a single **phase** rotation on each section: the
+section keeps its shape and its cone distance and turns about the gear axis by
+however far the trace has curved by that point along the face.
+
+Straight teeth are not a special case anywhere in this module. They are the
+absence of a trace, which makes every phase exactly zero and every section a
+plain scaling of the outer one, and the same code path builds both.
+
+Two cone constructions are in play and they are not the same one, which is the
+thing to keep straight. Tredgold's back cone is about the **profile** - it turns
+z teeth into z/cos(delta) virtual ones and gives the flank its shape. The crown
+gear is about the **trace** - it says where along the face that profile sits.
+`to_cone_3d` applies them in that order and says why.
 
 Tooth form
 ----------
@@ -57,6 +75,163 @@ CLEARANCE_FACTOR = 0.188
 # surface through the pitch apex, so the extension is the same surface.
 END_OVERSHOOT_FRACTION = 0.05
 END_OVERSHOOT_MIN_MM = 0.5
+
+# How far a lofted flank may fall inside the true swept surface, in mm.
+#
+# The same tolerance and the same argument as the helical spur builder's, which
+# is where this was measured: a loft carries each profile point from one section
+# to the next along a straight chord, and the trace between them is an arc, so
+# the swept surface sits inside the real one by the chord's sagitta -
+# r * (1 - cos(delta / 2)) at radius r over a rotation of delta. A guide curve
+# pins the one point it runs through and leaves the rest interpolated, so it
+# helps and does not fix it.
+#
+# A straight bevel gear has no rotation between sections at all and still takes
+# exactly two, so this costs nothing until there is a spiral to follow.
+MAX_SECTION_SAGITTA_MM = 0.02
+
+
+# ---------------------------------------------------------------------------
+# The spiral tooth trace
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CrownTrace:
+    """The tooth trace, as an arc in the generating crown gear's plane.
+
+    A face-milling cutter of radius `r_c` sweeps a circular arc across the
+    crown gear - the imaginary 90-degree bevel gear both members are generated
+    against. Each real member's trace is that one arc mapped onto its own pitch
+    cone, and this class holds the arc.
+
+    The arc's centre sits at distance `rho` from the crown centre. For a point P
+    on the arc at crown radius A, the triangle (crown centre O, arc centre C,
+    point P) has sides rho, r_c and A, so everything falls out of the cosine
+    rule:
+
+        spiral angle    sin psi(A) = (A^2 + r_c^2 - rho^2) / (2*A*r_c)
+        trace angle   theta_c(A) = acos((rho^2 + A^2 - r_c^2) / (2*rho*A))
+
+    The spiral angle is the angle between the trace and the cone generator,
+    which is 90 degrees minus the angle OPC - and the tangent at P is
+    perpendicular to CP, which is what turns that into the sine above.
+
+    Solving the first for `rho` at the mean cone distance is what places the arc:
+
+        rho^2 = Am^2 + r_c^2 - 2*Am*r_c*sin(psi_m)
+
+    Why one arc serves both members
+    -------------------------------
+    A point of the crown plane at radius A and angle theta_c maps onto a pitch
+    cone of angle delta at cone distance A and **true** angle
+    theta = theta_c / sin(delta) - which is just the statement that developing
+    the cone into a plane is what the crown gear is.
+
+    So the arc length swept along the pitch circle at cone distance A is
+
+        R * theta = (A * sin delta) * (theta_c / sin delta) = A * theta_c
+
+    the same for both members, at every cone distance, whatever their pitch
+    angles. The two traces therefore coincide along the common pitch generator
+    by construction - which is the meshing condition - and no sign anywhere has
+    to be chosen to make that happen.
+
+    It is also where the opposite hands come from. Nothing flips the gear's
+    trace; mapping one arc through two different pitch angles is the whole of
+    it. The pinion's small delta divides by a small sine and sweeps far - 38.790
+    degrees over the face of the anchor 17-tooth pinion, against 15.336 on its
+    43-tooth mate - and looking down each member's own axis in the assembled
+    pair, those two sweeps read as opposite hands.
+
+    **Which sign is the right hand has not been measured.** The arithmetic is
+    symmetric, so nothing here can settle it: it needs someone to build the
+    anchor pinion and look down its axis in SOLIDWORKS. Until then `hand` names
+    a direction consistently without any claim about which one a catalogue would
+    call right - and the pair meshes either way, because both members take their
+    hand from the same sign.
+    """
+
+    cutter_radius: float        # r_c
+    centre_distance: float      # rho, crown centre to arc centre
+    mean_cone_dist: float       # Am, where the mean spiral angle is quoted
+    sign: float                 # +1 right hand, -1 left, on the PINION
+
+    @classmethod
+    def for_set(
+        cls, psi_m: float, cutter_radius: float, mean_cone_dist: float
+    ) -> "CrownTrace":
+        """Place the arc that delivers `psi_m` at the mean cone distance."""
+        rho_sq = (
+            mean_cone_dist ** 2
+            + cutter_radius ** 2
+            - 2.0 * mean_cone_dist * cutter_radius * math.sin(abs(psi_m))
+        )
+        return cls(
+            cutter_radius=cutter_radius,
+            centre_distance=math.sqrt(max(0.0, rho_sq)),
+            mean_cone_dist=mean_cone_dist,
+            sign=-1.0 if psi_m < 0.0 else 1.0,
+        )
+
+    def spiral_angle_at(self, cone_dist: float) -> float:
+        """Spiral angle at a cone distance, radians. Signed by hand.
+
+        Varies along the face, which is the whole difference between a real
+        face-milled trace and the constant-angle idealisation. Measured on the
+        anchor set at 35 degrees mean: 30.074 at the toe, 40.599 at the heel.
+        """
+        r_c = self.cutter_radius
+        s = (cone_dist ** 2 + r_c ** 2 - self.centre_distance ** 2) / (
+            2.0 * cone_dist * r_c
+        )
+        return self.sign * math.asin(max(-1.0, min(1.0, s)))
+
+    def theta_at(self, cone_dist: float) -> float:
+        """Angle of the trace in the crown plane, radians, measured from Am.
+
+        Zero at the mean cone distance by construction, so the mean section is
+        the clocking reference for the whole face - the bevel analogue of the
+        spur gear's "the front face sits at z = 0".
+        """
+        return self._theta_raw(cone_dist) - self._theta_raw(self.mean_cone_dist)
+
+    def _theta_raw(self, cone_dist: float) -> float:
+        rho, r_c = self.centre_distance, self.cutter_radius
+        if rho <= 0.0 or cone_dist <= 0.0:
+            return 0.0
+        c = (rho ** 2 + cone_dist ** 2 - r_c ** 2) / (2.0 * rho * cone_dist)
+        return math.acos(max(-1.0, min(1.0, c)))
+
+    def reaches(self, inner: float, outer: float) -> bool:
+        """Whether the arc actually spans a face running from `inner` to `outer`.
+
+        An arc only exists between crown radii |rho - r_c| and rho + r_c. Outside
+        that band there is no point of the circle at that radius at all, and
+        `theta_at` would clamp to the nearest end and quietly hand back a trace
+        that stops following the cutter. The validator turns this into an error.
+        """
+        lo = abs(self.centre_distance - self.cutter_radius)
+        hi = self.centre_distance + self.cutter_radius
+        return lo <= inner and outer <= hi
+
+
+def phase_at_cone_distance(
+    geo: "SetGeometry", member: str, cone_dist: float
+) -> float:
+    """How far the section at `cone_dist` is rotated about the gear axis, radians.
+
+    The crown-plane trace angle divided by sin(delta) - see `CrownTrace`. Zero at
+    the mean cone distance, and zero everywhere for a straight bevel gear, which
+    is why nothing downstream needs to ask which kind it is building.
+    """
+    if geo.trace is None:
+        return 0.0
+    m = geo.member(member)
+    sin_d = math.sin(m.pitch_angle)
+    if abs(sin_d) < 1e-12:
+        return 0.0
+    return geo.trace.sign * geo.trace.theta_at(cone_dist) / sin_d
 
 
 def beyond_back_cone(geo: "SetGeometry", m: "MemberGeometry", pt: "Point3") -> float:
@@ -221,6 +396,30 @@ class SetGeometry:
     pinion: MemberGeometry
     gear: MemberGeometry
 
+    # The tooth trace, or None for a straight bevel gear. None rather than a
+    # degenerate arc on purpose: a straight tooth is not an arc of infinite
+    # radius as far as this code is concerned, it is the absence of a trace, and
+    # every phase it would contribute is exactly zero rather than nearly so.
+    trace: CrownTrace | None = None
+
+    @property
+    def face_contact_ratio(self) -> float:
+        """How much of a pitch the contact advances along the face. Zero if straight.
+
+        `b * tan(psi_m) / p_m` - the face advance at the mean cone distance over
+        the circular pitch there. This is what a spiral buys: it overlaps the
+        handover from one tooth to the next, the same way a helix does on a spur
+        gear, and it is why a spiral bevel pair is quieter than a straight one at
+        the same tooth count. 1.818 on the anchor set at 35 degrees.
+        """
+        if self.trace is None:
+            return 0.0
+        p_m = self.circular_pitch * self.mean_cone_dist / self.outer_cone_dist
+        if p_m <= 0.0:
+            return 0.0
+        psi_m = self.trace.spiral_angle_at(self.mean_cone_dist)
+        return abs(self.params.face_width * math.tan(psi_m) / p_m)
+
     def member(self, which: str) -> MemberGeometry:
         if which == "pinion":
             return self.pinion
@@ -354,6 +553,18 @@ def compute_set(p: BevelSetParams) -> SetGeometry:
             )
         )
 
+    # One arc, shared by both members - see CrownTrace for why that is the whole
+    # of the meshing condition rather than half of it.
+    trace = (
+        CrownTrace.for_set(
+            p.psi_m,
+            p.cutter_radius if p.cutter_radius is not None else mean_cone_dist,
+            mean_cone_dist,
+        )
+        if p.is_curved
+        else None
+    )
+
     return SetGeometry(
         params=p,
         outer_cone_dist=outer_cone_dist,
@@ -366,6 +577,7 @@ def compute_set(p: BevelSetParams) -> SetGeometry:
         circular_pitch=math.pi * p.module,
         pinion=members[0],
         gear=members[1],
+        trace=trace,
     )
 
 
@@ -388,47 +600,65 @@ class ToothSpaceSection:
     """
 
     member: str
-    end: str                    # "outer" | "inner"
+    end: str                    # "outer" | "inner" | "mid" for anything between
     cone_apex_z: float          # axial position of this section's cone apex
     pitch_angle: float
     r_root: float
     r_tip: float
     r_cap: float
     filleted: bool
+    cone_dist: float = 0.0      # where along the pitch cone this section sits
+    phase: float = 0.0          # rotation the trace has reached here, radians
     segments: dict[str, list[Point2]] = field(default_factory=dict)
     loop_2d: list[Point2] = field(default_factory=list)
 
     def loop_3d(self) -> list[Point3]:
         return [
-            to_cone_3d(x, y, self.pitch_angle, self.cone_apex_z) for x, y in self.loop_2d
+            to_cone_3d(x, y, self.pitch_angle, self.cone_apex_z, self.phase)
+            for x, y in self.loop_2d
         ]
 
     def segments_3d(self) -> dict[str, list[Point3]]:
         return {
             name: [
-                to_cone_3d(x, y, self.pitch_angle, self.cone_apex_z) for x, y in pts
+                to_cone_3d(x, y, self.pitch_angle, self.cone_apex_z, self.phase)
+                for x, y in pts
             ]
             for name, pts in self.segments.items()
         }
 
 
-def to_cone_3d(x: float, y: float, delta: float, cone_apex_z: float) -> Point3:
+def to_cone_3d(
+    x: float, y: float, delta: float, cone_apex_z: float, phase: float = 0.0
+) -> Point3:
     """Map a point of the developed virtual spur gear onto the real cone.
 
     A point at developed radius r and developed angle phi lands at
 
         R     = r * cos(delta)              distance from the gear axis
-        theta = phi / cos(delta)            true angle about the axis
+        theta = phi / cos(delta) + phase    true angle about the axis
         z     = cone_apex_z - r * sin(delta)
 
     The 1/cos(delta) on the angle is what turns z_v teeth in the flat
     development into z teeth around the real gear. Arc length is preserved:
     R * theta == r * phi.
+
+    `phase` is where the spiral enters, and it enters here and nowhere else: the
+    section itself is the same shape it always was, sitting at the same cone
+    distance, turned about the gear axis by however far the tooth trace has
+    curved by this point along the face. Zero for a straight bevel gear, so the
+    argument's default is the whole of the straight case.
+
+    Note which mapping the phase is added *after*. The 1/cos(delta) belongs to
+    Tredgold's back-cone development and is about the tooth's profile; the phase
+    belongs to the crown-gear trace and is about where along the face that
+    profile sits. They are two different cone constructions and adding the phase
+    before the division would silently divide it by cos(delta) as well.
     """
     r = math.hypot(x, y)
     phi = math.atan2(y, x)
     R = r * math.cos(delta)
-    theta = phi / math.cos(delta)
+    theta = phi / math.cos(delta) + phase
     return R * math.cos(theta), R * math.sin(theta), cone_apex_z - r * math.sin(delta)
 
 
@@ -438,8 +668,10 @@ def tooth_space_section(
     end: str = "outer",
     n_flank: int = FLANK_POINTS,
     overshoot: float = 0.0,
+    cone_dist: float | None = None,
+    split_cap: bool = False,
 ) -> ToothSpaceSection:
-    """Build one end section of a tooth space, centred on angle 0.
+    """Build one section of a tooth space, centred on angle 0 at the mean.
 
     The loop runs counter-clockwise: up the negative flank, out past the tip,
     across the cap, back down the positive flank, then round the root.
@@ -448,20 +680,28 @@ def tooth_space_section(
     beyond Ao for the outer end, in below Ai for the inner. Pure geometry uses
     0; the SOLIDWORKS builder passes `end_overshoot(geo)` so the loft cut does
     not finish tangent to a face of the blank.
+
+    `cone_dist` names the position outright and overrides `end` and `overshoot`
+    together. A straight bevel gear only ever needs the two ends; a spiral one
+    needs as many sections in between as `section_cone_distances` asks for, and
+    those have no end to be named after.
     """
-    if end not in ("outer", "inner"):
-        raise ValueError(f"end must be 'outer' or 'inner', got {end!r}")
+    if cone_dist is None:
+        if end not in ("outer", "inner"):
+            raise ValueError(f"end must be 'outer' or 'inner', got {end!r}")
+        if end == "outer":
+            cone_dist = geo.outer_cone_dist + overshoot
+        else:
+            # Never let the overshoot walk the section through the pitch apex.
+            cone_dist = max(
+                geo.inner_cone_dist - overshoot, 0.05 * geo.outer_cone_dist
+            )
+    else:
+        cone_dist = max(cone_dist, 0.05 * geo.outer_cone_dist)
+        end = "mid"
 
     p = geo.params
     m = geo.member(member)
-
-    if end == "outer":
-        cone_dist = geo.outer_cone_dist + overshoot
-    else:
-        # Never let the overshoot walk the section through the pitch apex.
-        cone_dist = max(
-            geo.inner_cone_dist - overshoot, 0.05 * geo.outer_cone_dist
-        )
     k = cone_dist / geo.outer_cone_dist
 
     # Root radii and the involute base scale uniformly about the pitch apex,
@@ -491,7 +731,7 @@ def tooth_space_section(
     # length rather than an angle.
     segments, loop, filleted = tooth_space_loop(
         r_base, r_root, r_tip, r_cap, psi0, half_pitch,
-        p.fillet_factor * p.module * k, n_flank,
+        p.fillet_factor * p.module * k, n_flank, split_cap=split_cap,
     )
 
     return ToothSpaceSection(
@@ -503,8 +743,159 @@ def tooth_space_section(
         r_tip=r_tip,
         r_cap=r_cap,
         filleted=filleted,
+        cone_dist=cone_dist,
+        phase=phase_at_cone_distance(geo, member, cone_dist),
         segments=segments,
         loop_2d=loop,
+    )
+
+
+def section_span(geo: SetGeometry, member: str) -> tuple[float, float]:
+    """The cone distances the loft has to run between, heel first.
+
+    Both ends pushed past the blank by `end_overshoot`, so the cut never
+    finishes tangent to a real face. This is the span the section count has to
+    be solved over - **not** the face width, which is the shorter interval
+    between them.
+    """
+    overshoot = end_overshoot(geo, member)
+    return (
+        geo.outer_cone_dist + overshoot,
+        max(geo.inner_cone_dist - overshoot, 0.05 * geo.outer_cone_dist),
+    )
+
+
+def _worst_sagitta(
+    geo: SetGeometry, member: str, distances: list[float]
+) -> float:
+    """How far the loft's worst interval falls inside the true swept surface, mm.
+
+    The chord between two sections rotated `delta` apart sits
+    `r * (1 - cos(delta / 2))` inside the arc it should follow, at radius r.
+    Evaluated at the tip radius about the gear axis - the furthest any point of
+    the cut gets from the axis it is turning about, and so the worst case.
+
+    **Only intervals that reach the blank are counted.** Both ends of the run
+    are pushed well past the material by `end_overshoot` - 7.18 mm at the
+    gear's toe against a 13.87 mm face - and a chord out there bounds a piece of
+    cut that removes nothing, so its accuracy buys nothing either. Counting it
+    anyway is not merely wasteful: the trace turns fastest at small cone
+    distances, so the interval furthest past the toe is always the worst one,
+    and sizing the whole loft by it doubles the section count to chase a
+    tolerance in fresh air.
+    """
+    r_tip_axis = geo.member(member).outside_dia / 2.0
+    face_lo, face_hi = geo.inner_cone_dist, geo.outer_cone_dist
+    phases = [phase_at_cone_distance(geo, member, A) for A in distances]
+
+    worst = 0.0
+    for (a, b), (lo, hi) in zip(zip(distances, distances[1:]), zip(phases, phases[1:])):
+        if max(a, b) < face_lo or min(a, b) > face_hi:
+            continue        # entirely outside the blank; cuts nothing
+        worst = max(worst, r_tip_axis * (1.0 - math.cos(abs(hi - lo) / 2.0)))
+    return worst
+
+
+def section_cone_distances(
+    geo: SetGeometry,
+    member: str,
+    max_sagitta: float = MAX_SECTION_SAGITTA_MM,
+) -> list[float]:
+    """Where along the pitch cone the loft sections sit, heel first.
+
+    Evenly spaced across `section_span`, with as many as it takes to keep every
+    interval's chord inside `max_sagitta` of the true swept surface. A straight
+    bevel gear gets exactly the two ends, which is the pair the builder has
+    always used - so its output does not move.
+
+    **The count is measured, not solved.** The obvious closed form - total sweep
+    over the largest step the tolerance allows - is wrong here for two reasons,
+    and the first one cost a test:
+
+    * the sections span more than the face width. Both ends are pushed out by
+      `end_overshoot`, so solving the count over `Ao - Ai` sizes it for a
+      shorter run than the loft actually makes.
+    * the rotation is **not linear** in cone distance the way a helix's is in z.
+      The trace's angle changes fastest at small cone distances, so evenly
+      spaced sections rotate unevenly and the interval nearest the toe is always
+      the worst one. An average-sized count leaves that interval over tolerance.
+
+    Growing the count until the property holds on the sections themselves settles
+    both, and it is the same tactic `end_overshoot` uses a few functions up: this
+    module would rather measure a thing than assume it.
+
+    Measured on the anchor spiral set at 35 degrees: **11 sections each**. The
+    two landing on the same number is a coincidence of two effects cancelling,
+    and worth knowing about because the naive expectation is wrong. The pinion
+    sweeps far more - 38.790 degrees against the gear's 15.336 - but the gear's
+    tip stands much further from the axis it is turning about, 43.735 mm against
+    18.860, and the sagitta is proportional to that radius. A straight bevel set
+    takes two either way.
+    """
+    a_hi, a_lo = section_span(geo, member)
+
+    def spread(n: int) -> list[float]:
+        return [a_hi + (a_lo - a_hi) * i / (n - 1) for i in range(n)]
+
+    if geo.trace is None or max_sagitta <= 0.0:
+        return spread(2)
+
+    n = 2
+    for _ in range(200):
+        distances = spread(n)
+        if _worst_sagitta(geo, member, distances) <= max_sagitta:
+            return distances
+        n += 1
+    return spread(n)
+
+
+def section_count(
+    geo: SetGeometry,
+    member: str,
+    max_sagitta: float = MAX_SECTION_SAGITTA_MM,
+) -> int:
+    """How many sections the loft needs to follow the trace closely enough.
+
+    Two for a straight bevel gear, which has no rotation between its sections at
+    all; 11 for each member of the anchor spiral set. See
+    `section_cone_distances` for why the number is arrived at by measurement
+    rather than by a closed form.
+    """
+    return len(section_cone_distances(geo, member, max_sagitta))
+
+
+def guide_spiral(
+    geo: SetGeometry,
+    member: str,
+    a_hi: float,
+    a_lo: float,
+    points: int = 61,
+) -> list[Point3]:
+    """The loft guide curve: the path of the cap's centreline vertex.
+
+    The same construction as the helical spur builder's `guide_helix`, and it is
+    there for the same reason: a guided loft needs its guide to touch a point
+    that *exists* in every profile, and a point that merely lies near a spline is
+    the classic way such a loft fails. The cap of the tooth-space section is
+    symmetric about the space centreline, so the point at developed angle 0
+    exists in every section, and `split_cap` puts a real vertex there rather
+    than leaving it somewhere along a spline.
+
+    Unlike the spur case this is not a helix - the cap radius scales with the
+    cone distance while the phase follows the arc - so it is sampled and handed
+    over as a spline, which is what the builder does with every other curve.
+    """
+    return [
+        _cap_vertex(geo, member, a_hi + (a_lo - a_hi) * i / (points - 1))
+        for i in range(points)
+    ]
+
+
+def _cap_vertex(geo: SetGeometry, member: str, cone_dist: float) -> Point3:
+    """Where the cap's centreline vertex sits at one cone distance."""
+    section = tooth_space_section(geo, member, cone_dist=cone_dist)
+    return to_cone_3d(
+        section.r_cap, 0.0, section.pitch_angle, section.cone_apex_z, section.phase
     )
 
 

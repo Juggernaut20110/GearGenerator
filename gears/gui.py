@@ -84,6 +84,8 @@ BEVEL_FIELDS: tuple[Field, ...] = (
     Field("z2", "Gear teeth z2", int),
     Field("pressure_angle", "Pressure angle", float, "deg"),
     Field("shaft_angle", "Shaft angle", float, "deg"),
+    Field("spiral_angle", "Spiral angle (mean)", float, "deg"),
+    Field("hand", "Hand (pinion)", str, "", ("right", "left")),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
@@ -105,9 +107,24 @@ SPUR_FIELDS: tuple[Field, ...] = (
 # The order the rows are laid out in. Every field of every type appears once,
 # and the rows belonging to the other type are hidden rather than destroyed - so
 # switching type keeps whatever module and tooth counts were already typed.
-ALL_FIELDS: tuple[Field, ...] = (
-    BEVEL_FIELDS[:5] + SPUR_FIELDS[4:6] + BEVEL_FIELDS[5:]
-)
+#
+# `hand` appears in both tuples and means the same thing in both, so it gets one
+# row and one variable. That is the whole reason the rows are keyed by attribute
+# name: a field two types share is shared for free, and a helix hand typed on a
+# spur set is still there if you switch to a spiral bevel one.
+def _ordered_fields() -> tuple[Field, ...]:
+    seen: dict[str, Field] = {}
+    for field in BEVEL_FIELDS + SPUR_FIELDS:
+        seen.setdefault(field.attr, field)
+    order = (
+        "module", "z1", "z2", "pressure_angle",
+        "shaft_angle", "spiral_angle", "helix_angle", "hand",
+        "face_width", "bore", "hub_thickness", "min_root_thickness",
+    )
+    return tuple(seen[name] for name in order)
+
+
+ALL_FIELDS: tuple[Field, ...] = _ordered_fields()
 
 # Fields `with_defaults` can size for us, and so the "Auto" button rewrites.
 BEVEL_AUTO = ("face_width", "bore", "hub_thickness", "min_root_thickness")
@@ -115,9 +132,13 @@ SPUR_AUTO = ("face_width", "bore", "hub_thickness")
 
 
 def _bevel_status(p, geo) -> str:
+    trace = (
+        "straight teeth" if geo.trace is None
+        else f"spiral {p.spiral_angle:g} deg {p.hand}"
+    )
     return (
         f"m {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
-        f"shaft {p.shaft_angle:g} deg   "
+        f"shaft {p.shaft_angle:g} deg   {trace}   "
         f"cones {geo.pinion.pitch_angle_deg:.3f} / {geo.gear.pitch_angle_deg:.3f} deg"
     )
 
@@ -190,7 +211,11 @@ KINDS: dict[str, GearKind] = {
         preview=bevel_preview,
         fields=BEVEL_FIELDS,
         auto_fields=BEVEL_AUTO,
-        auto_kwargs=("pressure_angle", "shaft_angle"),
+        # The spiral angle has to be carried into `with_defaults`, because the
+        # face width it picks depends on it - a curved tooth takes the tighter
+        # Gleason limit of 0.30*Ao. Without it, "Auto-size blank" on a spiral set
+        # would hand back the straight set's face width and then warn about it.
+        auto_kwargs=("pressure_angle", "shaft_angle", "spiral_angle", "hand"),
         default_scene="developed",
         status=_bevel_status,
         result_lines=_bevel_result_lines,

@@ -44,6 +44,7 @@ from .geometry import (
     SetGeometry,
     ToothSpaceSection,
     blank_outline,
+    phase_at_cone_distance,
     to_cone_3d,
     tooth_space_section,
 )
@@ -53,7 +54,7 @@ __all__ = [
     "arc", "axial_scene", "blank_scene", "build_scene", "circle",
     "csv_lines", "derived_rows", "developed_scene", "draw_scale_bar",
     "draw_scene", "dxf_lines", "nice_length", "rotate", "space_loop",
-    "style_for", "to_axial", "write_csv", "write_dxf",
+    "style_for", "to_axial", "trace_scene", "write_csv", "write_dxf",
 ]
 
 
@@ -86,11 +87,18 @@ def space_loop(section: ToothSpaceSection, tip_points: int = 9) -> list[Point2]:
 
 
 def to_axial(points, section: ToothSpaceSection) -> list[Point2]:
-    """Developed points onto the real cone, then projected down the gear axis."""
+    """Developed points onto the real cone, then projected down the gear axis.
+
+    The section's phase comes along, so a spiral gear's two ends land where the
+    trace actually puts them - which is what makes the angle between them in
+    `axial_scene` the spiral's sweep rather than nothing at all.
+    """
     return [
         (x, y)
         for x, y, _ in (
-            to_cone_3d(px, py, section.pitch_angle, section.cone_apex_z)
+            to_cone_3d(
+                px, py, section.pitch_angle, section.cone_apex_z, section.phase
+            )
             for px, py in points
         )
     ]
@@ -195,11 +203,19 @@ def axial_scene(geo: SetGeometry, member: str) -> Scene:
     lines.append(Polyline(outer_loop, "outer", True))
     lines.append(Polyline(inner_loop, "inner", True))
 
+    sweep_note = ""
+    if geo.trace is not None:
+        sweep = math.degrees(
+            phase_at_cone_distance(geo, member, geo.outer_cone_dist)
+            - phase_at_cone_distance(geo, member, geo.inner_cone_dist)
+        )
+        sweep_note = f", spiral sweep {sweep:+.3f} deg"
+
     return Scene(
         key="axial",
         title=(
             f"{member} - {m.z} tooth spaces about the axis, "
-            f"outside dia {m.outside_dia:.3f} mm"
+            f"outside dia {m.outside_dia:.3f} mm{sweep_note}"
         ),
         polylines=lines,
         legend=[
@@ -208,6 +224,85 @@ def axial_scene(geo: SetGeometry, member: str) -> Scene:
             ("neighbour", "the other spaces"),
             ("pitch", "pitch circle"),
             ("reference", "tip and inner circles"),
+        ],
+    )
+
+
+def trace_scene(geo: SetGeometry, member: str, neighbours: int = 2) -> Scene:
+    """The tooth trace as an arc in the generating crown gear's plane.
+
+    The one view that shows what the cutter radius did. Everything else looks at
+    a section; this looks at the curve those sections are strung along, in the
+    plane where it is a plain circular arc rather than something wrapped onto a
+    cone.
+
+    Both members' traces are the *same* curve here - that is the whole
+    construction - so this scene does not depend on which member is selected,
+    and says so in its title rather than pretending otherwise. What differs
+    between them is only how far round their own axis that curve carries the
+    tooth, which is what `axial_scene` shows.
+
+    A radial line is drawn alongside for reference: that is the trace a straight
+    bevel gear has, and the gap between the two at the toe and the heel is the
+    spiral.
+    """
+    trace = geo.trace
+    a_i, a_m, a_o = geo.inner_cone_dist, geo.mean_cone_dist, geo.outer_cone_dist
+
+    def polar_pt(radius: float, angle: float) -> Point2:
+        return radius * math.cos(angle), radius * math.sin(angle)
+
+    def trace_points(offset: float, n: int = 81) -> list[Point2]:
+        pts = []
+        for i in range(n):
+            a = a_i + (a_o - a_i) * i / (n - 1)
+            angle = offset + (
+                trace.sign * trace.theta_at(a) if trace is not None else 0.0
+            )
+            pts.append(polar_pt(a, angle))
+        return pts
+
+    # The crown gear carries as many teeth as it has pitch; its angular pitch is
+    # the arc length of one pitch over the mean cone distance.
+    crown_pitch = geo.circular_pitch * (a_m / a_o) / a_m
+    span = (neighbours + 0.75) * crown_pitch
+
+    lines: list[Polyline] = [
+        Polyline(arc(a_m, -span, span), "pitch"),
+        Polyline(arc(a_i, -span, span), "reference"),
+        Polyline(arc(a_o, -span, span), "reference"),
+        # What a straight bevel gear's trace is, for comparison.
+        Polyline([polar_pt(a_i, 0.0), polar_pt(a_o, 0.0)], "cut"),
+    ]
+
+    for i in range(1, neighbours + 1):
+        for sign in (-1, 1):
+            lines.append(
+                Polyline(trace_points(sign * i * crown_pitch), "neighbour")
+            )
+    lines.append(Polyline(trace_points(0.0), "outer"))
+
+    if trace is None:
+        title = "straight teeth - the trace is the cone generator itself"
+    else:
+        title = (
+            f"tooth trace in the crown plane, {trace.cutter_radius:.3f} mm cutter "
+            f"at {math.degrees(abs(trace.spiral_angle_at(a_i))):.2f} / "
+            f"{math.degrees(abs(trace.spiral_angle_at(a_m))):.2f} / "
+            f"{math.degrees(abs(trace.spiral_angle_at(a_o))):.2f} deg "
+            "(toe / mean / heel)"
+        )
+
+    return Scene(
+        key="trace",
+        title=f"both members - {title}",
+        polylines=lines,
+        legend=[
+            ("outer", "tooth trace"),
+            ("neighbour", "adjacent traces"),
+            ("cut", "a straight tooth, for comparison"),
+            ("pitch", "mean cone distance Am"),
+            ("reference", "toe Ai and heel Ao"),
         ],
     )
 
@@ -262,12 +357,14 @@ def blank_scene(geo: SetGeometry, member: str) -> Scene:
 SCENE_BUILDERS = {
     "developed": developed_scene,
     "axial": axial_scene,
+    "trace": trace_scene,
     "blank": blank_scene,
 }
 
 SCENE_LABELS = [
     ("developed", "Developed section"),
     ("axial", "Down the axis"),
+    ("trace", "Tooth trace"),
     ("blank", "Blank section"),
 ]
 
@@ -283,6 +380,65 @@ def build_scene(geo: SetGeometry, member: str, key: str) -> Scene:
 # ---------------------------------------------------------------------------
 # Read-only derived values
 # ---------------------------------------------------------------------------
+
+
+def _trace_rows(geo: SetGeometry) -> list[Row]:
+    """The spiral block of the readout. Empty for a straight set.
+
+    Empty rather than a row of dashes: a straight bevel gear does not have a
+    cutter radius that happens to be blank, it has no trace at all, and a table
+    that shows the field anyway invites someone to fill it in.
+    """
+    trace = geo.trace
+    if trace is None:
+        return []
+    return [
+        Row("SPIRAL", header=True),
+        Row("hand (pinion)", geo.params.hand),
+        Row("mean spiral angle", _n(abs(geo.params.spiral_angle)), unit="deg"),
+        Row(
+            "spiral angle at toe",
+            _n(math.degrees(abs(trace.spiral_angle_at(geo.inner_cone_dist)))),
+            unit="deg",
+        ),
+        Row(
+            "spiral angle at heel",
+            _n(math.degrees(abs(trace.spiral_angle_at(geo.outer_cone_dist)))),
+            unit="deg",
+        ),
+        Row("cutter radius", _n(trace.cutter_radius), unit="mm"),
+        Row("cutter offset rho", _n(trace.centre_distance), unit="mm"),
+        Row("contact ratio, face", _n(geo.face_contact_ratio)),
+    ]
+
+
+def _sweep_rows(geo: SetGeometry) -> list[Row]:
+    """How far each member's tooth carries round its own axis. Straight: none."""
+    if geo.trace is None:
+        return []
+
+    def sweep(member: str) -> float:
+        """Radians, signed - the direction is as much of the answer as the size."""
+        return phase_at_cone_distance(
+            geo, member, geo.outer_cone_dist
+        ) - phase_at_cone_distance(geo, member, geo.inner_cone_dist)
+
+    return [
+        Row(
+            "sweep over the face",
+            _n(math.degrees(sweep("pinion"))),
+            _n(math.degrees(sweep("gear"))),
+            "deg",
+        ),
+        # Against each member's own pitch, which is the number that says whether
+        # the tooth wraps past its neighbour's start - and they differ, because
+        # the two members have different tooth counts as well as different sweeps.
+        Row(
+            "as angular pitches",
+            _n(abs(sweep("pinion")) / geo.pinion.angular_pitch),
+            _n(abs(sweep("gear")) / geo.gear.angular_pitch),
+        ),
+    ]
 
 
 def derived_rows(geo: SetGeometry) -> list[Row]:
@@ -302,8 +458,10 @@ def derived_rows(geo: SetGeometry) -> list[Row]:
         Row("whole depth", _n(geo.whole_depth), unit="mm"),
         Row("clearance", _n(geo.clearance), unit="mm"),
         Row("min root thickness", _n(p.min_root_thickness), unit="mm"),
+        *_trace_rows(geo),
         Row("MEMBERS", "pinion", "gear", header=True),
         Row("teeth", str(a.z), str(b.z)),
+        *_sweep_rows(geo),
         Row("pitch cone angle", _n(a.pitch_angle_deg), _n(b.pitch_angle_deg), "deg"),
         Row("face cone angle", _n(a.face_angle_deg), _n(b.face_angle_deg), "deg"),
         Row("root cone angle", _n(a.root_angle_deg), _n(b.root_angle_deg), "deg"),

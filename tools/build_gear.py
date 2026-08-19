@@ -1,20 +1,34 @@
-"""Milestone 3: build one bevel gear in SOLIDWORKS.
+"""Milestone 3: build one bevel gear in SOLIDWORKS, straight or spiral.
 
     .venv\\Scripts\\python.exe tools\\build_gear.py --module 2 --z1 17 --z2 43
     .venv\\Scripts\\python.exe tools\\build_gear.py --module 2 --z1 17 --z2 43 \\
         --member gear --save out\\gear.sldprt
+    .venv\\Scripts\\python.exe tools\\build_gear.py --spiral 35
+    .venv\\Scripts\\python.exe tools\\build_gear.py --spiral 0 --cutter-radius 39.3
+
+`--spiral 0` is a straight bevel gear and takes two loft sections. Anything else
+is a curved tooth and takes as many as the trace needs - 11 per member on the
+anchor set - plus a guide curve, so it is a noticeably longer build.
+
+The last line is a **Zerol** set: a zero mean spiral angle with a real cutter
+radius, which curves the tooth without laying it over.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gears.bevel.geometry import compute_set          # noqa: E402
+from gears.bevel.geometry import (                    # noqa: E402
+    compute_set,
+    phase_at_cone_distance,
+    section_count,
+)
 from gears.bevel.params import BevelSetParams         # noqa: E402
 from gears.bevel.validate import validate             # noqa: E402
 from gears.sw import SwError, SwSession, build_gear  # noqa: E402
@@ -27,6 +41,13 @@ def main(argv=None) -> int:
     ap.add_argument("--z2", type=int, default=43)
     ap.add_argument("--alpha", type=float, default=20.0)
     ap.add_argument("--sigma", type=float, default=90.0)
+    ap.add_argument(
+        "--spiral", type=float, default=0.0, help="mean spiral angle, deg"
+    )
+    ap.add_argument("--hand", choices=("right", "left"), default="right")
+    ap.add_argument(
+        "--cutter-radius", type=float, help="face-milling cutter radius, mm"
+    )
     ap.add_argument("--face-width", type=float)
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
@@ -36,8 +57,14 @@ def main(argv=None) -> int:
     ap.add_argument("--close", action="store_true", help="close the part afterwards")
     args = ap.parse_args(argv)
 
-    overrides = {"pressure_angle": args.alpha, "shaft_angle": args.sigma}
+    overrides = {
+        "pressure_angle": args.alpha,
+        "shaft_angle": args.sigma,
+        "spiral_angle": args.spiral,
+        "hand": args.hand,
+    }
     for key, value in (
+        ("cutter_radius", args.cutter_radius),
         ("face_width", args.face_width),
         ("bore", args.bore),
         ("hub_thickness", args.hub),
@@ -61,6 +88,17 @@ def main(argv=None) -> int:
         f"building {args.member}: m={p.module} z={m.z} "
         f"delta={m.pitch_angle_deg:.3f} deg, {m.z} teeth"
     )
+    if geo.trace is not None:
+        sections = section_count(geo, args.member)
+        sweep = math.degrees(
+            phase_at_cone_distance(geo, args.member, geo.outer_cone_dist)
+            - phase_at_cone_distance(geo, args.member, geo.inner_cone_dist)
+        )
+        print(
+            f"  spiral {p.spiral_angle:g} deg {p.hand}, "
+            f"{p.cutter_radius:.3f} mm cutter, sweep {sweep:+.3f} deg"
+        )
+        print(f"  {sections} loft sections plus a guide curve - this is the slow one")
 
     save_path = str(Path(args.save).resolve()) if args.save else None
     if save_path:
