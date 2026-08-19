@@ -68,11 +68,17 @@ from .session import (
 EXPECTED_COMPONENT_STATUS = "under defined"
 
 
-def part_filename(geo, member: str) -> str:
-    """`pinion_m2_z17.sldprt`. The module's decimal point becomes a p."""
+def part_filename(geo, member: str, prefix: str = "") -> str:
+    """`pinion_m2_z17.sldprt`. The module's decimal point becomes a p.
+
+    `prefix` keeps the gear types apart. Without it a spur 17x43 at module 2 and
+    a bevel 17x43 at module 2 claim the same two filenames, and building one
+    overwrites the other's parts - leaving the first assembly pointing at gears
+    of the wrong kind.
+    """
     m = geo.member(member)
     module = f"{geo.params.module:g}".replace(".", "p")
-    return f"{member}_m{module}_z{m.z}.sldprt"
+    return f"{prefix}{member}_m{module}_z{m.z}.sldprt"
 
 
 def add_component(model, path: str):

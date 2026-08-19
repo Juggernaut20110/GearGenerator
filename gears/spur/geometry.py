@@ -74,6 +74,24 @@ WHOLE_DEPTH_FACTOR = ADDENDUM_FACTOR + DEDENDUM_FACTOR
 END_OVERSHOOT_FRACTION = 0.05
 END_OVERSHOOT_MIN_MM = 0.5
 
+# How far a lofted flank may fall inside the true helicoid, in mm.
+#
+# A loft carries each profile point from one section to the next along a
+# straight chord, and a helix is an arc, so the swept surface sits inside the
+# helicoid by the chord's sagitta - r * (1 - cos(delta / 2)) at radius r over a
+# twist of delta. The cut comes out shallower than it should, and the flank is
+# the wrong shape.
+#
+# Measured on the anchor helical pinion (m_n=2, 17 teeth, 15 deg) built from two
+# sections and a guide curve: the mid-face profile stood 0.198 mm proud of the
+# end profile at the same relative angle, against a predicted sagitta of 0.287
+# mm at that radius. So the guide helps and does not fix it - it pins only the
+# one point it passes through, and everything else is still interpolated.
+#
+# 0.02 mm is an order below any tooth tolerance that matters and costs only a
+# few extra sketches.
+MAX_SECTION_SAGITTA_MM = 0.02
+
 
 # ---------------------------------------------------------------------------
 # Derived geometry
@@ -279,6 +297,53 @@ def undercut_limit(alpha_t: float, beta: float) -> float:
 def end_overshoot(geo: SpurSetGeometry) -> float:
     """How far past each end face the cut profile is pushed, mm."""
     return max(END_OVERSHOOT_MIN_MM, END_OVERSHOOT_FRACTION * geo.params.face_width)
+
+
+def section_count(
+    geo: SpurSetGeometry,
+    member: str,
+    max_sagitta: float = MAX_SECTION_SAGITTA_MM,
+) -> int:
+    """How many sections the loft needs to follow the helix closely enough.
+
+    Two is right for straight teeth and wrong for helical ones: the loft chords
+    each profile point between consecutive sections, and over a twist of `delta`
+    the chord falls `r * (1 - cos(delta / 2))` inside the true helicoid. Solving
+    that for the tip radius - the worst case, being furthest out - and rounding
+    up gives the count.
+
+    A guide curve does not remove the need for this. It pins the one point it
+    runs through and leaves the rest of the profile interpolated, which is
+    exactly what the measurement recorded beside `MAX_SECTION_SAGITTA_MM` found.
+    """
+    m = geo.member(member)
+    twist = abs(m.twist)
+    if twist <= 0.0 or max_sagitta <= 0.0:
+        return 2
+
+    # Largest twist per interval that keeps the sagitta inside the tolerance.
+    ratio = 1.0 - max_sagitta / m.tip_r
+    if ratio <= -1.0:
+        return 2
+    step = 2.0 * math.acos(max(-1.0, min(1.0, ratio)))
+    return max(2, math.ceil(twist / step) + 1)
+
+
+def section_heights(
+    geo: SpurSetGeometry,
+    member: str,
+    max_sagitta: float = MAX_SECTION_SAGITTA_MM,
+) -> list[float]:
+    """The axial positions of the loft sections, ends included.
+
+    Evenly spaced from below the front face to above the back one, both pushed
+    out by `end_overshoot` so the cut never finishes tangent to a real face.
+    """
+    overshoot = end_overshoot(geo)
+    z_lo = -overshoot
+    z_hi = geo.params.face_width + overshoot
+    n = section_count(geo, member, max_sagitta)
+    return [z_lo + (z_hi - z_lo) * i / (n - 1) for i in range(n)]
 
 
 @dataclass(frozen=True)

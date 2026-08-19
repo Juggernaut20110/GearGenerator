@@ -5,8 +5,9 @@ Sequence, matching the bevel builder's:
 1. reference axis along Z (intersection of the Top and Right planes)
 2. blank: meridian outline sketched on the Top Plane, fully dimensioned with
    driving dimensions, revolved 360 degrees
-3. two 3D sketches - the tooth-space section at each end of the face width
-4. loft cut between them, with a helix guide curve when the teeth are helical
+3. 3D sketches of the tooth-space section, two for straight teeth and as many
+   as the twist needs for helical ones
+4. loft cut through them, with a helix guide curve when the teeth are helical
 5. circular pattern of that cut, z instances about the axis
 
 Coordinates come out of `geometry` in millimetres with the front face at the
@@ -21,12 +22,22 @@ is linear and none is angular - which means this builder needs neither
 Both sections are the same shape. On a bevel gear they are not: each is a
 different size, scaled about the pitch apex. Here only the phase changes.
 
-**A straight gear needs no guide curve and a helical one does.** Two identical
-sections at different heights loft to a prism, which is the tooth. Two *rotated*
-sections loft to a ruled surface that agrees with the helicoid only at the ends
-and cuts inside it in between, because a loft carries each profile point along a
-straight line and a helix is not straight. The guide is what makes the twist
-uniform along the way.
+**A straight gear takes two sections; a helical one takes as many as it
+needs.** Two identical sections loft to a prism, which is the tooth. Two
+*rotated* sections loft to a surface that meets the helicoid only at the ends
+and falls inside it in between, because a loft carries each profile point along
+a straight chord and a helix is an arc.
+
+A guide curve alone does not fix that, which is worth stating because it is what
+this builder was written to do first. Measured on the anchor helical pinion,
+built from two sections plus a guide: the mid-face profile stood 0.198 mm proud
+of the end profile at the same relative angle, and the cut came out 0.9 percent
+short of the volume a true helicoid removes. The guide pins the one point it
+runs through - the tip agreed exactly - and leaves the rest interpolated.
+
+So the section count comes from `section_heights`, which solves the chord's
+sagitta against a stated tolerance. The guide stays as well: it costs one sketch
+and it pins the cap exactly.
 """
 
 from __future__ import annotations
@@ -34,8 +45,8 @@ from __future__ import annotations
 from ..spur.geometry import (
     SpurSetGeometry,
     blank_outline,
-    end_overshoot,
     guide_helix,
+    section_heights,
     to_axial_3d,
     tooth_space_section,
 )
@@ -59,7 +70,7 @@ from .common import (
 )
 from .session import (
     MARK_LOFT_GUIDE,
-    REL_HORIZONTAL,
+    REL_COINCIDENT,
     DimensionFlags,
     add_dimension,
     add_relation,
@@ -159,9 +170,14 @@ def _dimension_blank(app, model, geo: SpurSetGeometry, member: str, axis, lines,
     dimension would measure zero and a zero-length dimension cannot be created.
     That is not a workaround: "the front face sits at z = 0" is a statement about
     the coordinate system rather than a number anyone would want to edit, so a
-    relation is what it should have been either way. Both ends of the front-face
-    line share a z once it is horizontal, so it does not matter which endpoint
-    the relation is hung on.
+    relation is what it should have been either way.
+
+    It has to be coincident between the datum **point and the front-face line** -
+    point on line. Two other spellings look right and are not, and both fail
+    quietly enough to cost an afternoon: a horizontal relation between the datum
+    and the line's endpoint does nothing at all, and a coincident relation
+    between those same two points *merges* them, dragging the blank's corner onto
+    the axis. See the note beside `REL_COINCIDENT` for the measurements.
 
     Values come from `outline` rather than being recomputed, so a dimension
     cannot disagree with the geometry it is measuring.
@@ -179,9 +195,9 @@ def _dimension_blank(app, model, geo: SpurSetGeometry, member: str, axis, lines,
 
     add_relation(
         model,
-        (datum, front_face.GetStartPoint2()),
-        REL_HORIZONTAL,
-        "front face on the axis datum",
+        (datum, front_face),
+        REL_COINCIDENT,
+        "front face through the axis datum",
     )
 
     plan = [
@@ -254,15 +270,17 @@ def build_spur(
     axis_feat = create_axis(model)
     build_blank(session.app, model, geo, member)
 
-    overshoot = end_overshoot(geo)
-    z_lo, z_hi = -overshoot, geo.params.face_width + overshoot
     helical = abs(m.twist) > STRAIGHT_TWIST_TOL
+    heights = section_heights(geo, member)
 
-    front = _draw_section(model, geo, member, z_lo, split_cap=helical)
-    back = _draw_section(model, geo, member, z_hi, split_cap=helical)
-    guides = (_draw_guide(model, geo, member, z_lo, z_hi),) if helical else ()
+    sections = [
+        _draw_section(model, geo, member, z, split_cap=helical) for z in heights
+    ]
+    guides = (
+        (_draw_guide(model, geo, member, heights[0], heights[-1]),) if helical else ()
+    )
 
-    cut = loft_cut(model, (front, back), guides, guide_mark=MARK_LOFT_GUIDE)
+    cut = loft_cut(model, sections, guides, guide_mark=MARK_LOFT_GUIDE)
     drop_offcut(model)
     pattern_teeth(model, cut, axis_feat, m.z)
 

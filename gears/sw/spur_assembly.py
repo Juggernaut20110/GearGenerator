@@ -6,27 +6,38 @@ afterwards, why every mate is swMateAlignCLOSEST, and why the gear mate cannot
 disturb the clocking.
 
 What is particular to a spur pair is the arrangement. The axes are parallel and
-a **centre distance** apart, so the gear is translated rather than tilted:
+a **centre distance** apart, so the gear is translated rather than tilted, and
+the two members are held quite differently:
 
-    position    pinion: origin coincident with the assembly origin        (3)
-                gear:   axis at distance a from the pinion axis           (1)
-    axis        component axis coincident with the assembly Top plane     (1)
-    direction   pinion: axis also coincident with the Right plane         (1)
-                gear:   axis also coincident with the Front plane         (1)
+    pinion      origin coincident with the assembly origin                (3)
+                axis coincident with the assembly Top plane               (1)
+                axis coincident with the assembly Right plane             (1)
 
-Two differences from the bevel set are worth stating rather than leaving to be
-inferred.
+    gear        axis parallel to the pinion axis                          (2)
+                axis coincident with the assembly Top plane               (1)
+                origin coincident with the assembly Front plane           (1)
+                axis at distance a from the pinion axis                   (1)
 
-**The gear's position is a distance mate, not a coincident origin.** Both
-members' origins land on the assembly origin in a bevel set because they share
-an apex. Here they are `a` apart, and the honest place to put that number is a
-distance mate between the two axes - which is also where someone would look for
-it afterwards.
+Three things about the gear's half are worth stating, because the obvious
+arrangement is wrong in all three:
 
-**The gear's direction is a second plane coincidence, not an angle mate.** The
-bevel set uses an angle mate because no default plane is parallel to its gear
-axis. Here every axis is parallel to +Z, so the Front plane serves, and an angle
-mate at zero degrees is the kind of thing that solves to 180 as readily as to 0.
+**The gear cannot be mated to the Right or Front plane the way the pinion is.**
+Its axis runs along +Z, and a line along +Z cannot lie in the Front plane, which
+is the XY plane. Only the Top and Right planes contain a +Z direction, and Right
+would force the gear onto x = 0 - which is precisely where it must not be.
+
+**Nothing above locates the gear along its own axis except the origin mate.**
+The bevel set gets all three translations from putting both origins on the
+assembly origin, because the members share an apex. Here they are `a` apart, so
+the axial position has to be asked for separately: the gear's origin sits at its
+front face, and mating that point to the Front plane puts both front faces on
+z = 0.
+
+**The direction is a parallel mate, not an angle mate at zero.** An angle mate at
+zero degrees solves to 180 as readily as to 0.
+
+The centre distance is a distance mate between the two axes, which is the honest
+place to put that number and where someone would look for it afterwards.
 
 The *sense* of the gear mate has **not** been measured for a spur pair. An
 external pair turns in opposite senses about parallel axes -
@@ -70,6 +81,7 @@ from .session import (
     SW_MATE_COINCIDENT,
     SW_MATE_DISTANCE,
     SW_MATE_GEAR,
+    SW_MATE_PARALLEL,
     TOP_PLANE_NAMES,
     flag_methods,
 )
@@ -149,6 +161,9 @@ def add_mates(
     pick_pinion_origin = point_pick(
         origin_point(pinion_comp, "the pinion origin"), "the pinion origin"
     )
+    pick_gear_origin = point_pick(
+        origin_point(gear_comp, "the gear origin"), "the gear origin"
+    )
 
     added: list[str] = []
 
@@ -165,10 +180,14 @@ def add_mates(
          "pinion axis - Top plane")
     mate((pick_pinion_axis, right), SW_MATE_COINCIDENT,
          "pinion axis - Right plane")
+    # Direction first, then position - the same order as the pinion's, so that
+    # each mate after the first has fewer freedoms left to argue about.
+    mate((pick_gear_axis, pick_pinion_axis), SW_MATE_PARALLEL,
+         "gear axis parallel to the pinion axis")
     mate((pick_gear_axis, top), SW_MATE_COINCIDENT,
          "gear axis - Top plane")
-    mate((pick_gear_axis, front), SW_MATE_COINCIDENT,
-         "gear axis - Front plane")
+    mate((pick_gear_origin, front), SW_MATE_COINCIDENT,
+         "gear front face - Front plane")
     mate((pick_gear_axis, pick_pinion_axis), SW_MATE_DISTANCE,
          f"centre distance {geo.centre_distance:.4f} mm",
          distance=geo.centre_distance)
@@ -196,11 +215,13 @@ def build_spur_set(
     a gear mate, so the saved assembly turns. Off, it is placed and left
     floating, which is worth having when a mate is the thing under suspicion.
     """
-    out_dir = Path(out_dir)
+    # Absolute: SaveAs3 refuses a relative path with a bare "error 1", which
+    # says nothing about what is wrong with it.
+    out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pinion_path = out_dir / part_filename(geo, "pinion")
-    gear_path = out_dir / part_filename(geo, "gear")
+    pinion_path = out_dir / part_filename(geo, "pinion", prefix="spur_")
+    gear_path = out_dir / part_filename(geo, "gear", prefix="spur_")
 
     pinion = build_spur(session, geo, "pinion", str(pinion_path))
     gear = build_spur(session, geo, "gear", str(gear_path))

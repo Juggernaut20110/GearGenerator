@@ -39,6 +39,7 @@ SW_SAVE_AS_OPTIONS_SILENT = 1     # swSaveAsOptions_e
 # not in the order the toolbar lists them, and swMateGEAR sits between
 # swMateCAMFOLLOWER and swMateWIDTH.
 SW_MATE_COINCIDENT = 0            # swMateType_e
+SW_MATE_PARALLEL = 3
 SW_MATE_DISTANCE = 5
 SW_MATE_ANGLE = 6
 SW_MATE_GEAR = 10
@@ -85,6 +86,20 @@ EQUATION_ANGLE_DECIMALS = 6
 REL_FIXED = "sgFIXED"
 REL_HORIZONTAL = "sgHORIZONTAL"
 REL_VERTICAL = "sgVERTICAL"
+
+# What each of these means depends on what is selected, and getting that wrong
+# is silent rather than loud. Measured on the spur blank, pinning its front face
+# to the axis datum three ways:
+#
+#   sgHORIZONTAL, two points   nothing at all - the sketch stays under defined
+#   sgCOINCIDENT, two points   MERGES them, dragging the blank's corner onto the
+#                              origin; the radial dimensions are then refused or
+#                              come back wrong (HubRadius read 4 mm, not 8.25)
+#   sgCOINCIDENT, point+line   point on line - fully defined, which is the one
+#
+# Only the third expresses "this face passes through that point". Order does not
+# matter for the third: (point, line) and (line, point) both work.
+REL_COINCIDENT = "sgCOINCIDENT"
 
 CONSTRAINED_STATUS_NAMES = {
     1: "unknown",

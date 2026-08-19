@@ -14,7 +14,10 @@ from gears.spur.geometry import (
     compute_set,
     end_overshoot,
     guide_helix,
+    MAX_SECTION_SAGITTA_MM,
     phase_at,
+    section_count,
+    section_heights,
     to_axial_3d,
     tooth_space_section,
     undercut_limit,
@@ -492,3 +495,72 @@ def test_blank_segments_alternate_horizontal_and_vertical(member, hub):
         kinds.append("H" if horizontal else "V")
 
     assert kinds == ["H", "V"] * (n // 2)
+
+
+# --- how many loft sections the twist needs --------------------------------
+#
+# A loft chords each profile point between consecutive sections, and a helix is
+# an arc, so too few sections cut inside the true helicoid. Measured in
+# SOLIDWORKS on the helical anchor pinion: two sections plus a guide curve left
+# the mid-face profile 0.198 mm proud of the end profile and the cut 0.9% short
+# of the helicoid's volume; six sections brought both to 0.011 mm and -0.068%.
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_straight_teeth_need_only_two_sections(member):
+    assert section_count(compute_set(ANCHOR), member) == 2
+    assert len(section_heights(compute_set(ANCHOR), member)) == 2
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", [10.0, 15.0, 20.0, 30.0])
+def test_helical_teeth_need_more_than_two(beta, member):
+    assert section_count(sets(beta), member) > 2
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", [10.0, 15.0, 20.0, 30.0, 40.0])
+def test_the_chord_sagitta_stays_inside_the_tolerance(beta, member):
+    """The property the count is chosen for, checked at the worst radius."""
+    g = sets(beta)
+    m = g.member(member)
+    n = section_count(g, member)
+    step = abs(m.twist) / (n - 1)
+    sagitta = m.tip_r * (1.0 - math.cos(step / 2.0))
+    assert sagitta <= MAX_SECTION_SAGITTA_MM
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", [10.0, 15.0, 30.0])
+def test_a_tighter_tolerance_asks_for_more_sections(beta, member):
+    g = sets(beta)
+    loose = section_count(g, member, max_sagitta=0.05)
+    tight = section_count(g, member, max_sagitta=0.005)
+    assert tight > loose
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+@pytest.mark.parametrize("beta", BETAS)
+def test_section_heights_span_the_overshot_face_evenly(beta, member):
+    g = sets(beta)
+    heights = section_heights(g, member)
+    overshoot = end_overshoot(g)
+
+    assert heights[0] == pytest.approx(-overshoot)
+    assert heights[-1] == pytest.approx(g.params.face_width + overshoot)
+    gaps = [b - a for a, b in zip(heights, heights[1:])]
+    assert all(gap == pytest.approx(gaps[0]) for gap in gaps)
+
+
+@pytest.mark.parametrize("member", MEMBERS)
+def test_every_section_still_lies_on_the_same_helix(helical, member):
+    """Adding sections must not disturb what the guide curve is drawn through."""
+    heights = section_heights(helical, member)
+    guide = guide_helix(helical, member, heights[0], heights[-1])
+
+    for z in heights:
+        segments = tooth_space_section(
+            helical, member, z=z, split_cap=True
+        ).segments_3d()
+        vertex = segments["cap_neg"][-1]
+        assert min(math.dist(vertex, point) for point in guide) < 1e-6

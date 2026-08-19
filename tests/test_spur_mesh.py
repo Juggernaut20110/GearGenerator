@@ -173,3 +173,35 @@ def test_an_unclocked_unmoved_gear_packs_to_the_identity():
     assert data == pytest.approx(
         [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
     )
+
+
+# --- what the assembly builder relies on -----------------------------------
+
+
+def test_the_gear_needs_its_own_axial_locator(geo):
+    """Both members' fronts sit at z = 0, and nothing else puts them there.
+
+    A bevel pair gets all three translations from putting both origins on the
+    assembly origin, because it shares an apex. A spur pair does not: the gear's
+    origin is `a` away, so its axial position has to be asked for separately.
+    That is what the gear-origin-to-Front-plane mate is for, and this records
+    that the number it should land on is zero.
+    """
+    assert mesh.gear_translation(geo)[2] == 0.0
+    place = placed_gear(geo)
+    assert place((0.0, 0.0, 0.0))[2] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_gear_axis_cannot_lie_in_the_front_plane(geo):
+    """Why the gear is mated to Top and to a parallel, not to Front.
+
+    Its axis runs along +Z and the Front plane is z = 0, so no rotation in the
+    placement could put the axis in that plane - only the Top and Right planes
+    contain a +Z direction, and Right would force the gear onto x = 0.
+    """
+    clocking = mesh.gear_clocking(geo.gear.z)
+    axis = mesh.axis_of(mesh.gear_placement(clocking))
+    assert abs(axis[2]) == pytest.approx(1.0)      # wholly along Z
+    assert axis[0] == pytest.approx(0.0, abs=1e-12)
+    assert axis[1] == pytest.approx(0.0, abs=1e-12)
+    assert mesh.gear_translation(geo)[0] > 0.0     # and not on x = 0

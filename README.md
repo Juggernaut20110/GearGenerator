@@ -274,54 +274,92 @@ measure zero and a zero-length dimension cannot be created. That is not a
 workaround: "the front face sits at z = 0" is a statement about the coordinate
 system, not a number anyone would edit.
 
-**Helical teeth need a guide curve and straight teeth do not.** Two identical
+**Helical teeth need more sections, not just a guide curve.** Two identical
 sections loft to a prism, which is the tooth. Two *rotated* sections loft to a
-ruled surface that meets the helicoid only at the ends and cuts inside it in
-between, because a loft carries each profile point along a straight line and a
-helix is not straight. The guide is a sampled 3D spline rather than an
-`InsertHelix` feature — no agreement with SOLIDWORKS about pitch, start angle or
-hand, which is three chances to be off by a sign on a part where a sign error is
-a gear that will not mesh. It runs through the cap's centreline vertex, and
-`split_cap` puts a real vertex there, because a guide that only passes *near* a
-spline is the classic way a guided loft fails.
+surface that meets the helicoid only at the ends and falls inside it in between,
+because a loft carries each profile point along a straight chord and a helix is
+an arc.
+
+A guide curve does not fix that, and finding out cost a build. Measured on the
+anchor helical pinion, cut from two sections plus a guide:
+
+```
+                        two sections + guide   six sections + guide
+mid-face vs end profile        0.198 mm               0.011 mm
+volume vs true helicoid        +0.900 %              -0.068 %
+max radius error               +0.83 %               +0.08 %
+root radius read back      15.13 - 15.21 mm      15.094 - 15.105 mm
+```
+
+The guide pins the one point it runs through — the tip agreed exactly both times
+— and leaves the rest of the profile interpolated. So `section_heights` solves
+the chord's sagitta, `r * (1 - cos(delta / 2))` at the tip radius, against
+`MAX_SECTION_SAGITTA_MM = 0.02`, and the loft runs through as many sections as
+that asks for. Straight teeth still take two, because their twist is zero.
+
+The guide stays as well: it costs one sketch and it pins the cap exactly. It is
+a sampled 3D spline rather than an `InsertHelix` feature — no agreement with
+SOLIDWORKS about pitch, start angle or hand, which is three chances to be off by
+a sign on a part where a sign error is a gear that will not mesh. It runs through
+the cap's centreline vertex, and `split_cap` puts a real vertex there, because a
+guide that only passes *near* a spline is the classic way a guided loft fails.
 
 `build_spur_set` in [gears/sw/spur_assembly.py](gears/sw/spur_assembly.py)
 places the pair the same way — transforms first, mates after — but on parallel
 axes a centre distance apart:
 
 ```
-position    pinion: origin coincident with the assembly origin        (3)
-            gear:   axis at distance a from the pinion axis           (1)
-axis        component axis coincident with the assembly Top plane     (1)
-direction   pinion: axis also coincident with the Right plane         (1)
-            gear:   axis also coincident with the Front plane         (1)
+pinion      origin coincident with the assembly origin                (3)
+            axis coincident with the assembly Top plane               (1)
+            axis coincident with the assembly Right plane             (1)
+
+gear        axis parallel to the pinion axis                          (2)
+            axis coincident with the assembly Top plane               (1)
+            origin coincident with the assembly Front plane           (1)
+            axis at distance a from the pinion axis                   (1)
 ```
 
-The gear's position is a distance mate rather than a coincident origin, because
-the two origins are `a` apart instead of sharing an apex. Its direction is a
-second plane coincidence rather than an angle mate, because every axis here is
-parallel to +Z so the Front plane serves — and an angle mate at zero degrees
-solves to 180 as readily as to 0. This is also the first caller of
-`to_array_data`'s translation argument; a bevel pair always passed zero.
+The gear's half is not the pinion's, and the obvious arrangement is wrong three
+ways. **Its axis runs along +Z, so it cannot lie in the Front plane** — that is
+the XY plane, and only Top and Right contain a +Z direction, with Right forcing
+the gear onto x = 0, which is exactly where it must not be. **Nothing else
+locates it axially**: a bevel pair takes all three translations from putting both
+origins on the assembly origin, but here they are `a` apart, so the gear's origin
+— which sits at its front face — is mated to the Front plane to put both fronts
+on z = 0. And the direction is a **parallel** mate, because an angle mate at zero
+degrees solves to 180 as readily as to 0.
 
-**Two answers are still open, and both need a seat in front of SOLIDWORKS.**
+The centre distance is a distance mate between the two axes. This is also the
+first caller of `to_array_data`'s translation argument; a bevel pair always
+passed zero.
+
+### What the probe measured
 
 `MARK_LOFT_GUIDE = 2` is the one constant in `session.py` not read out of
-`swconst.tlb` — guide curves have no enum, so 2 is only what the API reference
-gives. [tools/probe_helix_loft.py](tools/probe_helix_loft.py) settles it and
-three other questions the documentation will not: whether a sampled spline is
-accepted as a guide at all, whether a guided cut still survives the circular
-pattern with `GeometryPattern` on, and whether the guide may overrun the
-profiles. It measures the volume removed against an unguided control, because a
-mark SOLIDWORKS ignores hands the control's number straight back. Its fallback,
-if a guided cut is refused outright, is to loft through N intermediate sections
-instead — the profile generator is identical either way.
+`swconst.tlb` — guide curves have no enum, so 2 was only what the API reference
+gave. [tools/probe_helix_loft.py](tools/probe_helix_loft.py) settled it and three
+other questions the documentation will not, by measuring the volume a cut removes
+against an unguided control — a mark SOLIDWORKS ignores hands the control's
+number straight back:
 
-The **gear mate's Reverse sense has not been measured for a spur pair**, and the
+```
+no guide      372.969 mm3     the control
+mark 2        299.458 mm3     used as a guide curve      <- MARK_LOFT_GUIDE
+mark 4        331.042 mm3     used, but as the centreline
+mark 8        372.969 mm3     ignored
+mark 16       372.969 mm3     ignored
+```
+
+A sampled 3D spline is accepted as a guide. A guided cut still patterns with
+`GeometryPattern` on. And the guide may overrun the profiles, stop exactly on
+them, or stop short — all three were accepted.
+
+**The gear mate's Reverse sense is still not measured for a spur pair**, and the
 bevel answer does not transfer: those axes stand at 90° to each other and these
-are parallel. `--reverse-gear` is there from the first build. Drag the pinion,
-watch which way the gear goes, and record the answer in the module docstring of
-`gears/sw/spur_assembly.py`.
+are parallel. It cannot be settled from the API, because a gear mate is applied
+by the interactive drag solver and by nothing else. `--reverse-gear` is there
+from the first build. Drag the pinion, watch which way the gear goes, and record
+the answer in the module docstring of `gears/sw/spur_assembly.py`.
 
 ### Hard-won facts about this API
 
@@ -393,6 +431,19 @@ and that is cheaper to assert here than to discover in SOLIDWORKS.
 by building the anchor set in SOLIDWORKS and looking at it. **Carl does that
 verification, and his hands-on result outranks any API probe.** If you change
 `sw/`, say plainly that you have not run it.
+
+What the spur builders have been run against, on SOLIDWORKS 2026 SP3:
+
+```
+straight pinion   volume within 0.041 % of the closed form, bore exactly 4.25 mm
+helical pinion    tip radius 19.5997 mm at three heights, twist linear and
+                  symmetric about mid-face, volume within 0.068 %
+straight pair     centre distance exact to 6 decimals, axes 0.000000 deg apart,
+                  no interference, both members under defined - it articulates
+helical pair      the same, with one zero-volume tangency where the flanks touch
+```
+
+Not verified: which way the pair turns. That needs a hand on the drag solver.
 
 ### The MCP as an inspection surface
 
