@@ -84,6 +84,13 @@ def _check_basics(p: PlanetarySetParams, r: ValidationResult) -> None:
         r.error("hub_thickness", "cannot be negative")
     if p.rim_thickness < 0:
         r.error("rim_thickness", "cannot be negative")
+    # Only the sign is checked here. Whether the backlash is *too much* for the
+    # circular pitch is a spur mesh's question, and `_relay_mesh_issues` already
+    # asks it on both meshes - asking it again here would report one warning
+    # twice, because the relay's duplicate filter cannot see what this function
+    # has already said.
+    if p.backlash < 0:
+        r.error("backlash", "cannot be negative")
 
 
 def validate(p: PlanetarySetParams) -> ValidationResult:

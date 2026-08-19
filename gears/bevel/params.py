@@ -64,9 +64,20 @@ class BevelSetParams(JsonParams):
     # Face-milling cutter radius, mm. None means "the Gleason nominal", Am.
     cutter_radius: float | None = None
 
-    # Not exposed in the v1 GUI, but part of the geometry.
+    # Not exposed in the GUI, but part of the geometry.
     fillet_factor: float = 0.2  # root fillet radius as a multiple of module
-    backlash: float = 0.0       # mm, circular backlash removed from tooth thickness
+
+    # Circular backlash, mm, split evenly between the members so the mesh sees
+    # the stated number once. Taken off the tooth rather than added to the
+    # mounting distance, which keeps the cones where they are.
+    #
+    # **Quoted at the outer end**, like the module it is measured against. The
+    # tooth thickness it comes off is the one on the outer back cone, and every
+    # inner section is a uniform scaling of that one - so the backlash a section
+    # actually carries tapers with k = A/Ao toward the toe, the same way every
+    # other length on the tooth does. That is what a cutter leaves, not an
+    # approximation of it.
+    backlash: float = 0.0
 
     # --- radian accessors, so downstream code never repeats the conversion ---
 

@@ -110,6 +110,7 @@ BEVEL_FIELDS: tuple[Field, ...] = (
     Field("shaft_angle", "Shaft angle", float, "deg"),
     Field("spiral_angle", "Spiral angle (mean)", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
+    Field("backlash", "Backlash", float, "mm"),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
@@ -124,6 +125,7 @@ SPUR_FIELDS: tuple[Field, ...] = (
     Field("pressure_angle", "Normal pressure angle", float, "deg"),
     Field("helix_angle", "Helix angle", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
+    Field("backlash", "Backlash", float, "mm"),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
@@ -138,6 +140,7 @@ PLANETARY_FIELDS: tuple[Field, ...] = (
     Field("pressure_angle", "Normal pressure angle", float, "deg"),
     Field("helix_angle", "Helix angle", float, "deg"),
     Field("hand", "Hand (sun)", str, "", ("right", "left")),
+    Field("backlash", "Backlash", float, "mm"),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Sun bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
@@ -156,9 +159,14 @@ def _ordered_fields() -> tuple[Field, ...]:
     seen: dict[str, Field] = {}
     for field in BEVEL_FIELDS + SPUR_FIELDS + PLANETARY_FIELDS:
         seen.setdefault(field.attr, field)
+    # Backlash sits with the tooth form rather than with the blank, which is
+    # what it is: it changes the thickness of a tooth, not a dimension of the
+    # solid it is cut out of. That also keeps the blank rows contiguous, and
+    # they are the ones "Auto-size blank" rewrites as a group.
     order = (
         "module", "z1", "z2", "z_sun", "z_planet", "n_planets", "internal",
         "pressure_angle", "shaft_angle", "spiral_angle", "helix_angle", "hand",
+        "backlash",
         "face_width", "bore", "hub_thickness", "rim_thickness",
         "min_root_thickness",
     )
@@ -670,14 +678,21 @@ class App(ttk.Frame):
         return dataclasses.replace(base, **values), []
 
     def auto_size(self) -> None:
-        """Reset the blank dimensions to what `with_defaults` would pick."""
+        """Reset the blank dimensions to what `with_defaults` would pick.
+
+        The counts go through `kind.counts` because the field names differ - a
+        pair calls them z1 and z2 where a planetary set calls them z_sun and
+        z_planet - and reading `p.z1` off a planetary set is an AttributeError,
+        not a fallback.
+        """
         kind = self.kind
         p, problems = self.read_params()
         if p is None:
             self._show_messages(problems, None)
             return
+        first, second = kind.counts(p)
         sized = kind.params_cls.with_defaults(
-            p.module, p.z1, p.z2,
+            p.module, first, second,
             **{name: getattr(p, name) for name in kind.auto_kwargs},
         )
         self.set_params(

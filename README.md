@@ -7,13 +7,13 @@ driver that builds the solids.
 Three gear types, sharing everything they can:
 
 * **bevel**, straight or spiral — module, tooth counts, pressure angle, shaft
-  angle, mean spiral angle and hand, cutter radius, face width, bore, hub and
-  root rim
+  angle, mean spiral angle and hand, cutter radius, face width, bore, hub,
+  root rim and backlash
 * **involute spur**, straight or helical, **external or internal** — normal
   module, tooth counts, normal pressure angle, helix angle and hand, face
-  width, bore and hub, and a rim for a ring gear
+  width, bore, hub, backlash, and a rim for a ring gear
 * **planetary** — a sun, N planets and an internal ring on one set of numbers:
-  normal module, sun and planet tooth counts, how many planets
+  normal module, sun and planet tooth counts, how many planets, backlash
 
 Every one produces:
 
@@ -48,13 +48,16 @@ The interpreter is the venv one. Always. There is no global install.
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 17 --z2 43 --beta 15
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 18 --z2 60 --internal
 .venv\Scripts\python.exe -m gears --type planetary --module 2 --z1 24 --z2 18
-.venv\Scripts\python.exe -m pytest -q                # 838 tests, no SOLIDWORKS
+.venv\Scripts\python.exe -m pytest -q                # 874 tests, no SOLIDWORKS
 ```
 
 `--type` defaults to `bevel`, which is what the tool generated before there was
 a choice. A flag belonging to another type is refused rather than ignored, so
 `--sigma` on a spur set is an error and not a silent no-op — while a flag two
-types genuinely share, like `--beta`, is refused only by the third.
+types genuinely share, like `--beta`, is refused only by the third, and one all
+three share, like `--backlash`, is refused by none. A flag is *created* by
+exactly one type's `add_arguments` — every one of them runs against the same
+parser — and *claimed* by each type that means the same thing by it.
 
 For a planetary set `--z1` and `--z2` are the sun and the planet, and `--z-sun`
 and `--z-planet` say the same thing more plainly. **The ring is derived**, so it
@@ -390,6 +393,50 @@ carrier held: ring / sun     -2.5000
 
 ---
 
+## Backlash
+
+One input, shared by all three types, because there is only one thing it means:
+`--backlash 0.1` is a **circular backlash in millimetres, measured at the pitch
+circle**, and it does the same arithmetic in every geometry module.
+
+**Taken off the tooth, not added to the centre distance.** Both are real ways to
+build backlash into a pair and only one of them leaves the rest of the model
+alone: thinning the tooth keeps the centre distance, the mounting distances and
+the cone angles at their nominal values, so every other number in the report
+still means what it said.
+
+**Split evenly, so the mesh sees it once.** Each member loses `backlash / 2` of
+arc thickness. The failure worth guarding against is applying the whole figure to
+each member — which doubles the play while every single-member check still
+passes — so the test states it as a property of the *pair*: the two tooth
+thicknesses at the pitch circles plus the backlash come to exactly one circular
+pitch. An internal pair reaches the same place from the other side, because a
+ring gear's `psi0` is built from its **space** width: the backlash widens the
+ring's space rather than thinning its tooth directly, and the pair sum is what
+says the two descriptions agree.
+
+**On a bevel set it is quoted at the outer end**, like the module it is measured
+against. Every inner section is a uniform scaling of the outer one by
+`k = A/Ao`, and the backlash is a length on that section like any other — so a
+tooth thinned by 0.05 mm at the heel is thinned by 0.033 mm at the toe on the
+anchor set. That is what a cutter leaves, not an approximation of one, and there
+is a test that differences two backlashes to say so exactly.
+
+**Zero is not just the default, it is a condition other code relies on.** With no
+backlash the flanks touch exactly at the pitch point, which is why
+`check_interference` runs with `TreatCoincidenceAsInterference` off and why the
+verified helical pair came back with "one zero-volume tangency where the flanks
+touch". A set built with backlash should show that tangency gone.
+
+The validators say two things about it: a negative value is an error in all
+three, and anything past 5 % of the circular pitch is a warning — a rail against
+a typo, not a design standard, since a real backlash on a 2 mm module is well
+under 1 %. What backlash actually *breaks* is left to the checks that can see the
+tooth: a millimetre of it on a 6-tooth, 25° spur pair thins the tooth away
+entirely, and that comes back as a pointed-tooth error naming the member.
+
+---
+
 ## The SOLIDWORKS build
 
 `build_gear` in [gears/sw/bevel_part.py](gears/sw/bevel_part.py) runs five steps:
@@ -636,7 +683,7 @@ rather than debugging inside a builder.
 
 ## Testing
 
-838 tests, all pure Python, all fast. They are closed-form checks on the
+874 tests, all pure Python, all fast. They are closed-form checks on the
 geometry — cone distances agreeing between members, tooth tips landing on the
 mate's back cone, centre distance solved two independent ways, loft sections
 clearing the blank, the guide curve touching a vertex that exists in every
@@ -686,6 +733,14 @@ helical pair      the same, with one zero-volume tangency where the flanks touch
 gear blank and the planetary assembly are all unrun — they are written against
 the same helpers the verified builders use, and that is an argument, not
 evidence.
+
+**No set has been cut with backlash in it either.** Nothing in `sw/` changed to
+add it — the thinner tooth arrives inside the loft sections `geometry` hands
+over, and the blank and its named global variables never see the number — so the
+argument is stronger here than for a new builder. It is still an argument. The
+observable is the one already on the list above: the helical pair's zero-volume
+tangency where the flanks touch should be gone at any non-zero backlash, and
+`check_clearance` should read a real gap.
 
 Four things are waiting on a hand on the drag solver, and none of them inherits
 from any of the others:

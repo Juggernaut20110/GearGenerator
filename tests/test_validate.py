@@ -124,6 +124,26 @@ def test_negative_bore_and_hub_are_errors():
     assert "bore" in fields_with_errors(tweak(bore=-1.0))
     assert "hub_thickness" in fields_with_errors(tweak(hub_thickness=-1.0))
     assert "min_root_thickness" in fields_with_errors(tweak(min_root_thickness=-1.0))
+    assert "backlash" in fields_with_errors(tweak(backlash=-0.1))
+
+
+def test_a_large_backlash_warns_without_refusing_the_set():
+    """It thins the teeth; it does not make them unbuildable on its own.
+
+    What backlash actually breaks - a pointed tooth, a space closed up at the
+    root - is an error further down, where the geometry can say so with the
+    tooth in front of it. This one only says the number looks like a typo.
+
+    A whole millimetre would be the tidier number and it is the wrong one to
+    use: it takes the anchor pinion's 0.36 mm top land negative, so the set is
+    refused for being pointed and this warning never gets to be the interesting
+    part of the answer. 0.4 mm is 6.4 % of the 6.28 mm pitch and still buildable.
+    """
+    p = tweak(backlash=0.4)
+    result = validate(p)
+    assert result.ok
+    assert "backlash" in {w.field for w in result.warnings}
+    assert "backlash" not in {w.field for w in validate(tweak(backlash=0.05)).warnings}
 
 
 def test_no_root_rim_warns_when_the_heel_would_feather():

@@ -144,6 +144,26 @@ def test_backlash_comes_straight_off_the_tooth_thickness(backlash):
     )
 
 
+@pytest.mark.parametrize("backlash", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("beta", BETAS)
+def test_the_mesh_sees_the_backlash_once_and_not_twice(backlash, beta):
+    """Both members are thinned by half of it, so the pair loses exactly it.
+
+    The quiet failure this catches is applying the whole backlash to each
+    member, which doubles the play at the mesh while every single-member check
+    still passes. Stated as the pair's own property - the two tooth thicknesses
+    at the pitch circles plus the backlash come to one circular pitch - so it
+    cannot be satisfied by halving the number twice either.
+    """
+    g = compute_set(
+        SpurSetParams.with_defaults(2.0, 17, 43, backlash=backlash, helix_angle=beta)
+    )
+    thicknesses = [
+        top_land(m.pitch_r, m.base_r, m.psi0) for m in (g.pinion, g.gear)
+    ]
+    assert sum(thicknesses) == pytest.approx(g.circular_pitch - backlash, rel=1e-12)
+
+
 @pytest.mark.parametrize("member", MEMBERS)
 def test_psi0_is_the_half_thickness_carried_back_to_the_base_circle(geo, member):
     m = geo.member(member)

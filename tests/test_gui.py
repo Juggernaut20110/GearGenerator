@@ -162,6 +162,36 @@ def test_auto_size_rewrites_only_the_blank_fields(app):
     assert (app._params.module, app._params.z1) == (2.0, 17)
 
 
+@pytest.mark.parametrize("key", ["bevel", "spur", "planetary"])
+def test_auto_size_works_on_every_tab(app, key):
+    """It read `p.z1` off whatever was in hand, and a planetary set has no z1.
+
+    `GearKind.counts` exists to answer this - a pair calls them z1 and z2, a
+    planetary set z_sun and z_planet - and going through it is the difference
+    between the button working and raising AttributeError on one tab of three.
+    """
+    app.kind_key.set(key)
+    app.on_kind_change()
+    set_input(app, "face_width", "3")
+
+    app.auto_size()
+
+    first, second = KINDS[key].counts(app._params)
+    sized = KINDS[key].params_cls.with_defaults(app._params.module, first, second)
+    assert app._params.face_width == pytest.approx(sized.face_width)
+
+
+def test_auto_size_keeps_a_backlash_that_was_typed(app):
+    """It is not a blank dimension, so "Auto-size blank" has no business on it.
+
+    Staying out of the `*_AUTO` tuples is what does it, and that is easy to
+    undo by accident when the next field is added beside it.
+    """
+    set_input(app, "backlash", "0.08")
+    app.auto_size()
+    assert app._params.backlash == pytest.approx(0.08)
+
+
 # The one scene that is not a view of a single member. A bevel pair's tooth
 # trace is one arc in the shared crown plane - both members map that same curve
 # onto their own cones, which is the meshing condition - so titling it after
@@ -326,14 +356,30 @@ def visible(app):
     ]
 
 
-@pytest.mark.parametrize("key", ["bevel", "spur"])
+@pytest.mark.parametrize("key", ["bevel", "spur", "planetary"])
 def test_only_the_active_type_s_rows_are_shown(app, key):
     app.kind_key.set(key)
     app.on_kind_change()
     assert visible(app) == [f.attr for f in KINDS[key].fields]
 
 
-@pytest.mark.parametrize("key", ["bevel", "spur"])
+@pytest.mark.parametrize("key", ["bevel", "spur", "planetary"])
+def test_every_type_offers_a_backlash_row(app, key):
+    """It is a tooth-form input, so every type has one and they share a variable.
+
+    Sharing is the point: a backlash typed on a spur set is still there when the
+    set becomes a bevel one, the same way the module and the tooth counts are.
+    """
+    app.kind_key.set(key)
+    app.on_kind_change()
+    assert "backlash" in visible(app)
+    # Between `hand` and the blank dimensions, which is where it belongs: it
+    # changes the tooth, not the solid the tooth is cut out of.
+    rows = visible(app)
+    assert rows.index("hand") < rows.index("backlash") < rows.index("face_width")
+
+
+@pytest.mark.parametrize("key", ["bevel", "spur", "planetary"])
 def test_only_the_active_type_s_scenes_are_offered(app, key):
     app.kind_key.set(key)
     app.on_kind_change()

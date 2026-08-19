@@ -52,6 +52,7 @@ def main(argv=None) -> int:
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
     ap.add_argument("--min-root", type=float)
+    ap.add_argument("--backlash", type=float, help="circular backlash, mm")
     ap.add_argument("--member", choices=("pinion", "gear"), default="pinion")
     ap.add_argument("--save", help="path to save the part to")
     ap.add_argument("--close", action="store_true", help="close the part afterwards")
@@ -69,6 +70,7 @@ def main(argv=None) -> int:
         ("bore", args.bore),
         ("hub_thickness", args.hub),
         ("min_root_thickness", args.min_root),
+        ("backlash", args.backlash),
     ):
         if value is not None:
             overrides[key] = value

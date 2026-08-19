@@ -55,6 +55,11 @@ class PlanetarySetParams(JsonParams):
 
     # Not exposed in the GUI, but part of the geometry.
     fillet_factor: float = 0.2
+
+    # Circular backlash, mm. Handed to **both** meshes - see
+    # `geometry._spur_params` - so the sun-planet mesh and the planet-ring mesh
+    # each get the stated number, and the planet is thinned once rather than
+    # once per mesh.
     backlash: float = 0.0
 
     @property

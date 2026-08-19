@@ -81,6 +81,7 @@ class _Args:
     alpha, sigma = 20.0, 90.0
     spiral, hand = 35.0, "right"
     cutter_radius = None
+    backlash = 0.0
     face_width = bore = hub = min_root = None
 
 

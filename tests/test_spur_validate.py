@@ -214,6 +214,19 @@ def test_a_nearly_pointed_tooth_only_warns():
     assert {"z1", "z2"} <= fields_with_warnings(p)
 
 
+def test_a_large_backlash_warns_on_its_own_field_before_it_points_anything():
+    """The sanity rail, fired on a set the tooth-form checks are happy with.
+
+    17 x 43 keeps plenty of top land at 0.4 mm, so this is the warning arriving
+    on the strength of the number alone - which is what it is for: 0.4 mm is
+    6.4 % of the 6.28 mm circular pitch, and a real backlash is under 1 %.
+    """
+    result = validate(tweak(backlash=0.4))
+    assert result.ok
+    assert "backlash" in {w.field for w in result.warnings}
+    assert "backlash" not in fields_with_warnings(tweak(backlash=0.05))
+
+
 def test_validation_never_raises_whatever_it_is_given():
     """The contract: report everything, refuse nothing by exception."""
     for kw in (

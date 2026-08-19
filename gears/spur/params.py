@@ -61,9 +61,16 @@ class SpurSetParams(JsonParams):
     # Whether z2 is an internal ring gear rather than an external one.
     internal: bool = False
 
-    # Not exposed in the v1 GUI, but part of the geometry.
+    # Not exposed in the GUI, but part of the geometry.
     fillet_factor: float = 0.2  # root fillet radius as a multiple of module
-    backlash: float = 0.0       # mm, circular backlash removed from tooth thickness
+
+    # Circular backlash, mm, measured at the pitch circle. Taken off the
+    # **tooth** rather than added to the centre distance, which is the
+    # convention that keeps the centre distance nominal, and split evenly -
+    # each member loses half of it - so the mesh sees the stated number once.
+    # Zero leaves the flanks exactly tangent at the pitch point, which is what
+    # `sw.assembly_common.check_interference` is written to expect.
+    backlash: float = 0.0
 
     # Rim standing outside a ring gear's root circle, mm. Ignored for an
     # external pair, which has no rim - its blank ends at the tip circle.

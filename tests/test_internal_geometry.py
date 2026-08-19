@@ -113,6 +113,31 @@ def test_the_rings_space_at_its_pitch_circle_is_half_the_circular_pitch(internal
     assert width == pytest.approx(math.pi * internal.transverse_module / 2.0)
 
 
+@pytest.mark.parametrize("backlash", [0.0, 0.05, 0.2])
+def test_the_internal_mesh_sees_the_backlash_once_and_not_twice(backlash):
+    """The same pair property as the external case, read the other way round.
+
+    The ring's `psi0` is a **space** half-width, so what `internal_space_width`
+    returns off it is the space and the tooth is what is left of the pitch. The
+    backlash therefore reaches the ring by *widening* its space rather than by
+    thinning its tooth directly - the same half-millimetre either way, and the
+    check that both descriptions agree is that the pair still loses exactly one
+    backlash between them.
+    """
+    from gears.involute import top_land
+
+    g = compute_set(SpurSetParams.with_defaults(2.0, 18, 60, internal=True,
+                                                backlash=backlash))
+    pinion = top_land(g.pinion.pitch_r, g.pinion.base_r, g.pinion.psi0)
+    ring_space = internal_space_width(g.gear.pitch_r, g.gear.base_r, g.gear.psi0)
+    ring_tooth = g.circular_pitch - ring_space
+
+    assert ring_space == pytest.approx(
+        g.circular_pitch / 2.0 + backlash / 2.0, rel=1e-12
+    )
+    assert pinion + ring_tooth == pytest.approx(g.circular_pitch - backlash, rel=1e-12)
+
+
 def test_the_rings_flank_is_a_true_involute_of_its_base_circle(internal):
     """Sampled off the generated profile, checked against the closed form.
 

@@ -23,13 +23,24 @@ from .validate import validate
 
 # Flags this type owns. The dispatcher uses these to refuse a flag that belongs
 # to the other type rather than silently ignoring it.
+#
+# Deliberately a superset of what `add_arguments` below creates: `--backlash`
+# means exactly the same thing to a bevel set as to a spur one - a circular
+# backlash in mm taken off the tooth - so the spur module declares it and all
+# three modules claim it. A flag every type claims is refused by none.
 FLAGS = (
     "alpha", "sigma", "spiral", "cutter_radius", "face_width", "bore", "hub",
-    "min_root", "member", "end",
+    "min_root", "backlash", "member", "end",
 )
 
 
 def add_arguments(ap) -> None:
+    """Add only the flags no other type defines.
+
+    `--backlash` is the spur module's to create - every `add_arguments` runs
+    against the same parser, so creating it twice is an argparse conflict
+    rather than a merge.
+    """
     ap.add_argument("--sigma", type=float, default=90.0, help="shaft angle, deg")
     ap.add_argument(
         "--spiral",
@@ -57,6 +68,7 @@ def params_from_args(args) -> BevelSetParams:
         "shaft_angle": args.sigma,
         "spiral_angle": args.spiral,
         "hand": args.hand,
+        "backlash": args.backlash,
     }
     if args.cutter_radius is not None:
         overrides["cutter_radius"] = args.cutter_radius
@@ -88,6 +100,7 @@ def print_report(geo) -> None:
     print(_row("bore", f(p.bore), "", "mm"))
     print(_row("hub thickness", f(p.hub_thickness), "", "mm"))
     print(_row("min root thickness", f(p.min_root_thickness), "", "mm"))
+    print(_row("backlash", f(p.backlash), "", "mm"))
 
     print("\nSET")
     print(_row("ratio", f(p.ratio)))

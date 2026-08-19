@@ -19,6 +19,14 @@ MIN_TEETH = 6
 MIN_PRESSURE_ANGLE = 14.5
 MAX_PRESSURE_ANGLE = 25.0
 
+# Backlash worth warning about, as a fraction of the circular pitch. A sanity
+# rail, not a design standard: a normal 0.05 mm on a 2 mm module is 0.008 of the
+# 6.28 mm pitch, so anything past 5 % is someone typing a diameter into a
+# thickness box. What backlash actually breaks - a tooth thinned to a point, a
+# space closed up at the root - is already an error where it bites, so this
+# stays a warning.
+MAX_BACKLASH_FRACTION = 0.05
+
 
 @dataclass(frozen=True)
 class Issue:

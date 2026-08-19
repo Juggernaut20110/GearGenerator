@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 
 from ..validate import (
+    MAX_BACKLASH_FRACTION,
     MAX_PRESSURE_ANGLE,
     MIN_PRESSURE_ANGLE,
     MIN_TEETH,
@@ -111,6 +112,16 @@ def validate(p: SpurSetParams) -> ValidationResult:
             "z2",
             f"ratio is {p.ratio:.2f}:1; outside 1:10 to 10:1 a single stage is "
             "rarely the right answer",
+        )
+
+    # --- backlash ----------------------------------------------------------
+    if p.backlash > MAX_BACKLASH_FRACTION * geo.circular_pitch:
+        result.warn(
+            "backlash",
+            f"{p.backlash:.3f} mm is "
+            f"{p.backlash / geo.circular_pitch:.1%} of the circular pitch "
+            f"({geo.circular_pitch:.2f} mm); each member loses half of it off "
+            "its tooth thickness",
         )
 
     # --- undercut ----------------------------------------------------------

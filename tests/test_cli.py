@@ -49,7 +49,6 @@ def test_every_type_prints_the_same_three_sections(gear_type, capsys):
         (["--type", "spur", "--min-root", "0.5"], "--min-root"),
         (["--type", "spur", "--end", "inner"], "--end"),
         (["--type", "bevel", "--beta", "15"], "--beta"),
-        (["--type", "bevel", "--backlash", "0.1"], "--backlash"),
         (["--type", "spur", "--spiral", "35"], "--spiral"),
         (["--type", "spur", "--cutter-radius", "40"], "--cutter-radius"),
     ],
@@ -72,6 +71,21 @@ def test_hand_belongs_to_both_types_and_is_refused_by_neither(gear_type):
     lost it, which is exactly the silent-wrong-answer the guard exists to stop.
     """
     assert main(["--type", gear_type, "--hand", "left"] + ANCHOR) == 0
+
+
+@pytest.mark.parametrize("gear_type", ["bevel", "spur", "planetary"])
+def test_backlash_belongs_to_every_type_and_is_refused_by_none(gear_type, capsys):
+    """It used to be a spur flag, and bevel refused it while honouring it.
+
+    A circular backlash means exactly the same thing to all three types, so all
+    three claim it and only the spur module creates it. The regression this
+    catches is a type dropping its claim: the guard would then refuse the flag
+    on a set whose geometry uses it, which is the loudest possible way to be
+    inconsistent about one number.
+    """
+    counts = ["--module", "2", "--z1", "24", "--z2", "18"]
+    assert main(["--type", gear_type, "--backlash", "0.05"] + counts) == 0
+    assert "backlash" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("form", ["--beta 15", "--beta=15"])

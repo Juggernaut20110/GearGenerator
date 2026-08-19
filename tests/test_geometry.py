@@ -297,6 +297,75 @@ def test_section_scale_matches_cone_distances(geo):
     )
 
 
+# --- backlash --------------------------------------------------------------
+
+
+def _tooth_thickness_at(section, r: float, virtual_teeth: float) -> float:
+    """Arc tooth thickness at developed radius r, measured off the section.
+
+    Measured from the built profile rather than recomputed from psi0, because
+    psi0 is not stored anywhere - and measuring is the better test regardless:
+    it is the polyline the SOLIDWORKS layer actually sketches.
+
+    Interpolating across a sampled flank cuts the chord's corner, so this reads
+    about 1e-4 mm light. The tests below difference two backlashes, where that
+    error appears in both terms and cancels exactly.
+    """
+    pts = section.segments["flank_pos"]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        r0, r1 = math.hypot(x0, y0), math.hypot(x1, y1)
+        if min(r0, r1) <= r <= max(r0, r1):
+            t = (r - r0) / (r1 - r0)
+            space_half_width = (
+                math.atan2(y0, x0)
+                + t * (math.atan2(y1, x1) - math.atan2(y0, x0))
+            )
+            return 2.0 * (math.pi / virtual_teeth - space_half_width) * r
+    raise AssertionError(f"radius {r} is not on the flank")
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+def test_backlash_comes_straight_off_the_outer_tooth_thickness(member):
+    """Half of it off each member, so the mesh sees the stated number once."""
+    backlash = 0.1
+    geo = compute_set(BevelSetParams.with_defaults(2.0, 17, 43, backlash=backlash))
+    m = geo.member(member)
+    thickness = _tooth_thickness_at(
+        tooth_space_section(geo, member, "outer"), m.virtual_pitch_r, m.virtual_teeth
+    )
+    assert thickness == pytest.approx(
+        math.pi * ANCHOR.module / 2.0 - backlash / 2.0, abs=1e-3
+    )
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+def test_backlash_tapers_toward_the_toe_with_the_rest_of_the_tooth(member):
+    """Quoted at the heel; an inner section carries k times as much.
+
+    The bevel convention, asserted rather than described. An inner section is a
+    uniform scaling of the outer one by k = Ai/Ao, and the backlash is a length
+    on that section like any other - so a tooth thinned by 0.05 mm at the heel
+    is thinned by 0.033 mm at the toe on the anchor set, not by 0.05 mm.
+
+    Differenced against the zero-backlash set on purpose: the sampling error in
+    `_tooth_thickness_at` is identical in both, so what is left is exact.
+    """
+    backlash = 0.1
+    plain = compute_set(ANCHOR)
+    thinned = compute_set(BevelSetParams.with_defaults(2.0, 17, 43, backlash=backlash))
+    k = plain.section_scale
+
+    for end, scale in (("outer", 1.0), ("inner", k)):
+        m = plain.member(member)
+        r = scale * m.virtual_pitch_r
+        lost = _tooth_thickness_at(
+            tooth_space_section(plain, member, end), r, m.virtual_teeth
+        ) - _tooth_thickness_at(
+            tooth_space_section(thinned, member, end), r, m.virtual_teeth
+        )
+        assert lost == pytest.approx(scale * backlash / 2.0, rel=1e-12)
+
+
 # --- tooth space profile ---------------------------------------------------
 
 

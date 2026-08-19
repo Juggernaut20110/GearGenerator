@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 from ..validate import (
+    MAX_BACKLASH_FRACTION,
     MAX_PRESSURE_ANGLE,
     MIN_PRESSURE_ANGLE,
     MIN_TEETH,
@@ -57,6 +58,8 @@ def _check_basics(p: BevelSetParams, r: ValidationResult) -> None:
         r.error("hub_thickness", "cannot be negative")
     if p.min_root_thickness < 0:
         r.error("min_root_thickness", "cannot be negative")
+    if p.backlash < 0:
+        r.error("backlash", "cannot be negative")
     if not (-MAX_SPIRAL_ANGLE <= p.spiral_angle <= MAX_SPIRAL_ANGLE):
         r.error(
             "spiral_angle",
@@ -174,6 +177,22 @@ def validate(p: BevelSetParams) -> ValidationResult:
             f"{p.hub_thickness:.2f} mm is less than the whole tooth depth "
             f"({geo.whole_depth:.2f} mm); there may be too little backing "
             "behind the root cone",
+        )
+
+    # --- backlash ----------------------------------------------------------
+    #
+    # Measured against the *outer* circular pitch, because that is where the
+    # backlash is quoted: the tooth thickness it comes off is the one on the
+    # outer back cone, and every inner section is a uniform scaling of it - so
+    # the backlash a section actually carries tapers with k = A/Ao toward the
+    # toe, the same way every other length on the tooth does.
+    if p.backlash > MAX_BACKLASH_FRACTION * geo.circular_pitch:
+        result.warn(
+            "backlash",
+            f"{p.backlash:.3f} mm is "
+            f"{p.backlash / geo.circular_pitch:.1%} of the outer circular pitch "
+            f"({geo.circular_pitch:.2f} mm); each member loses half of it off "
+            "its tooth thickness",
         )
 
     # --- does a tooth space actually exist at the root? --------------------

@@ -124,6 +124,40 @@ def test_the_planet_is_the_same_gear_in_both_meshes():
         assert getattr(sp.gear, field) == pytest.approx(getattr(pr.pinion, field))
 
 
+@pytest.mark.parametrize("backlash", [0.05, 0.2])
+def test_backlash_reaches_both_meshes_and_thins_the_planet_once(backlash):
+    """One number, two meshes, and a planet that is still one part.
+
+    The planet is where this could go wrong: it is thinned by the sun mesh and
+    thinned again by the ring mesh if the backlash is applied per mesh rather
+    than per member. Then the two meshes would want two different planets, so
+    the identity above - same psi0 in both - is exactly the check for it, and
+    it only has teeth at a non-zero backlash.
+    """
+    from gears.involute import top_land
+
+    p = PlanetarySetParams.with_defaults(2.0, 24, 18, n_planets=3,
+                                         backlash=backlash)
+    geo = compute_set(p)
+    sp, pr = geo.sun_planet, geo.planet_ring
+
+    assert sp.gear.psi0 == pytest.approx(pr.pinion.psi0, rel=1e-14)
+
+    # And each mesh loses exactly one backlash, the external one off two teeth
+    # and the internal one off a tooth and a widened space.
+    external = sum(
+        top_land(m.pitch_r, m.base_r, m.psi0) for m in (sp.pinion, sp.gear)
+    )
+    assert external == pytest.approx(sp.circular_pitch - backlash, rel=1e-12)
+
+    ring_space = top_land(pr.gear.pitch_r, pr.gear.base_r, pr.gear.psi0)
+    internal = (
+        top_land(pr.pinion.pitch_r, pr.pinion.base_r, pr.pinion.psi0)
+        + pr.circular_pitch - ring_space
+    )
+    assert internal == pytest.approx(pr.circular_pitch - backlash, rel=1e-12)
+
+
 # --- the clocking ----------------------------------------------------------
 
 
@@ -422,6 +456,25 @@ def test_the_spur_validators_findings_are_relayed_with_planetary_names():
     }
 
 
+def test_negative_backlash_is_refused():
+    result = validate(PlanetarySetParams.with_defaults(2.0, 24, 18, backlash=-0.1))
+    assert not result.ok
+    assert "backlash" in {issue.field for issue in result.errors}
+
+
+def test_a_large_backlash_is_relayed_once_and_not_once_per_mesh():
+    """Both meshes have the same module and the same backlash, so both complain.
+
+    The relay's duplicate filter is what turns that into one warning, and it can
+    only see what the *spur* validator said - which is why this module checks
+    the sign of the backlash itself and leaves the size of it to the relay. Add
+    a size check here as well and the user gets told twice.
+    """
+    result = validate(PlanetarySetParams.with_defaults(2.0, 24, 18, backlash=0.4))
+    assert result.ok
+    assert [w.field for w in result.warnings].count("backlash") == 1
+
+
 def test_a_ring_too_small_for_an_involute_is_refused_through_the_relay():
     """The internal minimum tooth count reaches here from the spur validator.
 
@@ -504,18 +557,22 @@ def test_the_planetary_flags_are_refused_on_a_spur_set(capsys):
 
 
 def test_the_flags_planetary_shares_with_spur_are_refused_by_neither():
-    """--beta, --rim and --backlash mean the same thing to both types.
+    """--beta and --rim mean the same thing to both types.
 
     The spur module creates them and both modules claim them, so neither
     refuses them and only bevel does. Worth a test because the arrangement is
     the sort that quietly rots.
+
+    `--backlash` used to be in this list and has since gained a third claimant,
+    which is a different case - see
+    `test_cli.test_backlash_belongs_to_every_type_and_is_refused_by_none`.
     """
     from gears.__main__ import main
 
     for gear_type in ("spur", "planetary"):
         assert main(
             ["--type", gear_type, "--module", "2", "--z1", "24", "--z2", "18",
-             "--beta", "10", "--backlash", "0.05", "--rim", "6"]
+             "--beta", "10", "--rim", "6"]
         ) == 0
 
 
