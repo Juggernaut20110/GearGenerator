@@ -46,6 +46,7 @@ from ..spur.geometry import (
     SpurSetGeometry,
     blank_outline,
     guide_helix,
+    rim_radius,
     section_heights,
     to_axial_3d,
     tooth_space_section,
@@ -183,15 +184,16 @@ def _dimension_blank(app, model, geo: SpurSetGeometry, member: str, axis, lines,
     cannot disagree with the geometry it is measuring.
     """
     p = geo.params
+    m = geo.member(member)
     datum = axis_datum(axis)
 
     has_hub = len(outline) > 4
-    r_bore, _ = outline[0]
-    r_tip, _ = outline[1]
+    r_inner, _ = outline[0]
+    r_outer, _ = outline[1]
     z_back = outline[2][1]
 
     front_face, outside, back_face = lines[0], lines[1], lines[2]
-    bore = lines[-1]
+    inner = lines[-1]
 
     add_relation(
         model,
@@ -200,17 +202,33 @@ def _dimension_blank(app, model, geo: SpurSetGeometry, member: str, axis, lines,
         "front face through the axis datum",
     )
 
+    # A ring gear's blank is the same four-line profile as a hubless external
+    # one - a rectangle in the meridian plane - so the degree-of-freedom count
+    # below and every relation holds unchanged. What differs is only what the
+    # two radii *are*, and so what they should be called in the equations: the
+    # inner one is the ring's tip circle rather than a bore, and the outer one
+    # is the rim rather than the tips. Naming them the external way would leave
+    # someone editing "BoreRadius" to move a tooth.
+    if m.internal:
+        inner_what, inner_name = "tip radius", "TipRadius"
+        outer_what, outer_name = "rim radius", "RimRadius"
+    else:
+        inner_what, inner_name = "bore radius", "BoreRadius"
+        outer_what, outer_name = "tip radius", "TipRadius"
+
     plan = [
-        ((axis, bore), radial_position(r_bore, 0.5 * z_back),
-         r_bore, "mm", "bore radius", "BoreRadius", None),
-        ((axis, outside), radial_position(r_tip, 0.5 * z_back),
-         r_tip, "mm", "tip radius", "TipRadius", None),
-        ((datum, back_face), axial_position(r_tip, 0.5 * z_back),
+        ((axis, inner), radial_position(r_inner, 0.5 * z_back),
+         r_inner, "mm", inner_what, inner_name, None),
+        ((axis, outside), radial_position(r_outer, 0.5 * z_back),
+         r_outer, "mm", outer_what, outer_name, None),
+        ((datum, back_face), axial_position(r_outer, 0.5 * z_back),
          z_back, "mm", "face width", "FaceWidth", None),
     ]
 
     variables: list[BlankVariable] = []
     if has_hub:
+        # Only an external member ever gets here: a ring gear's outline is four
+        # points exactly. It has no hub, and no bore for one to stand around.
         r_hub, _ = outline[3]
         z_hub_back = outline[4][1]
         hub_outside, hub_back = lines[3], lines[4]
@@ -284,4 +302,8 @@ def build_spur(
     drop_offcut(model)
     pattern_teeth(model, cut, axis_feat, m.z)
 
-    return measure_part(session, model, member, m.z, m.tip_r, save_path)
+    # A ring's outermost surface is its rim, not its teeth, so that is what the
+    # bounding box will measure. `m.tip_r` is its *innermost* radius and would
+    # come back as a 16 percent error on the anchor ring.
+    expected_radius = rim_radius(geo, member) if m.internal else m.tip_r
+    return measure_part(session, model, member, m.z, expected_radius, save_path)

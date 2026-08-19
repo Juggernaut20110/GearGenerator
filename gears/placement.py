@@ -53,7 +53,7 @@ def gear_clocking(z: int) -> float:
     return phi % tau
 
 
-def angular_velocity_ratio(z1: int, z2: int) -> float:
+def angular_velocity_ratio(z1: int, z2: int, internal: bool = False) -> float:
     """w_pinion / w_gear, with each member's axis taken pointing away from the apex.
 
     Rolling without slipping along the contact line means the two surface
@@ -73,13 +73,22 @@ def angular_velocity_ratio(z1: int, z2: int) -> float:
     for **any** shaft angle. Every S term cancels. The magnitude is the obvious
     one; the sign is the part worth having, and it says the two members always
     turn in *opposite* senses about their own outward axes - as true of a 45
-    degree pair as of a right-angle one, and true of a spur pair, which is this
-    same derivation at S = 0 with the cones degenerated into cylinders.
+    degree pair as of a right-angle one, and true of an external spur pair,
+    which is this same derivation at S = 0 with the cones degenerated into
+    cylinders.
+
+    **An internal pair turns the same way**, so the sign is positive. The
+    derivation above assumes the two pitch surfaces touch with their centres on
+    opposite sides of the contact line, which is what "external" means. Roll a
+    cylinder inside another instead and both centres are on the same side, the
+    relative angular velocity reverses, and the ring follows the pinion rather
+    than opposing it. That single sign is what makes a planetary train's output
+    go the way it does.
 
     The tooth counts are the exact ratio here, not an approximation of one: the
     pitch surfaces are defined by them.
     """
-    return -float(z2) / float(z1)
+    return (1.0 if internal else -1.0) * float(z2) / float(z1)
 
 
 def gear_mate_ratio(z1: int, z2: int) -> tuple[float, float]:

@@ -169,6 +169,41 @@ def test_auto_size_rewrites_only_the_blank_fields(app):
 SHARED_SCENES = {"trace"}
 
 
+@pytest.mark.parametrize("kind_key", ["bevel", "spur"])
+def test_every_field_round_trips_through_format_and_parse(kind_key):
+    """`format` writes the widget, `parse` reads it back - they must agree.
+
+    They came apart once: a bool field formatted as "True", which is not one of
+    its combobox choices, so parsing it back raised and every input in the
+    window came out as None. Cheap to assert, and it catches the whole class.
+    """
+    kind = KINDS[kind_key]
+    params = kind.params_cls.with_defaults(2.0, 17, 43)
+    for field in kind.fields:
+        value = getattr(params, field.attr)
+        text = field.format(value)
+        if field.choices:
+            assert text in field.choices
+        assert field.parse(text) == pytest.approx(value) if isinstance(
+            value, float
+        ) else field.parse(text) == value
+
+
+def test_the_arrangement_field_reads_back_as_a_bool(app):
+    """The spur type's one non-numeric, non-string input."""
+    app.kind_key.set("spur")
+    app.on_kind_change()
+
+    set_input(app, "internal", "internal")
+    assert app._params.internal is True
+    assert app._geo.centre_distance == pytest.approx(
+        app._params.transverse_module * (app._params.z2 - app._params.z1) / 2.0
+    )
+
+    set_input(app, "internal", "external")
+    assert app._params.internal is False
+
+
 def test_switching_member_and_view_rebuilds_the_scene(app):
     for key, _label in preview.SCENE_LABELS:
         for member in ("pinion", "gear"):

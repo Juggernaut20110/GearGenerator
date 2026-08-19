@@ -53,6 +53,7 @@ from .geometry import (
     ToothSpaceSection,
     blank_outline,
     end_overshoot,
+    rim_radius,
     tooth_space_section,
 )
 
@@ -72,6 +73,10 @@ def space_loop(section: ToothSpaceSection, tip_points: int = 9) -> list[Point2]:
     Takes the section's own segments and swaps the cut-clearance pieces
     (`riser_neg`, the cap, `riser_pos`) for an arc at the tip radius, which is
     where the real tooth's top land is. See the module docstring.
+
+    Works unchanged on a ring gear. It reads the tip radius off the flank's own
+    endpoint rather than being told it, so "the arc where the flanks stop" is
+    the right answer whether that is the outermost radius or the innermost.
     """
     seg = section.segments
     flank_pos = seg.get("flank_pos") or []
@@ -115,9 +120,14 @@ def transverse_scene(geo: SpurSetGeometry, member: str, neighbours: int = 1) -> 
 
     lines: list[Polyline] = []
 
-    # Reference circles, drawn first so the profiles sit on top of them.
+    # Reference circles, drawn first so the profiles sit on top of them. The
+    # ring's rim goes in too - without it a ring gear's view stops at its root
+    # circle and looks like a gear with nothing holding it together.
     lines.append(Polyline(arc(m.pitch_r, -span, span), "pitch"))
-    for radius in (m.base_r, m.root_r, m.tip_r):
+    radii = [m.base_r, m.root_r, m.tip_r]
+    if m.internal:
+        radii.append(rim_radius(geo, member))
+    for radius in radii:
         lines.append(Polyline(arc(radius, -span, span), "reference"))
 
     loop = space_loop(section)
@@ -131,10 +141,11 @@ def transverse_scene(geo: SpurSetGeometry, member: str, neighbours: int = 1) -> 
     lines.append(Polyline(list(section.loop_2d), "cut", True))
     lines.append(Polyline(loop, "outer", True))
 
+    kind = "internal ring" if m.internal else member
     return Scene(
         key="transverse",
         title=(
-            f"{member} - transverse tooth space, {m.z} teeth at "
+            f"{member} - transverse tooth space, {kind}, {m.z} teeth at "
             f"m_t = {geo.transverse_module:.4f} mm, "
             f"alpha_t = {math.degrees(geo.transverse_pressure_angle):.3f} deg"
         ),
@@ -174,6 +185,8 @@ def twist_scene(geo: SpurSetGeometry, member: str) -> Scene:
         Polyline(circle(m.root_r), "reference"),
         Polyline(circle(m.tip_r), "reference"),
     ]
+    if m.internal:
+        lines.append(Polyline(circle(rim_radius(geo, member)), "blank"))
 
     front_loop = space_loop(front)
     back_loop = space_loop(back)
@@ -236,11 +249,14 @@ def blank_scene(geo: SpurSetGeometry, member: str) -> Scene:
         )
     )
 
+    outer = (
+        f"rim diameter {2.0 * rim_radius(geo, member):.3f} mm" if m.internal
+        else f"outside diameter {m.outside_dia:.3f} mm"
+    )
     return Scene(
         key="blank",
         title=(
-            f"{member} - blank meridian, R x z, front face at z = 0, "
-            f"outside diameter {m.outside_dia:.3f} mm"
+            f"{member} - blank meridian, R x z, front face at z = 0, {outer}"
         ),
         polylines=lines,
         legend=[
@@ -287,6 +303,7 @@ def derived_rows(geo: SpurSetGeometry) -> list[Row]:
 
     return [
         Row("SET", header=True),
+        Row("arrangement", "internal" if p.internal else "external"),
         Row("ratio", _n(p.ratio)),
         Row("centre distance", _n(geo.centre_distance), unit="mm"),
         Row("transverse module", _n(geo.transverse_module), unit="mm"),
@@ -301,13 +318,20 @@ def derived_rows(geo: SpurSetGeometry) -> list[Row]:
         Row("contact ratio, transverse", _n(geo.transverse_contact_ratio)),
         Row("contact ratio, axial", _n(geo.axial_contact_ratio)),
         Row("contact ratio, total", _n(geo.total_contact_ratio)),
-        Row("MEMBERS", "PINION", "GEAR", header=True),
+        Row("MEMBERS", "PINION", "RING" if p.internal else "GEAR", header=True),
         Row("teeth", str(a.z), str(b.z)),
         Row("hand", a.hand, b.hand),
         Row("pitch diameter", _n(2.0 * a.pitch_r), _n(2.0 * b.pitch_r), "mm"),
         Row("outside diameter", _n(a.outside_dia), _n(b.outside_dia), "mm"),
         Row("base radius", _n(a.base_r), _n(b.base_r), "mm"),
+        # Tip and root are the other way round on a ring, so they are labelled
+        # by what they are rather than by which is bigger.
+        Row("tip radius", _n(a.tip_r), _n(b.tip_r), "mm"),
         Row("root radius", _n(a.root_r), _n(b.root_r), "mm"),
+        *(
+            [Row("rim radius", "", _n(rim_radius(geo, "gear")), "mm")]
+            if p.internal else []
+        ),
         Row("virtual teeth z_v", _n(a.virtual_teeth), _n(b.virtual_teeth)),
         Row("twist over the face", _n(a.twist_deg), _n(b.twist_deg), "deg"),
     ]

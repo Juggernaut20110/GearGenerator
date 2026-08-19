@@ -11,11 +11,20 @@ from __future__ import annotations
 import math
 
 from ..report_format import emit_issues, row as _row
-from .geometry import blank_outline, compute_set, end_overshoot, tooth_space_section
+from .geometry import (
+    blank_outline,
+    compute_set,
+    end_overshoot,
+    rim_radius,
+    tooth_space_section,
+)
 from .params import SpurSetParams
 from .validate import validate
 
-FLAGS = ("alpha", "beta", "face_width", "bore", "hub", "member", "backlash")
+FLAGS = (
+    "alpha", "beta", "face_width", "bore", "hub", "member", "backlash",
+    "internal", "rim",
+)
 
 
 def add_arguments(ap) -> None:
@@ -23,6 +32,14 @@ def add_arguments(ap) -> None:
         "--beta", type=float, default=0.0, help="helix angle, deg (0 = straight)"
     )
     ap.add_argument("--backlash", type=float, default=0.0, help="circular backlash, mm")
+    ap.add_argument(
+        "--internal",
+        action="store_true",
+        help="z2 is an internal ring gear rather than an external one",
+    )
+    ap.add_argument(
+        "--rim", type=float, help="ring rim thickness outside its root circle, mm"
+    )
 
 
 def params_from_args(args) -> SpurSetParams:
@@ -31,6 +48,7 @@ def params_from_args(args) -> SpurSetParams:
         "helix_angle": args.beta,
         "hand": args.hand,
         "backlash": args.backlash,
+        "internal": args.internal,
     }
     if args.face_width is not None:
         overrides["face_width"] = args.face_width
@@ -38,6 +56,8 @@ def params_from_args(args) -> SpurSetParams:
         overrides["bore"] = args.bore
     if args.hub is not None:
         overrides["hub_thickness"] = args.hub
+    if args.rim is not None:
+        overrides["rim_thickness"] = args.rim
     return SpurSetParams.with_defaults(args.module, args.z1, args.z2, **overrides)
 
 
@@ -46,6 +66,7 @@ def print_report(geo) -> None:
     f = lambda v: f"{v:.4f}"  # noqa: E731
 
     print("INPUT")
+    print(_row("arrangement", "internal" if p.internal else "external"))
     print(_row("normal module", f(p.module), "", "mm"))
     print(_row("teeth", p.z1, p.z2))
     print(_row("normal pressure angle", f(p.pressure_angle), "", "deg"))
@@ -54,6 +75,8 @@ def print_report(geo) -> None:
     print(_row("face width", f(p.face_width), "", "mm"))
     print(_row("bore", f(p.bore), "", "mm"))
     print(_row("hub thickness", f(p.hub_thickness), "", "mm"))
+    if p.internal:
+        print(_row("ring rim thickness", f(p.rim_thickness), "", "mm"))
     print(_row("backlash", f(p.backlash), "", "mm"))
 
     print("\nSET")
@@ -76,15 +99,20 @@ def print_report(geo) -> None:
     print(_row("contact ratio, axial", f(geo.axial_contact_ratio)))
     print(_row("contact ratio, total", f(geo.total_contact_ratio)))
 
-    print(f"\nMEMBERS{'':<21}{'PINION':>14}{'GEAR':>14}")
+    second = "RING" if p.internal else "GEAR"
+    print(f"\nMEMBERS{'':<21}{'PINION':>14}{second:>14}")
     a, b = geo.pinion, geo.gear
     print(_row("teeth", a.z, b.z))
     print(_row("hand", a.hand, b.hand))
     print(_row("pitch diameter", f(2.0 * a.pitch_r), f(2.0 * b.pitch_r), "mm"))
     print(_row("outside diameter", f(a.outside_dia), f(b.outside_dia), "mm"))
     print(_row("base radius", f(a.base_r), f(b.base_r), "mm"))
+    # For the ring these two are the other way round - tip innermost, root
+    # outermost - which is why the report names them rather than ordering them.
     print(_row("tip radius", f(a.tip_r), f(b.tip_r), "mm"))
     print(_row("root radius", f(a.root_r), f(b.root_r), "mm"))
+    if p.internal:
+        print(_row("rim radius", "", f(rim_radius(geo, "gear")), "mm"))
     print(_row("addendum", f(a.addendum), f(b.addendum), "mm"))
     print(_row("dedendum", f(a.dedendum), f(b.dedendum), "mm"))
     print(_row("virtual teeth z_v", f(a.virtual_teeth), f(b.virtual_teeth)))

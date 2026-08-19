@@ -66,6 +66,11 @@ class Field:
         if self.choices:
             if text not in self.choices:
                 raise ValueError("must be one of " + ", ".join(self.choices))
+            # A bool field is still a combobox - "external"/"internal" reads
+            # better in a form than a checkbox labelled with a negation - so it
+            # converts back here rather than leaving the caller to know.
+            if self.kind is bool:
+                return text == self.choices[1]
             return text
         try:
             value = float(text)
@@ -76,6 +81,21 @@ class Field:
                 raise ValueError("must be a whole number")
             return int(round(value))
         return value
+
+    def format(self, value) -> str:
+        """The inverse of `parse`: what to write into the widget.
+
+        Paired with `parse` deliberately, and tested as a round trip. A bool
+        field goes through the choice labels rather than through `str(True)`,
+        which is not one of them and would not parse back.
+        """
+        if self.choices:
+            if self.kind is bool:
+                return self.choices[1] if value else self.choices[0]
+            return str(value)
+        if self.kind is int:
+            return str(value)
+        return f"{value:g}"
 
 
 BEVEL_FIELDS: tuple[Field, ...] = (
@@ -96,12 +116,14 @@ SPUR_FIELDS: tuple[Field, ...] = (
     Field("module", "Normal module", float, "mm"),
     Field("z1", "Pinion teeth z1", int),
     Field("z2", "Gear teeth z2", int),
+    Field("internal", "Arrangement", bool, "", ("external", "internal")),
     Field("pressure_angle", "Normal pressure angle", float, "deg"),
     Field("helix_angle", "Helix angle", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
+    Field("rim_thickness", "Ring rim thickness", float, "mm"),
 )
 
 # The order the rows are laid out in. Every field of every type appears once,
@@ -117,9 +139,10 @@ def _ordered_fields() -> tuple[Field, ...]:
     for field in BEVEL_FIELDS + SPUR_FIELDS:
         seen.setdefault(field.attr, field)
     order = (
-        "module", "z1", "z2", "pressure_angle",
+        "module", "z1", "z2", "internal", "pressure_angle",
         "shaft_angle", "spiral_angle", "helix_angle", "hand",
-        "face_width", "bore", "hub_thickness", "min_root_thickness",
+        "face_width", "bore", "hub_thickness", "rim_thickness",
+        "min_root_thickness",
     )
     return tuple(seen[name] for name in order)
 
@@ -128,7 +151,7 @@ ALL_FIELDS: tuple[Field, ...] = _ordered_fields()
 
 # Fields `with_defaults` can size for us, and so the "Auto" button rewrites.
 BEVEL_AUTO = ("face_width", "bore", "hub_thickness", "min_root_thickness")
-SPUR_AUTO = ("face_width", "bore", "hub_thickness")
+SPUR_AUTO = ("face_width", "bore", "hub_thickness", "rim_thickness")
 
 
 def _bevel_status(p, geo) -> str:
@@ -148,9 +171,10 @@ def _spur_status(p, geo) -> str:
         "straight teeth" if not p.helix_angle
         else f"helix {p.helix_angle:g} deg {p.hand}"
     )
+    arrangement = "internal ring" if p.internal else "external"
     return (
-        f"m_n {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
-        f"{helix}   a {geo.centre_distance:.3f} mm   "
+        f"m_n {p.module:g}   {p.z1}:{p.z2} teeth   {arrangement}   "
+        f"ratio {p.ratio:.3f}:1   {helix}   a {geo.centre_distance:.3f} mm   "
         f"contact {geo.total_contact_ratio:.3f}"
     )
 
@@ -230,7 +254,7 @@ KINDS: dict[str, GearKind] = {
         preview=spur_preview,
         fields=SPUR_FIELDS,
         auto_fields=SPUR_AUTO,
-        auto_kwargs=("pressure_angle", "helix_angle", "hand"),
+        auto_kwargs=("pressure_angle", "helix_angle", "hand", "internal"),
         default_scene="transverse",
         status=_spur_status,
         result_lines=_spur_result_lines,
@@ -521,14 +545,7 @@ class App(ttk.Frame):
         self._loading = True
         try:
             for field in self.kind.fields:
-                value = getattr(p, field.attr)
-                if field.choices:
-                    text = str(value)
-                elif field.kind is int:
-                    text = str(value)
-                else:
-                    text = f"{value:g}"
-                self.vars[field.attr].set(text)
+                self.vars[field.attr].set(field.format(getattr(p, field.attr)))
         finally:
             self._loading = False
         self.refresh()

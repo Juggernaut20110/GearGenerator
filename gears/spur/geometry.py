@@ -53,6 +53,7 @@ from ..involute import (
     MIN_TOP_LAND_FACTOR,
     inv,
     max_tip_radius,
+    min_internal_tip_radius,
     tooth_space_loop,
 )
 from .params import SpurSetParams
@@ -107,14 +108,15 @@ class SpurMemberGeometry:
     beta: float                 # signed helix angle, radians; this member's hand
     pitch_r: float
     base_r: float
-    tip_r: float
-    root_r: float
+    tip_r: float                # SMALLEST radius of the teeth if internal
+    root_r: float               # LARGEST radius of the teeth if internal
     addendum: float
     dedendum: float
     virtual_teeth: float        # z / cos(beta)**3, the equivalent spur gear
     twist: float                # total rotation over the face width, radians
     psi0: float                 # angular half-thickness constant at the base
     half_pitch: float           # pi / z
+    internal: bool = False      # a ring gear: teeth pointing inward
 
     @property
     def hand(self) -> str:
@@ -136,7 +138,13 @@ class SpurMemberGeometry:
 
     @property
     def outside_dia(self) -> float:
-        return 2.0 * self.tip_r
+        """How wide the *teeth* reach, which for a ring gear is its root circle.
+
+        Not the blank's outside diameter when the gear is internal - the rim
+        stands outside the root - so `blank_outline` is the thing to ask about
+        the part's overall size. This is the diameter the teeth occupy.
+        """
+        return 2.0 * (self.root_r if self.internal else self.tip_r)
 
 
 @dataclass(frozen=True)
@@ -179,21 +187,46 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     # the centre distance nominal.
     tooth_thickness = math.pi * m_t / 2.0 - p.backlash / 2.0
 
+    # The space width at the pitch circle - what is left of the pitch once the
+    # tooth is taken out. An internal gear's space is generated from this the
+    # way an external gear's tooth is generated from its thickness; see
+    # `involute.internal_flank_points`.
+    space_width = math.pi * m_t - tooth_thickness
+
+    # The gear's hand. An external pair is cut with opposite hands and an
+    # internal pair with the same one - see `SpurSetParams.hand`. Neither is a
+    # convention: the placement has no flip in it either way, and what differs
+    # is whether the second member's teeth face the first from outside or from
+    # inside.
+    gear_beta = p.beta if p.internal else -p.beta
+
     members = []
-    for name, z, beta in (
-        ("pinion", p.z1, p.beta),
-        # Opposite hand - see the module docstring. Nothing else differs.
-        ("gear", p.z2, -p.beta),
+    for name, z, beta, internal in (
+        ("pinion", p.z1, p.beta, False),
+        ("gear", p.z2, gear_beta, p.internal),
     ):
         pitch_r = m_t * z / 2.0
         base_r = pitch_r * math.cos(alpha_t)
-        tip_r = pitch_r + addendum
-        root_r = pitch_r - dedendum
 
-        # psi0 is the angular half-thickness of the tooth extrapolated back to
-        # the base circle; half_pitch is half the angular pitch. Together they
-        # are all the flank generator needs, and both are scale-free.
-        psi0 = tooth_thickness / (2.0 * pitch_r) + inv(alpha_t)
+        if internal:
+            # The teeth point inward, so the addendum comes off the pitch radius
+            # and the dedendum is added to it. Everything downstream keeps
+            # calling the innermost radius the tip, because that is what it is -
+            # the end of the tooth.
+            tip_r = pitch_r - addendum
+            root_r = pitch_r + dedendum
+            # The SPACE half-width extrapolated to the base circle, not the
+            # tooth's. That single substitution is what turns the external
+            # generator into the internal one.
+            psi0 = space_width / (2.0 * pitch_r) + inv(alpha_t)
+        else:
+            tip_r = pitch_r + addendum
+            root_r = pitch_r - dedendum
+            # psi0 is the angular half-thickness of the tooth extrapolated back
+            # to the base circle; half_pitch is half the angular pitch. Together
+            # they are all the flank generator needs, and both are scale-free.
+            psi0 = tooth_thickness / (2.0 * pitch_r) + inv(alpha_t)
+
         half_pitch = math.pi / z
 
         members.append(
@@ -214,6 +247,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 twist=p.face_width * math.tan(beta) / pitch_r + 0.0,
                 psi0=psi0,
                 half_pitch=half_pitch,
+                internal=internal,
             )
         )
 
@@ -252,11 +286,35 @@ def transverse_contact_ratio(
     The standard length-of-action over base pitch. The length of action is the
     part of the line of action lying between the two tip circles:
 
-        g = sqrt(ra1^2 - rb1^2) + sqrt(ra2^2 - rb2^2) - a * sin(alpha_t)
+        external   g = sqrt(ra1^2 - rb1^2) + sqrt(ra2^2 - rb2^2) - a sin(alpha_t)
+        internal   g = sqrt(ra1^2 - rb1^2) - sqrt(ra2^2 - rb2^2) + a sin(alpha_t)
 
     and the base pitch it is divided by is `p_t * cos(alpha_t)`. Below 1.0 the
     pair loses contact between teeth and cannot transmit continuous motion,
     which is why the validator treats that as an error rather than a warning.
+
+    **Two signs flip together for an internal pair, and they have to.** The ring
+    curves the same way as the pinion rather than against it, so its tip circle
+    cuts the line of action on the far side of the pitch point from where an
+    external gear's would, and the centre distance is added rather than
+    subtracted.
+
+    Measured on the anchor ring pair, the four sign combinations give:
+
+        both flipped (correct)                g =  11.431    ratio 1.936
+        neither flipped                       g =   9.913    ratio 1.679
+        only the branch flipped               g = -17.298    ratio 0
+        only the centre distance flipped      g =  38.643    ratio 6.545
+
+    Note which one is dangerous. Half-flipping is loud - a ratio of zero or of
+    six is obviously not a gear pair. **Forgetting the flip entirely is quiet**:
+    1.679 against a true 1.936 is an ordinary-looking number that passes every
+    validator, and it is why the test for this solves the length of action
+    longhand rather than re-running this function.
+
+    The consequence is worth knowing: an internal pair has a **higher** contact
+    ratio than an external pair of the same tooth counts and module. 1.9361 on
+    the 18 x 60 anchor against 1.6572 external.
 
     The `max(0, ...)` guards a tip circle that has fallen inside its own base
     circle - possible with a badly undercut pinion - where the square root is of
@@ -265,11 +323,45 @@ def transverse_contact_ratio(
     def branch(m: SpurMemberGeometry) -> float:
         return math.sqrt(max(0.0, m.tip_r ** 2 - m.base_r ** 2))
 
-    length_of_action = branch(pinion) + branch(gear) - centre_distance * math.sin(
-        alpha_t
-    )
+    if gear.internal:
+        length_of_action = (
+            branch(pinion) - branch(gear) + centre_distance * math.sin(alpha_t)
+        )
+    else:
+        length_of_action = (
+            branch(pinion) + branch(gear) - centre_distance * math.sin(alpha_t)
+        )
     base_pitch = circular_pitch * math.cos(alpha_t)
     return max(0.0, length_of_action / base_pitch)
+
+
+def min_internal_teeth(alpha_t: float, addendum_factor: float = ADDENDUM_FACTOR) -> float:
+    """Fewest teeth a ring gear can have before its tip falls inside its base circle.
+
+    A ring's tip radius is `m_t (z - 2 h_a) / 2` and its base radius is
+    `m_t z cos(alpha_t) / 2`, so the tip clears the base circle only while
+
+        z > 2 * h_a / (1 - cos(alpha_t))
+
+    Below that the flank has no involute anywhere on the tooth and there is
+    nothing honest to draw - unlike an external gear, which falls below its base
+    circle at the *root* and gets a radial line there as a standard
+    simplification. Here the whole flank is gone, not the bottom of it.
+
+    The numbers are larger than people expect, and they run the wrong way:
+
+        14.5 deg     62.8   ->  63 teeth
+        20   deg     33.2   ->  34 teeth
+        25   deg     21.3   ->  22 teeth
+
+    A *lower* pressure angle needs *more* teeth, because it puts the base circle
+    closer to the pitch circle where the tip has to fit between them. This is
+    why the anchor ring has 60 teeth rather than something smaller and neater.
+    """
+    denominator = 1.0 - math.cos(alpha_t)
+    if denominator <= 0.0:
+        return math.inf
+    return 2.0 * addendum_factor / denominator
 
 
 def undercut_limit(alpha_t: float, beta: float) -> float:
@@ -422,18 +514,32 @@ def tooth_space_section(
     p = geo.params
     m = geo.member(member)
 
-    # Clamp the tip so the tooth never goes pointed. Rarely binds for a spur
-    # gear at standard proportions - it takes a very small tooth count - but it
-    # costs nothing and it is the same guard the bevel side relies on.
-    r_tip = min(
-        m.tip_r,
-        max_tip_radius(m.base_r, m.psi0, MIN_TOP_LAND_FACTOR * p.module),
-    )
-    r_cap = r_tip + CUT_OVERSHOOT_FACTOR * p.module
+    if m.internal:
+        # The clamp runs the other way for a ring gear. Its tooth is narrowest
+        # at the tip - the innermost radius - and widens outward, so what the
+        # top land constrains is a *minimum* tip radius rather than a maximum.
+        # The cap then clears the blank inward, past the tip, toward the axis.
+        r_tip = max(
+            m.tip_r,
+            min_internal_tip_radius(
+                m.base_r, m.psi0, m.half_pitch, MIN_TOP_LAND_FACTOR * p.module
+            ),
+        )
+        r_cap = max(0.05 * m.base_r, r_tip - CUT_OVERSHOOT_FACTOR * p.module)
+    else:
+        # Clamp the tip so the tooth never goes pointed. Rarely binds for a spur
+        # gear at standard proportions - it takes a very small tooth count - but
+        # it costs nothing and it is the same guard the bevel side relies on.
+        r_tip = min(
+            m.tip_r,
+            max_tip_radius(m.base_r, m.psi0, MIN_TOP_LAND_FACTOR * p.module),
+        )
+        r_cap = r_tip + CUT_OVERSHOOT_FACTOR * p.module
 
     segments, loop, filleted = tooth_space_loop(
         m.base_r, m.root_r, r_tip, r_cap, m.psi0, m.half_pitch,
         p.fillet_factor * p.module, n_flank, split_cap=split_cap,
+        internal=m.internal,
     )
 
     return ToothSpaceSection(
@@ -484,25 +590,58 @@ def guide_helix(
 # ---------------------------------------------------------------------------
 
 
+def rim_radius(geo: SpurSetGeometry, member: str) -> float:
+    """Outside radius of a ring gear's rim, mm. The blank's real outer size.
+
+    The root circle is where the teeth stop and the rim begins, so the rim
+    stands `rim_thickness` outside it. Meaningless for an external member,
+    whose blank ends at the tip circle.
+    """
+    return geo.member(member).root_r + max(0.0, geo.params.rim_thickness)
+
+
 def blank_outline(geo: SpurSetGeometry, member: str) -> list[Point2]:
     """Meridian half-section of the gear blank, as (R, z) with the front face at 0.
 
-    Revolving this about the Z axis gives the un-toothed body. The profile runs:
-    bore at the front face, out across the front face to the tip radius, back
-    along the outside to the back face, in across the back face, then home along
-    the bore - with an optional hub boss standing behind the back face.
+    Revolving this about the Z axis gives the un-toothed body.
 
-    A plain stepped cylinder, and deliberately so. The bevel blank ends on the
-    back cone and needs a root rim under the teeth at the heel; a spur blank ends
-    on planes perpendicular to the axis, both faces carry the full tooth depth
-    uniformly, and there is no wedge of vanishing material to protect.
+    **External** - a plain stepped cylinder, and deliberately so. The profile
+    runs: bore at the front face, out across the front face to the tip radius,
+    back along the outside to the back face, in across the back face, then home
+    along the bore, with an optional hub boss standing behind the back face. The
+    bevel blank ends on the back cone and needs a root rim under the teeth at
+    the heel; a spur blank ends on planes perpendicular to the axis, both faces
+    carry the full tooth depth uniformly, and there is no wedge of vanishing
+    material to protect.
+
+    **Internal** - a plain annulus. It runs from the tip circle (the *inner*
+    face, because the teeth point inward) out to the rim, across the back, and
+    home. Four corners, every dimension still linear, so the SOLIDWORKS builder
+    needs no new machinery - only different numbers and one different variable
+    name.
+
+    A ring gear has no bore and no hub, and that is not an omission. Its inner
+    surface is the toothed one, so there is nothing for a bore to be; anything
+    it is fastened by belongs on the rim, and a boss standing off the back face
+    would be a second feature rather than part of the gear. `bore` and
+    `hub_thickness` are simply not read for an internal member - the validator
+    says so rather than letting them look effective.
     """
     p = geo.params
     m = geo.member(member)
+    b = p.face_width
+
+    if m.internal:
+        r_outer = rim_radius(geo, member)
+        return [
+            (m.tip_r, 0.0),
+            (r_outer, 0.0),
+            (r_outer, b),
+            (m.tip_r, b),
+        ]
 
     r_bore = p.bore / 2.0
     r_tip = m.tip_r
-    b = p.face_width
     r_hub = max(r_bore, min(m.root_r, r_bore + 2.0 * p.module))
 
     outline: list[Point2] = [

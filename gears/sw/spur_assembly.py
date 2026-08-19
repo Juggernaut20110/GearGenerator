@@ -220,8 +220,12 @@ def build_spur_set(
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pinion_path = out_dir / part_filename(geo, "pinion", prefix="spur_")
-    gear_path = out_dir / part_filename(geo, "gear", prefix="spur_")
+    # A ring gear of a given module and tooth count is a different part from an
+    # external one, so it needs a different filename or the two overwrite each
+    # other - the same trap `part_filename`'s `prefix` was added for.
+    prefix = "internal_" if geo.params.internal else "spur_"
+    pinion_path = out_dir / part_filename(geo, "pinion", prefix=prefix)
+    gear_path = out_dir / part_filename(geo, "gear", prefix=prefix)
 
     pinion = build_spur(session, geo, "pinion", str(pinion_path))
     gear = build_spur(session, geo, "gear", str(gear_path))
@@ -232,7 +236,9 @@ def build_spur_set(
     pinion_comp = add_component(model, pinion_path)
     gear_comp = add_component(model, gear_path)
 
-    clocking = mesh.gear_clocking(geo.gear.z)
+    # `clocking_for` picks the internal or external rule; they are different
+    # answers, not the same one reached twice - see `spur.mesh`.
+    clocking = mesh.clocking_for(geo)
     place(session, pinion_comp, mesh.pinion_placement(), "pinion")
     place(
         session,
@@ -271,7 +277,7 @@ def build_spur_set(
     if save_assembly:
         module = f"{geo.params.module:g}".replace(".", "p")
         path = str(
-            out_dir / f"spur_m{module}_z{geo.pinion.z}x{geo.gear.z}.sldasm"
+            out_dir / f"{prefix}m{module}_z{geo.pinion.z}x{geo.gear.z}.sldasm"
         )
         session.save(model, path)
 

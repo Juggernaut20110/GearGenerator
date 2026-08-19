@@ -45,14 +45,29 @@ class SpurSetParams(JsonParams):
     pressure_angle: float = 20.0   # degrees, NORMAL
     helix_angle: float = 0.0       # degrees; 0 is a straight spur gear
 
-    # Which way the PINION's teeth wind, looking along +Z. The gear always takes
-    # the opposite hand: the two are placed on parallel axes by a pure
-    # translation with no flip, so same-hand teeth would cross rather than mesh.
+    # Which way the PINION's teeth wind, looking along +Z.
+    #
+    # For an **external** pair the gear takes the opposite hand: the two are
+    # placed on parallel axes by a pure translation with no flip, so same-hand
+    # teeth would cross rather than mesh.
+    #
+    # For an **internal** pair both members take the *same* hand, and the reason
+    # is the same reason: there is still no flip in the placement, but the ring
+    # is not turned over either - the pinion runs inside it, both teeth face the
+    # same way round the axis, and opposite hands would cross. See
+    # `geometry.compute_set`, which signs each member's twist for this.
     hand: str = "right"
+
+    # Whether z2 is an internal ring gear rather than an external one.
+    internal: bool = False
 
     # Not exposed in the v1 GUI, but part of the geometry.
     fillet_factor: float = 0.2  # root fillet radius as a multiple of module
     backlash: float = 0.0       # mm, circular backlash removed from tooth thickness
+
+    # Rim standing outside a ring gear's root circle, mm. Ignored for an
+    # external pair, which has no rim - its blank ends at the tip circle.
+    rim_thickness: float = 5.0
 
     # --- radian and transverse accessors, so downstream code never repeats them ---
 
@@ -82,8 +97,16 @@ class SpurSetParams(JsonParams):
 
     @property
     def centre_distance(self) -> float:
-        """Standard centre distance, mm. No profile shift, so this is exact."""
-        return self.transverse_module * (self.z1 + self.z2) / 2.0
+        """Standard centre distance, mm. No profile shift, so this is exact.
+
+        The **difference** of the tooth counts for an internal pair, not the
+        sum. The pinion runs inside the ring, so moving teeth from one to the
+        other brings the axes together instead of pushing them apart, and at
+        z1 = z2 the two axes coincide - which is why the validator wants a
+        healthy gap between the counts.
+        """
+        counts = self.z2 - self.z1 if self.internal else self.z1 + self.z2
+        return self.transverse_module * counts / 2.0
 
     @classmethod
     def with_defaults(cls, module: float, z1: int, z2: int, **overrides):
@@ -109,6 +132,10 @@ class SpurSetParams(JsonParams):
             "face_width": round(face_width, 2),
             "bore": round(max(0.25 * m_t * z1, 4.0), 1),
             "hub_thickness": round(2.5 * module, 2),
+            # The rim behind a ring gear's teeth. The same rule of thumb as the
+            # hub, and comfortably over the one-module minimum the validator
+            # asks for. Only read when `internal` is set.
+            "rim_thickness": round(2.5 * module, 2),
         }
         defaults.update(overrides)
         return cls(module=module, z1=z1, z2=z2, **defaults)

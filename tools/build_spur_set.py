@@ -1,16 +1,25 @@
-"""Build a meshing pair of involute spur gears in SOLIDWORKS.
+"""Build a meshing pair of involute spur gears in SOLIDWORKS, external or internal.
 
     .venv\\Scripts\\python.exe tools\\build_spur_set.py --z1 17 --z2 43
     .venv\\Scripts\\python.exe tools\\build_spur_set.py --z1 17 --z2 43 --beta 15
+    .venv\\Scripts\\python.exe tools\\build_spur_set.py --z1 18 --z2 60 --internal
     .venv\\Scripts\\python.exe tools\\build_spur_set.py --no-mates
 
 Both parts plus an assembly with the pair clocked, meshing and coupled by a gear
 mate, so dragging either member turns the other.
 
+`--internal` makes z2 a ring gear: the pinion runs inside it, the centre
+distance is the *difference* of the tooth counts, the ring sits on -X rather
+than +X, and a helical pair is cut with the **same** hand rather than opposite
+ones. A ring needs at least 34 teeth at 20 degrees before its tip clears its own
+base circle, so the counts here are not interchangeable with an external pair's.
+
 `--reverse-gear` flips the gear mate's sense. **Which setting is right has not
-been measured for a spur pair** - the bevel answer was found by hand and does
-not transfer, because its axes stand at 90 degrees and these are parallel. Drag
-the pinion and watch which way the gear goes; if it is wrong, pass the flag and
+been measured for either kind of spur pair.** The bevel answer was found by hand
+and does not transfer, because its axes stand at 90 degrees and these are
+parallel; and the internal answer is a *separate* measurement again, because an
+internal pair turns the same way while an external one turns opposite. Drag the
+pinion and watch which way the gear goes; if it is wrong, pass the flag and
 record the answer in the module docstring of `gears/sw/spur_assembly.py`.
 """
 
@@ -23,7 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gears.spur.geometry import compute_set             # noqa: E402
+from gears.spur import mesh                             # noqa: E402
+from gears.spur.geometry import compute_set, rim_radius  # noqa: E402
 from gears.spur.params import SpurSetParams             # noqa: E402
 from gears.spur.validate import validate                # noqa: E402
 from gears.sw import SwError, SwSession                 # noqa: E402
@@ -42,6 +52,10 @@ def main(argv=None) -> int:
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
     ap.add_argument("--backlash", type=float)
+    ap.add_argument(
+        "--internal", action="store_true", help="z2 is an internal ring gear"
+    )
+    ap.add_argument("--rim", type=float, help="ring rim thickness, mm")
     ap.add_argument("--out", default="out", help="directory for the parts and assembly")
     ap.add_argument("--no-save", action="store_true", help="do not save the assembly")
     ap.add_argument("--no-mates", action="store_true", help="place but do not constrain")
@@ -54,12 +68,14 @@ def main(argv=None) -> int:
         "pressure_angle": args.alpha,
         "helix_angle": args.beta,
         "hand": args.hand,
+        "internal": args.internal,
     }
     for key, value in (
         ("face_width", args.face_width),
         ("bore", args.bore),
         ("hub_thickness", args.hub),
         ("backlash", args.backlash),
+        ("rim_thickness", args.rim),
     ):
         if value is not None:
             overrides[key] = value
@@ -75,14 +91,21 @@ def main(argv=None) -> int:
 
     geo = compute_set(p)
     print(
-        f"building {geo.pinion.z}x{geo.gear.z} at m_n={p.module}, "
+        f"building {'internal' if p.internal else 'external'} "
+        f"{geo.pinion.z}x{geo.gear.z} at m_n={p.module}, "
         f"beta={p.helix_angle:g} deg, centre distance {geo.centre_distance:.4f} mm"
     )
     if p.helix_angle:
-        print(
-            f"  hands: pinion {geo.pinion.hand}, gear {geo.gear.hand} "
-            "(opposite, or they will not mesh)"
+        rule = "same, or they will not mesh" if p.internal else (
+            "opposite, or they will not mesh"
         )
+        print(f"  hands: pinion {geo.pinion.hand}, gear {geo.gear.hand} ({rule})")
+    if p.internal:
+        print(
+            f"  ring: tip {geo.gear.tip_r:.3f} mm (inner), root "
+            f"{geo.gear.root_r:.3f}, rim {rim_radius(geo, 'gear'):.3f} mm"
+        )
+        print(f"  the ring is placed at x = {mesh.gear_translation(geo)[0]:+.4f} mm")
 
     with SwSession() as session:
         try:

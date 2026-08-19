@@ -17,7 +17,12 @@ from ..validate import (
     Issue,
     ValidationResult,
 )
-from .geometry import WHOLE_DEPTH_FACTOR, compute_set, undercut_limit
+from .geometry import (
+    WHOLE_DEPTH_FACTOR,
+    compute_set,
+    min_internal_teeth,
+    undercut_limit,
+)
 from .params import SpurSetParams
 
 __all__ = ["Issue", "ValidationResult", "validate"]
@@ -29,6 +34,21 @@ MAX_HELIX_ANGLE = 45.0
 # Below this the pair is losing contact between tooth pairs often enough to be
 # noisy even though it still transmits.
 MIN_COMFORTABLE_CONTACT_RATIO = 1.1
+
+# Fewest teeth an internal pair can differ by before the pinion fouls the ring.
+#
+# Two distinct interferences set this, and the standard figure covers both at
+# standard proportions with a 20 degree pressure angle:
+#
+# * **involute (tip) interference** - the ring's tip reaches inside the point
+#   where the pinion's flank stops being an involute
+# * **trimming (fighting) interference** - the two tip circles collide while
+#   the pair is being assembled radially, even though the running mesh clears
+#
+# Below 10 a real design needs profile shift or a shorter ring addendum to make
+# it work, neither of which this parameter set has, so the honest answer is to
+# refuse rather than to draw something that cannot be cut.
+MIN_INTERNAL_TOOTH_DIFFERENCE = 10
 
 
 def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
@@ -54,6 +74,17 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
         r.error("hand", "must be 'right' or 'left'")
     if p.face_width <= 0:
         r.error("face_width", "must be greater than zero")
+    if p.internal and p.z2 - p.z1 < MIN_INTERNAL_TOOTH_DIFFERENCE:
+        # Checked here rather than below because everything downstream divides
+        # by the centre distance, which goes to zero as the counts converge.
+        r.error(
+            "z2",
+            f"an internal pair needs the ring to have at least "
+            f"{MIN_INTERNAL_TOOTH_DIFFERENCE} more teeth than the pinion; "
+            f"{p.z2} - {p.z1} = {p.z2 - p.z1}",
+        )
+    if p.internal and p.rim_thickness < 0:
+        r.error("rim_thickness", "cannot be negative")
     if p.bore < 0:
         r.error("bore", "cannot be negative")
     if p.hub_thickness < 0:
@@ -89,9 +120,13 @@ def validate(p: SpurSetParams) -> ValidationResult:
     # root below the base circle is drawn as a radial line, not as the trochoid
     # a real cutter leaves. So a part that undercuts in reality comes out of
     # here looking sound, which is exactly why this warning has to be loud.
+    # An internal member is exempt: undercut is what a rack cutter does to a
+    # convex flank as it rolls past, and a ring gear's flank is concave. It is
+    # cut by a shaper rather than a hob, and what limits it is the tip and
+    # trimming interference checked further down instead.
     z_min = undercut_limit(geo.transverse_pressure_angle, p.beta)
     for member in (geo.pinion, geo.gear):
-        if member.z < z_min:
+        if not member.internal and member.z < z_min:
             result.warn(
                 "z1" if member.name == "pinion" else "z2",
                 f"{member.name} has {member.z} teeth, below the undercut limit of "
@@ -131,8 +166,28 @@ def validate(p: SpurSetParams) -> ValidationResult:
         )
 
     # --- blank ------------------------------------------------------------
+    #
+    # A ring gear has no bore to check. Its inner surface *is* the toothed one,
+    # so there is nothing for a bore to be, and what stands behind its teeth is
+    # the rim rather than a wall over a hole.
     min_wall = max(p.module, 1.0)
     for member in (geo.pinion, geo.gear):
+        if member.internal:
+            rim = p.rim_thickness
+            if rim <= 0.0:
+                result.error(
+                    "rim_thickness",
+                    "the ring has no rim outside its root circle; there is no "
+                    "material behind the teeth",
+                )
+            elif rim < min_wall:
+                result.warn(
+                    "rim_thickness",
+                    f"only {rim:.2f} mm of rim behind the ring's teeth; "
+                    f"{min_wall:.2f} mm is the usual minimum",
+                )
+            continue
+
         wall = member.root_r - p.bore / 2.0
         if wall <= 0.0:
             result.error(
@@ -176,15 +231,79 @@ def validate(p: SpurSetParams) -> ValidationResult:
     # --- tooth form --------------------------------------------------------
     _check_tooth_form(geo, p, result)
 
+    # --- the internal pair's own failure modes -----------------------------
+    if p.internal:
+        _check_internal_mesh(geo, p, result)
+
     return result
+
+
+def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> None:
+    """The clearances an internal pair has and an external one does not.
+
+    An external pair cannot foul anywhere except at the flanks, because the two
+    blanks only ever approach each other. A ring gear wraps *around* its pinion,
+    so there are two more places for them to meet, and neither shows up in the
+    contact ratio.
+    """
+    pinion, ring = geo.pinion, geo.gear
+    a = geo.centre_distance
+
+    # --- radial clearance at the far side ----------------------------------
+    #
+    # The pinion's tip has to clear the ring's root all the way round, not only
+    # where they mesh. Directly opposite the mesh the pinion's tip reaches
+    # `a + ra1` from the ring's axis, and the ring's root circle has to be
+    # outside that.
+    #
+    # For standard proportions this comes out at exactly the standard clearance
+    # and nothing else, which is a good sign the radii are right rather than a
+    # coincidence: a + ra1 = m(z2 + 2)/2 and rf2 = m(z2 + 2.5)/2, so the gap is
+    # 0.25*m however many teeth either member has. Measured at 0.5000 mm for
+    # both 18x60 and 24x60 at m=2, and 0.7500 at m=3. It only goes wrong once
+    # something non-standard is in play, which is exactly when it is worth
+    # having.
+    far_reach = a + pinion.tip_r
+    if far_reach >= ring.root_r:
+        result.error(
+            "z2",
+            f"the pinion's tip reaches {far_reach:.2f} mm from the ring's axis "
+            f"but the ring's root circle is at {ring.root_r:.2f} mm, so the two "
+            "collide on the far side of the mesh",
+        )
+
+    # --- trimming (fighting) interference ----------------------------------
+    #
+    # NOT computed here, and it would be dishonest to pretend otherwise. The
+    # closed-form criterion involves the working pressure angle and both tip
+    # pressure angles, and every published form of it is easy to get backwards -
+    # the first version of this function shipped one that flagged the anchor
+    # pair as a collision because it compared the two tip circles directly, when
+    # a meshing internal pair's tip circles are *supposed* to overlap. That is
+    # where the mesh is.
+    #
+    # What guards it instead is MIN_INTERNAL_TOOTH_DIFFERENCE, checked in
+    # `_check_basics`. Ten teeth of difference is the standard rule of thumb
+    # precisely because it keeps a standard-proportioned pair clear of trimming,
+    # and a rule that is honest about being a rule beats a formula that might be
+    # inverted. If this ever needs to be exact, the way to get it right is to
+    # trace the ring's tip corner through a mesh cycle in the pinion's frame and
+    # measure - the same tactic `end_overshoot` uses on the bevel side - not to
+    # copy a criterion out of a table.
 
 
 def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
     """Whether the space closes at the root and the tooth stays blunt at the tip."""
-    from ..involute import inv, top_land
+    from ..involute import inv, internal_tooth_width, top_land
 
     for member in (geo.pinion, geo.gear):
         field = "z1" if member.name == "pinion" else "z2"
+
+        if member.internal:
+            _check_internal_tooth_form(
+                member, field, p, result, geo.transverse_pressure_angle
+            )
+            continue
 
         # Does the tooth space still have width where the flanks meet the root?
         # Evaluated at max(root, base) deliberately: below the base circle the
@@ -213,3 +332,58 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
                 f"{member.name}'s top land is only {land:.3f} mm "
                 f"({land / p.module:.2f} * module); the tips are nearly pointed",
             )
+
+
+def _check_internal_tooth_form(
+    member, field: str, p: SpurSetParams, result: ValidationResult,
+    alpha_t: float = 0.0,
+) -> None:
+    """The same two questions about a ring gear, asked at the other end.
+
+    A ring gear's tooth is narrowest at its **tip**, which is its innermost
+    radius, and its space is narrowest at its **root**, which is its outermost -
+    both the reverse of an external gear, because the whole tooth is turned
+    inside out. So the two checks swap which radius they are evaluated at, and
+    the formulae swap with them.
+    """
+    from ..involute import internal_space_width, internal_tooth_width
+
+    # The flank has to *be* an involute over the whole tooth. An external gear
+    # can fall below its base circle and get a radial line drawn instead, which
+    # is a standard simplification; a ring gear whose tip is inside its base
+    # circle has no involute flank at all and there is nothing honest to draw.
+    if member.tip_r < member.base_r:
+        needed = math.ceil(min_internal_teeth(alpha_t))
+        result.error(
+            field,
+            f"the ring's tip radius ({member.tip_r:.2f} mm) is inside its base "
+            f"circle ({member.base_r:.2f} mm), so its flank has no involute at "
+            f"all; a ring needs at least {needed} teeth at "
+            f"{math.degrees(alpha_t):.1f} deg transverse pressure angle, or a "
+            "LARGER pressure angle - a smaller one needs more teeth, not fewer",
+        )
+        return
+
+    space = internal_space_width(member.root_r, member.base_r, member.psi0)
+    if space <= 0.0:
+        result.error(
+            field,
+            "the ring's tooth space closes up at the root; the flanks cross "
+            "before they reach it",
+        )
+
+    land = internal_tooth_width(
+        member.tip_r, member.base_r, member.psi0, member.half_pitch
+    )
+    if land <= 0.0:
+        result.error(
+            field,
+            f"the ring's teeth come to a point before the tip radius; "
+            f"{member.z} teeth is too few at this pressure angle",
+        )
+    elif land < 0.2 * p.module:
+        result.warn(
+            field,
+            f"the ring's top land is only {land:.3f} mm "
+            f"({land / p.module:.2f} * module); the tips are nearly pointed",
+        )

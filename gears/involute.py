@@ -21,6 +21,25 @@ Nothing here knows which caller it has. Every function takes plain radii and
 angles, so the only inputs that reach the flank shape are the base radius, the
 root and tip radii, `psi0` and the angular half-pitch.
 
+Internal gears
+--------------
+A ring gear's teeth point **inward**, so its tip is its smallest radius and its
+root its largest - the reverse of everything above. The involute is the same
+curve of the same base circle, and the one identity that makes it all reusable
+is this:
+
+    an internal gear's tooth SPACE has the shape of an external gear's TOOTH
+
+Both narrow as the radius grows, following `psi0 - inv(alpha_r)`, where the
+external gear's *space* widens instead. That sign is why `internal_flank_points`
+is a second function rather than `flank_points` called cleverly: no substitution
+of `psi0` or `half_pitch` turns one form into the other.
+
+`tooth_space_loop` takes an `internal` flag and returns the same named segments
+either way. The names describe the tooth's own features rather than radii - the
+root is where the fillet sits, the cap is where the cut clears the blank - so
+they stay true read from the material inward or outward.
+
 Why `psi0` and `half_pitch` rather than module and tooth count
 --------------------------------------------------------------
 Because the angular constants are **scale-invariant**: `acos(k*r_b / k*r)` is
@@ -103,7 +122,7 @@ def flank_points(
     half_pitch: float,
     n: int,
 ) -> list[Point2]:
-    """One side of a tooth space, root to tip, at positive angle.
+    """One side of an external gear's tooth space, root to tip, at positive angle.
 
     The tooth centred on angle 0 has angular half-thickness
         theta_t(r) = psi0 - inv(acos(r_base / r))
@@ -137,6 +156,108 @@ def flank_points(
     return pts
 
 
+def internal_flank_points(
+    r_base: float,
+    r_root: float,
+    r_tip: float,
+    psi0: float,
+    n: int,
+) -> list[Point2]:
+    """One side of an *internal* gear's tooth space, tip to root, positive angle.
+
+    An internal gear's tooth space has the shape of an external gear's **tooth**.
+    That is the whole of the difference, and it is worth stating as an identity
+    rather than a rule of thumb, because it is what lets one involute serve
+    both. Compare the two half-widths:
+
+        external tooth   theta_t(r) = psi0 - inv(alpha_r)      narrows outward
+        external space   theta_s(r) = half_pitch - theta_t(r)  widens outward
+        internal space   theta_s(r) = psi0 - inv(alpha_r)      narrows outward
+
+    So the sign on `inv` flips, and that is why this cannot be `flank_points`
+    called with its arguments rearranged - no substitution of psi0 or half_pitch
+    turns one into the other. `psi0` here is the **space** half-width
+    extrapolated to the base circle, `e / (2 * r_p) + inv(alpha_t)`, where the
+    external gear's psi0 is built from the tooth thickness instead.
+
+    The radial run also reverses. An internal gear's tip is its *innermost*
+    radius - the teeth point inward, toward the axis - and its root is furthest
+    out, so the space runs from `r_tip` up to `r_root` with r_tip < r_root.
+
+    There is no below-the-base-circle case to handle. The internal root is the
+    outermost radius of the whole tooth, so if the tip clears the base circle
+    then so does everything above it; a tip that does *not* is a gear with no
+    involute flank at all, and `validate` refuses it rather than drawing a
+    radial line and pretending.
+    """
+
+    def space_angle(r: float) -> float:
+        alpha_r = math.acos(min(1.0, r_base / r))
+        return psi0 - inv(alpha_r)
+
+    # Sampled uniformly in the roll parameter, same as the external case, and
+    # ordered inner to outer so the caller gets tip-to-root - the direction that
+    # matches "root to tip" once you remember which way an internal tooth points.
+    t_lo = math.sqrt(max(0.0, (max(r_tip, r_base) / r_base) ** 2 - 1.0))
+    t_hi = math.sqrt(max(0.0, (r_root / r_base) ** 2 - 1.0))
+
+    pts: list[Point2] = []
+    for i in range(n):
+        t = t_lo + (t_hi - t_lo) * i / (n - 1)
+        r = r_base * math.sqrt(1.0 + t * t)
+        pts.append(polar(r, space_angle(r)))
+    return pts
+
+
+def internal_space_width(r: float, r_base: float, psi0: float) -> float:
+    """Width of an internal gear's tooth space at radius r, along the arc.
+
+    The mirror of `top_land`: that measures an external gear's tooth, this
+    measures an internal gear's space, and they are the same formula because
+    they are the same shape. Negative means the space has closed up.
+    """
+    return top_land(r, r_base, psi0)
+
+
+def internal_tooth_width(
+    r: float, r_base: float, psi0: float, half_pitch: float
+) -> float:
+    """Width of an internal gear's *tooth* at radius r, along the arc.
+
+    What is left of the pitch after the space is taken out. An internal tooth
+    is narrowest at its **tip**, which is its innermost radius - the opposite
+    end from an external tooth - so this is what decides whether a ring gear's
+    teeth come to a point, and it is checked at the tip radius.
+    """
+    return 2.0 * (half_pitch - (psi0 - inv(math.acos(min(1.0, r_base / r))))) * r
+
+
+def min_internal_tip_radius(
+    r_base: float, psi0: float, half_pitch: float, min_land: float
+) -> float:
+    """Smallest tip radius an internal gear can have and still keep a top land.
+
+    The counterpart of `max_tip_radius`, and it bisects the other way round:
+    an internal tooth widens as the radius grows, so the constraint is a floor
+    rather than a ceiling.
+    """
+    if internal_tooth_width(r_base, r_base, psi0, half_pitch) > min_land:
+        return r_base
+
+    lo, hi = r_base, r_base
+    for _ in range(200):
+        hi *= 1.05
+        if internal_tooth_width(hi, r_base, psi0, half_pitch) > min_land:
+            break
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if internal_tooth_width(mid, r_base, psi0, half_pitch) > min_land:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
 def point_segment_distance(p: Point2, a: Point2, b: Point2) -> tuple[float, Point2]:
     ax, ay = a
     bx, by = b
@@ -160,7 +281,11 @@ def distance_to_polyline(p: Point2, poly: list[Point2]) -> tuple[float, Point2, 
 
 
 def root_fillet(
-    flank: list[Point2], r_root: float, rho: float, arc_points: int = 9
+    flank: list[Point2],
+    r_root: float,
+    rho: float,
+    arc_points: int = 9,
+    internal: bool = False,
 ) -> tuple[list[Point2], list[Point2]] | None:
     """Fit a circular fillet of radius `rho` tangent to the flank and the root.
 
@@ -168,10 +293,16 @@ def root_fillet(
     that size fits inside the space - in which case the caller keeps a sharp
     corner.
 
-    The fillet centre must sit at radius r_root + rho (tangency with the root
-    circle), so only its angle is unknown. Distance-to-flank decreases
-    monotonically as that angle sweeps from the space centreline toward the
-    flank, so a bisection is both safe and simple.
+    The fillet centre must sit one fillet radius **inside the material** from
+    the root circle, so only its angle is unknown. For an external gear the root
+    is the innermost radius and the centre goes at `r_root + rho`; for an
+    internal gear the root is the outermost and it goes at `r_root - rho`. That
+    one sign is the whole difference - distance-to-flank still decreases
+    monotonically as the angle sweeps from the space centreline toward the
+    flank, so the same bisection serves both.
+
+    `flank` must start at the root end either way. The internal flank generator
+    returns tip-to-root, so its caller reverses it before handing it over.
     """
     if rho <= 0.0:
         return None
@@ -180,8 +311,12 @@ def root_fillet(
     if phi_flank <= 0.0:
         return None
 
+    r_centre = r_root - rho if internal else r_root + rho
+    if r_centre <= 0.0:
+        return None
+
     def gap(phi: float) -> float:
-        c = polar(r_root + rho, phi)
+        c = polar(r_centre, phi)
         return distance_to_polyline(c, flank)[0] - rho
 
     lo, hi = 0.0, phi_flank
@@ -196,10 +331,12 @@ def root_fillet(
             hi = mid
     phi_c = 0.5 * (lo + hi)
 
-    centre = polar(r_root + rho, phi_c)
+    centre = polar(r_centre, phi_c)
     _, touch, seg = distance_to_polyline(centre, flank)
 
-    # Tangent point on the root circle is radially inward from the centre.
+    # Tangent point on the root circle is radially outward from the centre for
+    # an internal gear and inward for an external one - which is just to say it
+    # is on the root circle at the centre's own angle, either way.
     root_touch = polar(r_root, phi_c)
 
     a0 = math.atan2(root_touch[1] - centre[1], root_touch[0] - centre[0])
@@ -230,6 +367,7 @@ def tooth_space_loop(
     fillet_rho: float,
     n_flank: int = FLANK_POINTS,
     split_cap: bool = False,
+    internal: bool = False,
 ) -> tuple[dict[str, list[Point2]], list[Point2], bool]:
     """One closed tooth-space boundary: named segments, flat loop, fillet flag.
 
@@ -245,10 +383,24 @@ def tooth_space_loop(
     a point that exists in every profile, and a point that merely lies *near* a
     spline is the classic way such a loft fails - so the helical spur builder
     asks for the vertex to be there by construction.
-    """
-    flank = flank_points(r_base, r_root, r_tip, psi0, half_pitch, n_flank)
 
-    fillet = root_fillet(flank, r_root, fillet_rho)
+    `internal` builds a ring gear's space instead. **Every segment keeps its
+    name and its job**, and the caller sees the same dictionary; what changes is
+    which way "out past the tip" points. An internal gear's teeth point inward,
+    so its tip is its smallest radius and its root its largest, and the caller
+    passes `r_tip < r_root` with `r_cap` smaller still. The names stay honest
+    because they name the tooth's own features, not radii: the root is where the
+    fillet is, the cap is where the cut clears the blank, and both are true of
+    a ring gear read from the material outward.
+    """
+    if internal:
+        # Tip to root, so reverse it: `root_fillet` and the loop assembly below
+        # both want the flank to start at the root end.
+        flank = internal_flank_points(r_base, r_root, r_tip, psi0, n_flank)[::-1]
+    else:
+        flank = flank_points(r_base, r_root, r_tip, psi0, half_pitch, n_flank)
+
+    fillet = root_fillet(flank, r_root, fillet_rho, internal=internal)
     if fillet is not None:
         flank, arc = fillet
     else:
