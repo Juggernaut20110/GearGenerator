@@ -22,6 +22,7 @@ from gears.gui import (                            # noqa: E402
     App,
     KINDS,
     _bevel_result_lines,
+    _planetary_result_lines,
     _spur_result_lines,
 )
 from gears.bevel.params import BevelSetParams        # noqa: E402
@@ -610,3 +611,67 @@ def test_the_planetary_status_line_names_train_quantities(app):
     assert "ring 60" in status
     assert "3.500:1 with the ring held" in status
     assert "assembles" in status
+
+
+def test_every_type_can_name_a_file_to_export(app):
+    """`_default_stem` runs before every Export and Save, on every tab.
+
+    It read `p.z1` directly until a planetary set was exported - and a
+    planetary set has z_sun and z_planet instead, so all three of that tab's
+    file buttons raised AttributeError. The round-trip test above did not catch
+    it because it calls `to_json` rather than the dialog that names the file.
+    """
+    for key, kind in KINDS.items():
+        app.kind_key.set(key)
+        app.on_kind_change()
+        for member in kind.members:
+            app.member.set(member)
+            stem = app._default_stem()
+            first, second = kind.counts(app._params)
+            assert stem == f"{member}_m2_z{first}x{second}", stem
+
+
+def test_the_report_formatter_reads_fields_the_real_result_classes_have():
+    """The stub tests above cannot catch a name the real classes never had.
+
+    `_format_result` read `result.clocking_deg` for every type, and a
+    `PlanetarySetResult` carries `clockings_deg` and `ring_clocking_deg`
+    instead - so a planetary build raised AttributeError in the report, after
+    SOLIDWORKS had built and saved the whole assembly. Both stubs above spelled
+    the attribute the formatter's way, which is exactly the blind spot.
+
+    So this asserts against the dataclasses themselves rather than against a
+    stub: every field the formatter and the three `result_lines` touch has to
+    exist on the class that will really be passed in. It imports from `sw`,
+    which needs pywin32 only at call time, not at import time.
+    """
+    sw = pytest.importorskip("gears.sw")
+
+    wanted = {
+        sw.SetResult: (
+            _bevel_result_lines,
+            ("measured_shaft_angle_deg", "shaft_angle_error_deg", "clocking_deg"),
+        ),
+        sw.SpurSetResult: (
+            _spur_result_lines,
+            ("measured_centre_distance_mm", "centre_distance_error_mm",
+             "measured_axis_angle_deg", "clocking_deg"),
+        ),
+        sw.PlanetarySetResult: (
+            _planetary_result_lines,
+            ("centre_distance_mm", "planets", "worst_position_error_mm",
+             "clockings_deg", "ring_clocking_deg"),
+        ),
+    }
+    # What `_format_result` itself reads, on every type alike.
+    shared = (
+        "parts", "mates", "gear_ratios", "articulates", "interference_count",
+        "interference_volume_mm3", "assembly_path",
+    )
+
+    for cls, (_lines, names) in wanted.items():
+        have = set(cls.__dataclass_fields__) | {
+            name for name in dir(cls) if not name.startswith("_")
+        }
+        for name in names + shared:
+            assert name in have, f"{cls.__name__} has no {name}"

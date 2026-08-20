@@ -220,10 +220,20 @@ def _planetary_status(p, geo) -> str:
     )
 
 
+# Each of these ends with how the set was clocked, because that is the one line
+# the three types genuinely disagree about rather than merely word differently.
+# A pair has a single number - the gear's - and a planetary train has one per
+# planet plus the ring's, which is why the clocking cannot live in
+# `_format_result` beside the counts every result really does share. It did,
+# reading `result.clocking_deg`, until a planetary set was built through the
+# window: that attribute is `clockings_deg` and `ring_clocking_deg` on a
+# `PlanetarySetResult`, so the report raised AttributeError *after* SOLIDWORKS
+# had done all the work and saved the assembly.
 def _bevel_result_lines(result) -> list[str]:
     return [
         f"  shaft angle {result.measured_shaft_angle_deg:.4f} deg measured "
         f"({result.shaft_angle_error_deg:+.2e} deg error)",
+        f"  gear clocked {result.clocking_deg:.4f} deg",
     ]
 
 
@@ -232,14 +242,18 @@ def _spur_result_lines(result) -> list[str]:
         f"  centre distance {result.measured_centre_distance_mm:.4f} mm measured "
         f"({result.centre_distance_error_mm:+.2e} mm error)",
         f"  axes {result.measured_axis_angle_deg:.6f} deg apart (parallel is 0)",
+        f"  gear clocked {result.clocking_deg:.4f} deg",
     ]
 
 
 def _planetary_result_lines(result) -> list[str]:
+    clockings = ", ".join(f"{c:.4f}" for c in result.clockings_deg)
     return [
         f"  orbit radius {result.centre_distance_mm:.4f} mm, "
         f"{len(result.planets)} planets",
         f"  worst planet position error {result.worst_position_error_mm:+.2e} mm",
+        f"  planets clocked {clockings} deg",
+        f"  ring clocked {result.ring_clocking_deg:.4f} deg",
     ]
 
 
@@ -940,11 +954,21 @@ class App(ttk.Frame):
     # -- files --------------------------------------------------------------
 
     def _default_stem(self) -> str:
+        """The name every file dialog opens on.
+
+        The counts go through `kind.counts` for the same reason `auto_size`
+        does: reading `p.z1` off a planetary set is an AttributeError, not a
+        fallback, and this runs before *every* Export and Save. It read `p.z1`
+        directly until a planetary set was exported, which took all three
+        buttons on that tab down with it - the round-trip test never saw it
+        because it called `to_json` rather than the dialog that names the file.
+        """
         p = self._params
         if p is None:
             return "bevel"
         module = f"{p.module:g}".replace(".", "p")
-        return f"{self.member.get()}_m{module}_z{p.z1}x{p.z2}"
+        first, second = self.kind.counts(p)
+        return f"{self.member.get()}_m{module}_z{first}x{second}"
 
     def export_dxf(self) -> None:
         if self._scene is None:
@@ -1084,7 +1108,6 @@ class App(ttk.Frame):
             if part.path:
                 lines.append(f"    {part.path}")
         lines.extend(result_lines(result))
-        lines.append(f"  gear clocked {result.clocking_deg:.4f} deg")
         if result.mates:
             lines.append(
                 f"  {len(result.mates)} mates, "

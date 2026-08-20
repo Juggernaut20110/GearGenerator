@@ -673,6 +673,23 @@ These were each found by breaking something. Don't undo them:
 * **Marks do not matter to `AddMate5`.** It mates whatever is in the selection
   list, which is what lets `ISketchPoint.Select4` — which has no mark parameter
   at all — be used for one entity and `IFeature.Select2` for the other.
+* **An angle mate between a line and a plane is measured *to the plane*.** So it
+  cannot carry a position round an axis: every planet axis runs along +Z and the
+  Top plane contains +Z, which makes that angle identically 0 at every station.
+  Asking for 120° came back "unknown error" — a refusal to build an
+  unsatisfiable mate. The station is a **distance**, `a sin(theta)`.
+* **A distance mate's sign lives in the `Flip` flag, not in the alignment.**
+  swMateAlignCLOSEST does *not* keep a component on the side the transform
+  already put it, which is the one place the place-then-constrain division of
+  labour does not hold on its own. Mating two planets to the same |y| landed
+  both on the +y station, one inside the other — 18552.6958 mm3 of overlap,
+  and every planet still exactly 42 mm from the axis, so a radius check saw
+  nothing. Pass `flip=offset < 0`.
+* **Gear mates are budgeted against the assembly's freedoms.** Each removes one,
+  so N + 2 members admit exactly N + 1 before the train is fully defined and the
+  next one is refused with "the mate would over-define the assembly". Two per
+  planet is one too many from the third mate on; the mates have to form a
+  **spanning tree** over the members.
 
 `tools/smoke_com.py`, `tools/probe_dimension.py`, `tools/probe_mate.py`,
 `tools/probe_gear_sense.py` and `tools/probe_helix_loft.py` exist to answer API
@@ -729,18 +746,42 @@ straight pair     centre distance exact to 6 decimals, axes 0.000000 deg apart,
 helical pair      the same, with one zero-volume tangency where the flanks touch
 ```
 
-**Nothing added since has been built.** The spiral bevel part builder, the ring
-gear blank and the planetary assembly are all unrun — they are written against
-the same helpers the verified builders use, and that is an argument, not
-evidence.
+Everything above was then re-run through the **window's own Build button**,
+along with the three builders that had never been run at all. Driving it from
+the GUI rather than from `tools/` is what found the four bugs below: three of
+them are on the path from the button to the builder, and no `tools/` driver
+crosses it.
 
-**No set has been cut with backlash in it either.** Nothing in `sw/` changed to
-add it — the thinner tooth arrives inside the loft sections `geometry` hands
-over, and the blank and its named global variables never see the number — so the
-argument is stronger here than for a new builder. It is still an argument. The
-observable is the one already on the list above: the helical pair's zero-volume
-tangency where the flanks touch should be gone at any non-zero backlash, and
-`check_clearance` should read a real gap.
+```
+internal pair    centre distance 42.0000 mm exact, ring clocked 3.0000 deg -
+                 half its angular pitch, as predicted - no interference,
+                 it articulates
+planetary train  3 planets at (42.0000, 0), (-21.0000, +-36.3731), worst
+                 station error 0.00e+00 mm, ring clocked 6.0000 deg, no
+                 interference, 21 mates, it articulates
+backlash         0.1 mm on the helical pair: the zero-volume tangency is gone
+                 and interference reads none, which is the observable this
+                 section asked for
+spiral bevel     builds and saves, shaft angle exact - but see below
+```
+
+**The spiral bevel pair interferes, and that one is still open.** 17 regions,
+103.5074 mm3 — one region per pinion tooth, so it is systematic rather than a
+stray sliver. Two things it is *not*, both measured rather than argued:
+
+```
+loft discretisation   11 sections -> 21 (max_sagitta 0.02 -> 0.005 mm)
+                      moves it 103.5074 -> 103.5058 mm3.  Not the chord error.
+tooth thickness       0.3 mm of backlash - three times what cleared the
+                      helical pair outright - moves it to 91.0275 mm3.
+                      Not a thin margin either.
+```
+
+Which leaves the spiral section construction in `sw/bevel_part.py`, not
+`bevel/geometry.py`: the pure-Python meshing test
+(`test_both_members_traces_coincide_along_the_common_pitch_generator`) passes on
+this set, so the two traces agree in the model and disagree in the solid. The
+straight bevel pair off the same builder is clean. That is where to start.
 
 Four things are waiting on a hand on the drag solver, and none of them inherits
 from any of the others:
@@ -748,7 +789,7 @@ from any of the others:
 ```
 spur pair, external   which way it turns             open since the last pass
 spur pair, internal   the opposite sense - separate measurement
-planetary             two gear mates per planet, neither settled
+planetary             sun:planet and planet:ring, neither settled
 spiral bevel          whether `hand` matches what a catalogue calls right
 ```
 

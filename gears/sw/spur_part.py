@@ -249,7 +249,11 @@ def _dimension_blank(app, model, geo: SpurSetGeometry, member: str, axis, lines,
         plan.append(
             # Further out than the other axial dimensions so the two that share
             # this end of the blank do not sit on top of each other.
-            ((datum, hub_back), axial_position(1.5 * r_tip, 0.5 * z_hub_back),
+            # `r_outer` is the tip radius here and only here: this branch runs
+            # for an external member alone, which is what makes the two names
+            # the same number. Kept as `r_outer` so the rename that generalised
+            # the pair for ring gears stays complete.
+            ((datum, hub_back), axial_position(1.5 * r_outer, 0.5 * z_hub_back),
              z_hub_back, "mm", "hub back face", "HubBackFace",
              '"FaceWidth" + "HubThickness"')
         )

@@ -27,20 +27,31 @@ spur pair's arrangement with more members in it rather than a new one:
                 one point locked against rotation? NO - see below         (0)
 
     planet k    axis parallel to the sun axis                             (2)
-                axis coincident with the assembly Top plane   (k = 0 only) (1)
                 origin coincident with the assembly Front plane           (1)
                 axis at distance a from the sun axis                      (1)
+                axis at distance a sin(theta_k) from the Top plane        (1)
+                  - coincident with it instead when that distance is zero
 
 **The ring is concentric with the sun, not offset from it.** A coincident mate
 between the two reference axes takes both of its remaining translations at once,
 where a spur gear needed a parallel mate and a distance mate to say the same
 thing about a different arrangement. The ring keeps its spin, like everyone else.
 
-**Only planet 0 can be mated to the Top plane.** The Top plane is the XZ plane,
-so an axis lying in it is an axis at y = 0 - true of the planet on the +X station
-and of nobody else. Every other planet is held by its distance from the sun axis
-plus an angle mate to the Top plane, because those are the two numbers that
-actually place it.
+**A planet's station round the orbit is a distance, not an angle.** The Top
+plane is the XZ plane, so an axis lying *in* it is an axis at y = 0 - true of the
+planet on the +X station and of nobody else, which is why only that one takes a
+coincident mate. The obvious spelling for the rest is an angle mate carrying the
+carrier angle, and it is impossible: an angle mate between a line and a plane
+measures the angle *to the plane*, and every planet axis runs along +Z while the
+Top plane contains +Z, so that angle is identically 0 wherever the planet sits.
+Measured on the anchor set, planet 1 at 120 deg came back "unknown error" from
+AddMate5 - a refusal to build an unsatisfiable mate.
+
+So each planet is held by its distance from the sun axis and its own **y**,
+`a sin(theta_k)`, as a distance from the Top plane. Those two numbers fix the
+station up to the sign of x, and swMateAlignCLOSEST settles that sign against
+the transform that already placed the component - which is exactly the division
+of labour this builder is built on.
 
 Two things this assembly does NOT do
 ------------------------------------
@@ -52,7 +63,7 @@ orbiting planets is a genuinely different assembly - the planets' axes move, so
 they cannot be mated to the assembly's own planes at all - and belongs in a
 later pass.
 
-**The gear mates' sense is not measured.** Two of them per planet, and neither
+**The gear mates' sense is not measured.** Two kinds of them, and neither
 inherits from anything already known: the sun-planet mesh is an external pair
 whose own answer is still open, and the planet-ring mesh is internal, which
 turns the *same* way rather than the opposite way. `--reverse-gear` flips both.
@@ -61,6 +72,7 @@ Drag the sun and watch; the answer belongs in this docstring.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,7 +99,6 @@ from .common import BuildResult
 from .session import (
     FRONT_PLANE_NAMES,
     RIGHT_PLANE_NAMES,
-    SW_MATE_ANGLE,
     SW_MATE_COINCIDENT,
     SW_MATE_DISTANCE,
     SW_MATE_GEAR,
@@ -98,6 +109,13 @@ from .session import (
 from .spur_part import build_spur
 
 __all__ = ["PlanetarySetResult", "build_planetary_set"]
+
+# Below this, a planet's offset from the Top plane is treated as zero and the
+# mate becomes coincident instead. A distance mate of zero cannot be created -
+# the same limitation the spur builder's front face runs into - and the planets
+# this catches are exactly the ones that really do sit at y = 0: the +X station,
+# and the 180 deg station an even planet count produces.
+ZERO_OFFSET_MM = 1e-9
 
 
 def part_filename(geo: PlanetarySetGeometry, member: str) -> str:
@@ -147,19 +165,33 @@ class PlanetarySetResult:
 
     @property
     def worst_position_error_mm(self) -> float:
-        """How far the worst-placed planet sits from its nominal orbit radius.
+        """How far the worst-placed planet sits from **its own** station.
 
         Measured after the rebuild, so it reports where the *mates* left each
-        component rather than where the transform put it. A distance mate that
-        solved to the wrong side would show up here as a large error rather than
-        as a picture nobody looked at.
+        component rather than where the transform put it.
+
+        **Against the station, not against the radius.** Comparing
+        `hypot(x, y)` with the orbit radius was the first version and it is
+        blind to the failure that actually happened: two planets mated to the
+        same distance from the Top plane both landed on the +y station, one
+        inside the other, and every one of them was still exactly 42 mm from
+        the axis. That check reported 0.00e+00 while the assembly held 18552
+        mm3 of interference. A planet's station is two numbers and the check
+        has to use both.
         """
         if not self.measured_positions_mm:
             return 0.0
-        return max(
-            math.hypot(x, y) - self.centre_distance_mm
-            for x, y, _ in self.measured_positions_mm
-        )
+        worst = 0.0
+        for k, (x, y, _) in enumerate(self.measured_positions_mm):
+            theta = 2.0 * math.pi * k / self.planet_count
+            worst = max(
+                worst,
+                math.hypot(
+                    x - self.centre_distance_mm * math.cos(theta),
+                    y - self.centre_distance_mm * math.sin(theta),
+                ),
+            )
+        return worst
 
     @property
     def articulates(self) -> bool:
@@ -245,26 +277,62 @@ def add_mates(model, sun_comp, ring_comp, planet_comps, geo, reverse=False):
              f"planet {k} orbit radius {geo.centre_distance:.4f} mm",
              distance=geo.centre_distance)
 
-        # What is left is *where round the orbit*. Planet 0 sits at y = 0, which
-        # is what the Top plane is, so it takes a coincident mate; the others
-        # are at a real angle to it and take an angle mate carrying that number.
-        # The angle is the honest place to put it and where someone would look.
+        # What is left is *where round the orbit*, and it is a distance rather
+        # than an angle. An angle mate carrying the carrier angle is the
+        # obvious spelling and it is impossible: the angle between a line and a
+        # plane is measured to the plane, and every planet axis runs along +Z
+        # while the Top plane is the XZ plane, so that angle is identically 0
+        # at every station. SOLIDWORKS refuses it - measured on the anchor set,
+        # planet 1 at 120 deg came back "unknown error" from AddMate5 - and it
+        # is refusing an unsatisfiable mate, not being awkward. It is the same
+        # fact that makes planet 0's coincident mate work, one step further on:
+        # an axis lying *in* the XZ plane is an axis at y = 0.
+        #
+        # So the station goes in as the planet's own y, `a sin(theta)`, as a
+        # distance from that same plane.
+        #
+        # **The sign has to be carried by the flip flag, not by the alignment.**
+        # A distance mate's value is a magnitude, and the obvious reading - that
+        # swMateAlignCLOSEST would keep the component on the side the transform
+        # already put it - is wrong here, which cost a build to find out. On the
+        # anchor set planets 1 and 2 are at y = +36.3731 and -36.3731, the same
+        # magnitude, and mating both to |y| landed them *both* at +36.3731:
+        # stacked on the same station, 18552.6958 mm3 of one planet inside the
+        # other. `flip` is what distinguishes them.
         angle = mesh.carrier_angle(geo, k)
-        if k == 0:
+        offset = geo.centre_distance * math.sin(angle)
+        if abs(offset) < ZERO_OFFSET_MM:
+            # y = 0: planet 0 on the +X station, and any planet at 180 deg -
+            # which an even planet count really does produce. A zero-length
+            # distance mate cannot be created, and coincident is what zero
+            # distance means anyway.
             mate((pick_axis, top), SW_MATE_COINCIDENT,
                  f"planet {k} axis - Top plane")
         else:
-            mate((pick_axis, top), SW_MATE_ANGLE,
-                 f"planet {k} carrier angle {math.degrees(angle):.4f} deg",
-                 angle=angle)
+            mate((pick_axis, top), SW_MATE_DISTANCE,
+                 f"planet {k} station {offset:+.4f} mm from the Top plane "
+                 f"(carrier angle {math.degrees(angle):.4f} deg)",
+                 distance=abs(offset), flip=offset < 0.0)
 
     # --- the gear mates ----------------------------------------------------
     #
-    # Two per planet: one to the sun and one to the ring. Every planet gets
-    # both, which over-constrains the *train* in the sense that any one planet
-    # would suffice to relate the sun to the ring - but each planet has a spin
-    # of its own that has to be tied to something, and leaving the others
-    # uncoupled would let them sit still while the train turned.
+    # **N + 1 of them, not two per planet.** Every member keeps exactly one
+    # freedom - its own spin - so the train has N + 2 of them, and a gear mate
+    # removes one. N + 1 mates therefore leave exactly one, which is the train
+    # turning; the N + 2nd is refused, and rightly.
+    #
+    # Two per planet is the obvious arrangement and it is one too many from the
+    # third mate onward. Measured on the anchor set: sun:planet 0, planet 0:ring
+    # and sun:planet 1 all went on, and "gear mate planet 1:ring" came back
+    # "the mate would over-define the assembly" - 4 mates on 5 members is the
+    # whole budget, and the loop was asking for 6.
+    #
+    # So the mates form a **spanning tree** over the members: every planet is
+    # coupled to the sun, and the ring hangs off planet 0. That is the shape the
+    # count demands, and it keeps the property the two-per-planet version was
+    # reaching for - no planet is left uncoupled to sit still while the train
+    # turns - because a tree connects every member by construction. Which planet
+    # carries the ring is arbitrary; planet 0 is the one that is always there.
     ratios: list[tuple[float, float]] = []
     for k, comp in enumerate(planet_comps):
         pick_axis = feature_pick(
@@ -278,13 +346,14 @@ def add_mates(model, sun_comp, ring_comp, planet_comps, geo, reverse=False):
              ratio=sun_ratio, flip=bool(reverse))
         ratios.append(sun_ratio)
 
-        ring_ratio = mesh.planet_ring_ratio(geo)
-        mate((pick_axis, pick_ring_axis), SW_MATE_GEAR,
-             f"gear mate planet {k}:ring "
-             f"{geo.params.z_planet}:{geo.params.z_ring}"
-             + (" reversed" if reverse else ""),
-             ratio=ring_ratio, flip=bool(reverse))
-        ratios.append(ring_ratio)
+        if k == 0:
+            ring_ratio = mesh.planet_ring_ratio(geo)
+            mate((pick_axis, pick_ring_axis), SW_MATE_GEAR,
+                 f"gear mate planet {k}:ring "
+                 f"{geo.params.z_planet}:{geo.params.z_ring}"
+                 + (" reversed" if reverse else ""),
+                 ratio=ring_ratio, flip=bool(reverse))
+            ratios.append(ring_ratio)
 
     return tuple(added), tuple(ratios)
 
@@ -317,9 +386,18 @@ def build_planetary_set(
     # Each part is built out of the spur pair it belongs to, in the slot that
     # pair calls it - `mesh_for` and `role_of` do that lookup, so the part
     # builder never learns what a planetary set is.
+    #
+    # The name is then put back. `role_of` hands the builder "pinion" or
+    # "gear", which is what a spur pair calls its members and what the
+    # BuildResult would otherwise carry out to the caller - so the window's
+    # build report named the three members "pinion, gear, gear" and left the
+    # reader to guess which gear was the ring.
     built = {
-        name: build_spur(
-            session, geo.mesh_for(name), geo.role_of(name), str(paths[name])
+        name: dataclasses.replace(
+            build_spur(
+                session, geo.mesh_for(name), geo.role_of(name), str(paths[name])
+            ),
+            member=name,
         )
         for name in ("sun", "planet", "ring")
     }
