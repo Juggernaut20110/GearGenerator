@@ -81,7 +81,7 @@ jobs:
       - run: python tools/probe_compiled_geometry.py --compare
 
   build:
-    name: BevelClaude.exe
+    name: GearGenerator.exe
     runs-on: windows-latest
     needs: test
     steps:
@@ -110,14 +110,14 @@ jobs:
       # line of paranoia.
       - name: Check the exe is really there
         run: |
-          $exe = "build\BevelClaude.exe"
+          $exe = "build\GearGenerator.exe"
           if (-not (Test-Path $exe)) { throw "$exe was not produced" }
           "{0:N1} MB" -f ((Get-Item $exe).Length / 1MB)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: BevelClaude-${{ github.sha }}
-          path: build/BevelClaude.exe
+          name: GearGenerator-${{ github.sha }}
+          path: build/GearGenerator.exe
           if-no-files-found: error
 
   release:
@@ -130,14 +130,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: BevelClaude-${{ github.sha }}
+          name: GearGenerator-${{ github.sha }}
 
       # The artifact is unsigned, so say so where someone will read it rather
       # than leaving SmartScreen to be the first they hear of it.
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" BevelClaude.exe \
+          gh release create "${GITHUB_REF_NAME}" GearGenerator.exe \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --notes "Standalone Windows build. Needs no Python.

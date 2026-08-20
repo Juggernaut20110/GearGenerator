@@ -1221,7 +1221,7 @@ class App(ttk.Frame):
             # compiles - read out of `globals()` so the name is never resolved
             # when running from source.
             if "__compiled__" in globals():
-                remedy = "This is a packaging fault in BevelClaude.exe, not something to install."
+                remedy = "This is a packaging fault in GearGenerator.exe, not something to install."
             else:
                 remedy = "Install it with: .venv\\Scripts\\pip install pywin32"
             self._build_queue.put(

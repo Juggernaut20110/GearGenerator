@@ -1,4 +1,4 @@
-# BevelClaude
+# Gear Generator
 
 Generates gear sets as real SOLIDWORKS parts and meshed assemblies, from a
 handful of numbers. Pure-Python geometry engine, a tkinter front end, and a COM
@@ -87,13 +87,13 @@ which is gitignored along with all SOLIDWORKS file types.
 
 ## Packaging
 
-`package.py` compiles the window into one `BevelClaude.exe` with Nuitka, for
+`package.py` compiles the window into one `GearGenerator.exe` with Nuitka, for
 handing to someone who has no Python and no checkout.
 
 ```
 python -m venv .venv-build
 .venv-build\Scripts\pip install -r requirements-build.txt
-.venv-build\Scripts\python.exe package.py            # build\BevelClaude.exe
+.venv-build\Scripts\python.exe package.py            # build\GearGenerator.exe
 .venv-build\Scripts\python.exe package.py --debug    # console attached, .dist kept
 ```
 
@@ -108,9 +108,9 @@ Measured on this machine, Nuitka 4.1.3 / Python 3.13.7 / MSVC 14.3:
 
 ```
 exe                7.6 MB      27.4 MB payload compressed to 28.4 %
-cold start         1.25 s      unpacks Tcl/Tk to the cache directory
-warm start         0.55 s      cache hit, no unpacking
-cache              26.1 MB     %LOCALAPPDATA%\Carl Rule\BevelClaude\1.0.0\
+cold start    1.2 - 1.4 s      unpacks Tcl/Tk to the cache directory
+warm start    0.5 - 0.6 s      cache hit, no unpacking
+cache              26.1 MB     %LOCALAPPDATA%\Carl Rule\Gear Generator\1.0.0\
 build              ~2 min      from cold; clcache makes the second one faster
 ```
 

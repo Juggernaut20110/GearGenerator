@@ -1,4 +1,4 @@
-"""Compile the window into a single distributable BevelClaude.exe, with Nuitka.
+"""Compile the window into a single distributable GearGenerator.exe, with Nuitka.
 
     .venv-build\\Scripts\\python.exe package.py
     .venv-build\\Scripts\\python.exe package.py --debug
@@ -47,10 +47,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 ENTRY = ROOT / "run.py"
 OUTPUT_DIR = ROOT / "build"
-EXE_NAME = "BevelClaude.exe"
+EXE_NAME = "GearGenerator.exe"
 
 COMPANY = "Carl Rule"
-PRODUCT = "BevelClaude"
+# The display name, which is why it carries a space where the file name does
+# not. It reaches the exe's Properties pane and, through the onefile tempdir
+# spec below, the name of the cache directory.
+PRODUCT = "Gear Generator"
 VERSION = "1.0.0"
 DESCRIPTION = "Bevel, spur and planetary gear generator for SOLIDWORKS"
 
