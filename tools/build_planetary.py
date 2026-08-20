@@ -23,12 +23,12 @@ space, which is the configuration that gives the ring-to-sun ratio of -z_r/z_s.
 A carrier part with orbiting planets is a different assembly and is not built
 here.
 
-`--reverse-gear` flips every gear mate's sense. **Which setting is right has not
-been measured**, and neither half of it inherits from anything already known:
-the sun-planet mesh is external, whose own answer is still open, and the
-planet-ring mesh is internal, which turns the same way rather than the opposite.
-Drag the sun, watch which way the ring goes, and record the answer in the module
-docstring of `gears/sw/planetary_assembly.py`.
+**The gear mates' senses are measured, and they differ.** Dragging the sun on
+the anchor set: sun:planet is right with Reverse off, and planet:ring needed
+Reverse *on* - it turned the ring backwards without it. Each is a named constant
+in `gears/sw/planetary_assembly.py`, and `--reverse-gear` flips both *away* from
+those measured values, so it is the escape hatch for the day one stops holding
+rather than a setting with a right value of its own.
 """
 
 from __future__ import annotations
@@ -69,7 +69,8 @@ def main(argv=None) -> int:
         "--no-mates", action="store_true", help="place but do not constrain"
     )
     ap.add_argument(
-        "--reverse-gear", action="store_true", help="flip every gear mate's sense"
+        "--reverse-gear", action="store_true",
+        help="flip both meshes away from their measured senses",
     )
     args = ap.parse_args(argv)
 
@@ -183,6 +184,18 @@ def main(argv=None) -> int:
         for member, status in built.statuses.items():
             print(f"  {member} is {status}")
         print(f"  articulates: {'yes' if built.articulates else 'NO'}")
+        if not args.no_mates:
+            # The coupling only acts on a hand drag - no API route runs it - so
+            # this is the one result the build cannot check for itself.
+            print(
+                "  sense: sun:planet Reverse off, planet:ring Reverse on, "
+                "both verified by hand on the anchor set"
+            )
+            if built.gear_mate_reversed:
+                print(
+                    "  WARNING: --reverse-gear is on, so both meshes run "
+                    "against the verified sense"
+                )
 
         if abs(built.worst_position_error_mm) > 1e-6:
             print(

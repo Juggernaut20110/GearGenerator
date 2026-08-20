@@ -53,8 +53,8 @@ station up to the sign of x, and swMateAlignCLOSEST settles that sign against
 the transform that already placed the component - which is exactly the division
 of labour this builder is built on.
 
-Two things this assembly does NOT do
-------------------------------------
+What this assembly does NOT do
+------------------------------
 **There is no carrier.** The v1 assembly is the *carrier-stationary*
 configuration: every member spins about an axis fixed in space, which is a real
 and useful planetary arrangement (it is the one that gives the ring-to-sun ratio
@@ -63,11 +63,22 @@ orbiting planets is a genuinely different assembly - the planets' axes move, so
 they cannot be mated to the assembly's own planes at all - and belongs in a
 later pass.
 
-**The gear mates' sense is not measured.** Two kinds of them, and neither
-inherits from anything already known: the sun-planet mesh is an external pair
-whose own answer is still open, and the planet-ring mesh is internal, which
-turns the *same* way rather than the opposite way. `--reverse-gear` flips both.
-Drag the sun and watch; the answer belongs in this docstring.
+The gear mates' sense
+---------------------
+Two kinds of them, and neither inherits from anything already known: the
+sun-planet mesh is an external pair, and the planet-ring mesh is internal, which
+turns the *same* way rather than the opposite way. Measured by hand on the
+anchor set, by dragging the sun and watching:
+
+    sun:planet    Reverse off    correct
+    planet:ring   Reverse off    backwards - the ring turned against the planet
+
+So the two meshes carry **different** Reverse flags, which is the geometry
+showing through the flag: an internal pair turning the same way as its pinion is
+the one thing about this train that a spur pair cannot tell you. Each sense is a
+named constant below, and `--reverse-gear` flips *both* away from their measured
+values - it is the escape hatch for the day one of them stops holding, not a
+setting with a right value of its own.
 """
 
 from __future__ import annotations
@@ -117,6 +128,22 @@ __all__ = ["PlanetarySetResult", "build_planetary_set"]
 # and the 180 deg station an even planet count produces.
 ZERO_OFFSET_MM = 1e-9
 
+# The measured Reverse flag for each of the train's two meshes, with the first
+# axis of the pair selected first - sun:planet is added (sun, planet) and
+# planet:ring is added (planet, ring). Measured by hand on the anchor set by
+# dragging the sun, because a gear mate is applied by the interactive drag
+# solver and by nothing else: the sun and the planets came out right with
+# Reverse off and the ring came out backwards, so its flag goes on and theirs
+# stays off. They are two constants rather than one because they are two
+# independent measurements - the meshes are of different kinds, and an internal
+# pair turns the same way as its pinion where an external pair opposes it.
+#
+# `reverse_gear_mate` flips both away from these, which is what makes it an
+# escape hatch rather than a setting: with it off, the train turns the way it
+# was measured to turn.
+SUN_PLANET_GEAR_MATE_FLIP = False
+PLANET_RING_GEAR_MATE_FLIP = True
+
 
 def part_filename(geo: PlanetarySetGeometry, member: str) -> str:
     """`planetary_sun_m2_z24.sldprt`. The module's decimal point becomes a p.
@@ -149,6 +176,9 @@ class PlanetarySetResult:
     interference_volume_mm3: float = 0.0
     mates: tuple[str, ...] = ()
     gear_ratios: tuple[tuple[float, float], ...] = ()
+    # Both meshes flipped *away* from their measured senses, not "the Reverse
+    # flag is on" - the ring mate's flag is on by default. `mates` carries the
+    # per-mate truth, since each name says "reversed" when its own flag did.
     gear_mate_reversed: bool = False
     statuses: dict[str, str] = field(default_factory=dict)
     model: object = field(default=None, repr=False)
@@ -333,6 +363,14 @@ def add_mates(model, sun_comp, ring_comp, planet_comps, geo, reverse=False):
     # reaching for - no planet is left uncoupled to sit still while the train
     # turns - because a tree connects every member by construction. Which planet
     # carries the ring is arbitrary; planet 0 is the one that is always there.
+    #
+    # **The two meshes carry different Reverse flags**, and that is measured
+    # rather than reasoned about - see the module docstring. `reverse` flips
+    # both away from their measured senses, so the name printed for each mate
+    # is the flag that actually went on it, not the state of the argument.
+    sun_flip = SUN_PLANET_GEAR_MATE_FLIP != bool(reverse)
+    ring_flip = PLANET_RING_GEAR_MATE_FLIP != bool(reverse)
+
     ratios: list[tuple[float, float]] = []
     for k, comp in enumerate(planet_comps):
         pick_axis = feature_pick(
@@ -342,8 +380,8 @@ def add_mates(model, sun_comp, ring_comp, planet_comps, geo, reverse=False):
         mate((pick_sun_axis, pick_axis), SW_MATE_GEAR,
              f"gear mate sun:planet {k} "
              f"{geo.params.z_sun}:{geo.params.z_planet}"
-             + (" reversed" if reverse else ""),
-             ratio=sun_ratio, flip=bool(reverse))
+             + (" reversed" if sun_flip else ""),
+             ratio=sun_ratio, flip=sun_flip)
         ratios.append(sun_ratio)
 
         if k == 0:
@@ -351,8 +389,8 @@ def add_mates(model, sun_comp, ring_comp, planet_comps, geo, reverse=False):
             mate((pick_axis, pick_ring_axis), SW_MATE_GEAR,
                  f"gear mate planet {k}:ring "
                  f"{geo.params.z_planet}:{geo.params.z_ring}"
-                 + (" reversed" if reverse else ""),
-                 ratio=ring_ratio, flip=bool(reverse))
+                 + (" reversed" if ring_flip else ""),
+                 ratio=ring_ratio, flip=ring_flip)
             ratios.append(ring_ratio)
 
     return tuple(added), tuple(ratios)

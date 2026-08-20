@@ -630,6 +630,17 @@ planetary train's two meshes. Nothing transfers between them: an external pair
 turns in opposite senses and an internal one in the same sense, which is a fact
 about the geometry that says nothing about how SOLIDWORKS reads a flag.
 
+**The planetary train's two senses have now been measured, and they differ.**
+Dragging the sun on the anchor set: sun:planet turns right with Reverse off, and
+planet:ring turned the ring backwards until Reverse went *on*. So the two meshes
+carry different flags — `SUN_PLANET_GEAR_MATE_FLIP` and
+`PLANET_RING_GEAR_MATE_FLIP` in
+[gears/sw/planetary_assembly.py](gears/sw/planetary_assembly.py) — and
+`--reverse-gear` flips both *away* from those, which makes it an escape hatch
+rather than a setting with a right value. It is the first confirmation that a
+mesh's kind reaches the Reverse flag at all, and it still does not transfer: the
+plain internal spur pair is its own measurement.
+
 ### Hard-won facts about this API
 
 These were each found by breaking something. Don't undo them:
@@ -783,14 +794,15 @@ Which leaves the spiral section construction in `sw/bevel_part.py`, not
 this set, so the two traces agree in the model and disagree in the solid. The
 straight bevel pair off the same builder is clean. That is where to start.
 
-Four things are waiting on a hand on the drag solver, and none of them inherits
-from any of the others:
+Three things are still waiting on a hand on the drag solver, and none of them
+inherits from any of the others:
 
 ```
 spur pair, external   which way it turns             open since the last pass
 spur pair, internal   the opposite sense - separate measurement
-planetary             sun:planet and planet:ring, neither settled
 spiral bevel          whether `hand` matches what a catalogue calls right
+
+planetary             settled: sun:planet Reverse off, planet:ring Reverse on
 ```
 
 ### The MCP as an inspection surface
