@@ -6,9 +6,15 @@ name: CI
 # Windows anyway. On a Linux runner the suite would not so much fail as
 # quietly skip the parts that matter.
 #
-# Note for a private repo: Windows minutes bill at 2x. If that bites, move
-# `compiled-geometry` and `build` onto a `main`/tag/PR trigger and leave
-# `test` on every push - it is the fast one.
+# The repo is public, so none of these minutes are billed. Were it ever made
+# private, Windows bills at 2x and the two compiling jobs are what would cost:
+# move them onto a tag/PR trigger and leave `test` on every push.
+#
+# Measured on the first green run, with a cold Nuitka cache:
+#
+#     test                 0.6 min
+#     compiled-geometry    1.5 min
+#     build                4.1 min
 
 on:
   push:
