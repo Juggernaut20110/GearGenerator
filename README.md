@@ -1053,7 +1053,9 @@ planetary             settled: sun:planet Reverse off, planet:ring Reverse on
 
 ### The MCP as an inspection surface
 
-There is a SOLIDWORKS MCP server configured in `.mcp.json`. It does not build
+There is a SOLIDWORKS MCP server configured in `.mcp.json`, which is gitignored
+rather than shared — it names the path to a checkout of the server elsewhere on
+one disk, so it has to be written per machine. It does not build
 these gears — it has no mate or component-insert operations at all, so an
 assembly is beyond it — but it is a good way to *look at* what the builders
 produced without leaving the terminal: `list_bodies` and `body_volume` against

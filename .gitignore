@@ -8,6 +8,12 @@ __pycache__/
 build/
 dist/
 
+# Local tooling config. Both name absolute paths on one machine - .mcp.json
+# points at a checkout of the MCP server elsewhere on the disk - so neither
+# is portable enough to be worth carrying in the repo.
+.claude/
+.mcp.json
+
 # SOLIDWORKS output and backups
 *.sldprt
 *.sldasm
