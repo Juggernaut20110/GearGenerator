@@ -7,6 +7,9 @@ __pycache__/
 # Nuitka
 build/
 dist/
+# Written when a Nuitka run dies, including when it dies only because its
+# output was piped into something that stopped reading.
+nuitka-crash-report.xml
 
 # Local tooling config. Both name absolute paths on one machine - .mcp.json
 # points at a checkout of the MCP server elsewhere on the disk - so neither
