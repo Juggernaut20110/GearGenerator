@@ -113,6 +113,128 @@ def test_space_loop_is_symmetric_about_the_centreline(member):
     assert max(a) == pytest.approx(-min(a), rel=1e-9)
 
 
+# --- the tooth -------------------------------------------------------------
+
+
+def developed_pitch(member: str) -> float:
+    """The angular pitch the spaces repeat at in the developed plane."""
+    return TAU / GEO.member(member).virtual_teeth
+
+
+def crossings_at(loop, radius: float) -> tuple[float, float]:
+    """The two angles where a loop crosses the circle of radius `radius`.
+
+    Found by intersecting the polyline with the circle rather than by taking the
+    extreme vertices, so it measures the shape at one radius the way a tooth
+    thickness is measured, and not at the widest point of the whole loop.
+    """
+    hits = []
+    for (x0, y0), (x1, y1) in zip(loop, loop[1:] + loop[:1]):
+        r0, r1 = math.hypot(x0, y0), math.hypot(x1, y1)
+        if (r0 - radius) * (r1 - radius) < 0.0:
+            t = (radius - r0) / (r1 - r0)
+            hits.append(math.atan2(y0 + t * (y1 - y0), x0 + t * (x1 - x0)))
+    return min(hits), max(hits)
+
+
+def angular_width_at(loop, radius: float) -> float:
+    lo, hi = crossings_at(loop, radius)
+    return hi - lo
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+@pytest.mark.parametrize("end", ["outer", "inner"])
+def test_the_tooth_and_its_space_partition_the_angular_pitch(member, end):
+    """The property the whole tooth boundary rests on.
+
+    A tooth is the complement of two adjacent spaces, so at any radius the two
+    widths have to add up to exactly one angular pitch. Off by a fillet, a top
+    land or a mirrored flank and this misses; off by half a pitch - the
+    dangerous error, because a ring of teeth still looks like a ring of teeth -
+    and it misses by half.
+    """
+    m = GEO.member(member)
+    section = tooth_space_section(GEO, member, end)
+    step = developed_pitch(member)
+    radius = GEO.section_scale * m.virtual_pitch_r if end == "inner" else m.virtual_pitch_r
+
+    tooth = angular_width_at(preview.tooth_loop(section, step), radius)
+    space = angular_width_at(preview.space_loop(section), radius)
+
+    assert tooth + space == pytest.approx(step, abs=1e-12)
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+def test_the_tooth_stops_at_the_tip_where_the_cut_loop_runs_past_it(member):
+    """The same guarantee `space_loop` carries, restated for the tooth."""
+    section = tooth_space_section(GEO, member, "outer")
+    loop = preview.tooth_loop(section, developed_pitch(member))
+
+    assert max(radii(loop)) == pytest.approx(section.r_tip)
+    assert min(radii(loop)) == pytest.approx(section.r_root)
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+def test_the_tooth_is_centred_on_half_an_angular_pitch(member):
+    """Where the real gear's tooth is - see `gears.preview.tooth_boundary`.
+
+    The space is the thing centred on zero, so the tooth is symmetric about
+    `pitch_step / 2` and not about the axis the space is symmetric about.
+    """
+    step = developed_pitch(member)
+    loop = preview.tooth_loop(tooth_space_section(GEO, member, "outer"), step)
+    a = angles(loop)
+
+    assert min(a) + max(a) == pytest.approx(step, rel=1e-9)
+    assert min(a) > 0.0
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+@pytest.mark.parametrize("where", [0.15, 0.4, 0.65, 0.9])
+def test_the_tooth_begins_exactly_where_the_space_ends(member, where):
+    """The flank between them is one curve, so the two loops must share it.
+
+    Checked at four radii up the flank rather than at the pitch circle alone:
+    an identity that holds the whole way says the tooth was assembled out of the
+    space's own segments and not out of a re-derivation of them that happens to
+    agree at one radius. The two ends are left out because the circle is tangent
+    to the root arc and to the top land there rather than crossing them.
+    """
+    m = GEO.member(member)
+    step = developed_pitch(member)
+    section = tooth_space_section(GEO, member, "outer")
+    radius = m.virtual_root_r + where * (section.r_tip - m.virtual_root_r)
+
+    space_lo, space_hi = crossings_at(preview.space_loop(section), radius)
+    tooth_lo, tooth_hi = crossings_at(preview.tooth_loop(section, step), radius)
+
+    assert tooth_lo == pytest.approx(space_hi, abs=1e-12)
+    assert tooth_hi == pytest.approx(space_lo + step, abs=1e-12)
+
+
+@pytest.mark.parametrize("member", ["pinion", "gear"])
+def test_mis_centring_the_tooth_drops_it_into_its_own_space(member):
+    """The failing-on-purpose partner of the two tests above.
+
+    A check that cannot fail proves nothing, and this is the one error the tooth
+    boundary can make quietly: rotate it home to angle 0 for tidiness and every
+    tooth lands exactly where a space is. The drawing still looks like a gear -
+    it is just the wrong half of one - so nothing but an assertion catches it.
+    Half a pitch out, the tooth starts half a pitch short of where the space
+    ends, which is the whole of the error and not a fraction of it.
+    """
+    m = GEO.member(member)
+    step = developed_pitch(member)
+    section = tooth_space_section(GEO, member, "outer")
+
+    _, space_hi = crossings_at(preview.space_loop(section), m.virtual_pitch_r)
+    mis_centred = preview.rotate(preview.tooth_loop(section, step), -step / 2.0)
+    tooth_lo, _ = crossings_at(mis_centred, m.virtual_pitch_r)
+
+    assert tooth_lo == pytest.approx(space_hi - step / 2.0, abs=1e-12)
+    assert tooth_lo < 0.0            # inside the space, which straddles zero
+
+
 # --- scenes ----------------------------------------------------------------
 
 
@@ -125,8 +247,10 @@ def test_developed_scene_draws_both_ends_the_cut_and_the_neighbours():
 
     assert by_style["outer"] == 1
     assert by_style["inner"] == 1
-    assert by_style["cut"] == 2          # one per end
-    assert by_style["neighbour"] == 4    # two spaces either side
+    # Both spaces flanking the tooth, per end: they are the two cuts that leave
+    # it standing, and a tooth-centred view drawing only one looks lopsided.
+    assert by_style["cut"] == 4
+    assert by_style["neighbour"] == 4    # two teeth either side
     assert scene.legend
 
 

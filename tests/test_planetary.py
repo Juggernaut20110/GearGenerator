@@ -583,7 +583,7 @@ def test_the_train_scene_draws_every_tooth_of_every_member(geo):
     from gears.planetary import preview
 
     scene = preview.build_scene(geo, "sun", "train")
-    # 24 sun spaces + 60 ring spaces + 3 x 18 planet spaces, plus the circles.
+    # 24 sun teeth + 60 ring teeth + 3 x 18 planet teeth, plus the circles.
     assert len(scene.polylines) == 24 + 60 + 3 * 18 + 7
 
 

@@ -42,7 +42,7 @@ from ..preview import (
     write_dxf,
 )
 from ..spur.geometry import tooth_space_section
-from ..spur.preview import space_loop
+from ..spur.preview import tooth_loop
 from . import mesh
 from .geometry import PlanetarySetGeometry
 
@@ -51,14 +51,23 @@ __all__ = [
     "SCENE_BUILDERS", "SCENE_LABELS",
     "arc", "blank_scene", "build_scene", "circle", "csv_lines", "derived_rows",
     "draw_scale_bar", "draw_scene", "dxf_lines", "nice_length", "rotate",
-    "style_for", "train_scene", "transverse_scene", "write_csv", "write_dxf",
+    "style_for", "tooth_loop", "train_scene", "transverse_scene", "write_csv",
+    "write_dxf",
 ]
 
 
 def _placed_teeth(pair, role, clocking, centre, style) -> list[Polyline]:
-    """Every tooth space of one member, clocked and moved to where it sits."""
+    """Every tooth of one member, clocked and moved to where it sits.
+
+    The teeth themselves, not the spaces between them, which is what makes this
+    view readable as a mesh: two members interlock here when a tooth of one
+    lands in a gap of the other, and that is only visible if the teeth are the
+    thing drawn.
+    """
     member = pair.member(role)
-    loop = space_loop(tooth_space_section(pair, role, z=0.0))
+    loop = tooth_loop(
+        tooth_space_section(pair, role, z=0.0), member.angular_pitch
+    )
     placed: list[Polyline] = []
     for i in range(member.z):
         turned = rotate(loop, i * member.angular_pitch + clocking)

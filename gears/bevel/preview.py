@@ -4,14 +4,22 @@ The drawing primitives - Scene, View, styles, DXF - are shared and live in
 `gears.preview`. What is here is the three scenes a bevel gear is looked at
 through, the derived-value table, and the tooth-space CSV.
 
-Two boundaries of a tooth space
--------------------------------
+The tooth, and the space it is cut out of
+-----------------------------------------
 `geometry.tooth_space_section` returns the loop the SOLIDWORKS loft cut needs:
-it runs *past* the tip radius so the cut clears the blank. That extension is
-correct for cutting and misleading to look at - it draws a notch outside the
-tip circle where the real tooth has a top land. So the preview shows both: the
-nominal space, closed across the tip circle by `space_loop`, and the cut
-boundary as a faint dashed outline behind it.
+the tooth **space**, run *past* the tip radius so the cut clears the blank.
+That is what gets cut and it is not what anyone wants to look at - a gear drawn
+as its spaces is a ring of holes. So the scenes draw `tooth_loop`, the tooth
+between one space and the next, and keep the cut boundary behind it as a faint
+dashed outline: the two cuts either side are what leave the tooth.
+
+Both boundaries are assembled by `gears.preview` out of the same named segments,
+and `space_loop` is still here because the CSV export and the tests want the
+shape the builder actually sketches.
+
+The angular pitch a tooth is built against is the one in the **developed**
+plane, `2*pi/z_v` - the spaces repeat at the virtual tooth count out here, and
+`to_axial` is what turns that into `2*pi/z` about the real axis.
 """
 
 from __future__ import annotations
@@ -34,10 +42,11 @@ from ..preview import (
     draw_scene,
     dxf_lines,
     fmt as _n,
-    join_pieces as _join,
     nice_length,
     rotate,
+    space_boundary,
     style_for,
+    tooth_boundary,
     write_dxf,
 )
 from .geometry import (
@@ -54,36 +63,23 @@ __all__ = [
     "arc", "axial_scene", "blank_scene", "build_scene", "circle",
     "csv_lines", "derived_rows", "developed_scene", "draw_scale_bar",
     "draw_scene", "dxf_lines", "nice_length", "rotate", "space_loop",
-    "style_for", "to_axial", "trace_scene", "write_csv", "write_dxf",
+    "style_for", "to_axial", "tooth_loop", "trace_scene", "write_csv",
+    "write_dxf",
 ]
 
 
 def space_loop(section: ToothSpaceSection, tip_points: int = 9) -> list[Point2]:
-    """The tooth space closed across the tip circle instead of out past it.
+    """The tooth space closed across the tip circle instead of out past it."""
+    return space_boundary(section.segments, tip_points) or list(section.loop_2d)
 
-    Takes the section's own segments and swaps the three cut-clearance pieces
-    (`riser_neg`, `cap`, `riser_pos`) for an arc at the tip radius, which is
-    where the real tooth's top land is. See the module docstring.
+
+def tooth_loop(section: ToothSpaceSection, pitch_step: float) -> list[Point2]:
+    """The tooth between this space and the next, centred on half a pitch.
+
+    `pitch_step` is the pitch in the **developed** plane, `2*pi/z_v`. See
+    `gears.preview.tooth_boundary` for why the tooth is not centred on zero.
     """
-    seg = section.segments
-    flank_pos = seg.get("flank_pos") or []
-    if not flank_pos:
-        return list(section.loop_2d)
-
-    tip_x, tip_y = flank_pos[0]
-    phi_tip = math.atan2(tip_y, tip_x)
-    top_land = arc(math.hypot(tip_x, tip_y), -phi_tip, phi_tip, tip_points)
-
-    return _join(
-        (
-            seg.get("fillet_neg") or [],
-            seg.get("flank_neg") or [],
-            top_land,
-            flank_pos,
-            seg.get("fillet_pos") or [],
-            seg.get("root") or [],
-        )
-    )
+    return tooth_boundary(section.segments, pitch_step) or list(section.loop_2d)
 
 
 def to_axial(points, section: ToothSpaceSection) -> list[Point2]:
@@ -110,25 +106,31 @@ def to_axial(points, section: ToothSpaceSection) -> list[Point2]:
 
 
 def developed_scene(geo: SetGeometry, member: str, neighbours: int = 1) -> Scene:
-    """The tooth space in the developed (virtual spur gear) plane.
+    """The tooth in the developed (virtual spur gear) plane.
 
     This is where the involute actually lives, so it is the view that shows a
     kinked flank, a fillet that failed to fit, or a tip clamped for top land.
     Both end sections are overlaid: they share the same angles and differ only
     by the scale factor k = Ai/Ao.
+
+    Everything is centred on the tooth rather than on angle 0, because the tooth
+    sits half a pitch along from the space the generator builds.
     """
     m = geo.member(member)
     outer = tooth_space_section(geo, member, "outer")
     inner = tooth_space_section(geo, member, "inner")
 
     pitch_step = TAU / m.virtual_teeth
+    half = pitch_step / 2.0
     span = (neighbours + 0.75) * pitch_step
     k = geo.section_scale
 
     lines: list[Polyline] = []
 
     # Reference arcs, drawn first so the profiles sit on top of them.
-    lines.append(Polyline(arc(m.virtual_pitch_r, -span, span), "pitch"))
+    lines.append(
+        Polyline(arc(m.virtual_pitch_r, half - span, half + span), "pitch")
+    )
     for radius in (
         m.virtual_base_r,
         m.virtual_root_r,
@@ -136,10 +138,10 @@ def developed_scene(geo: SetGeometry, member: str, neighbours: int = 1) -> Scene
         k * m.virtual_root_r,
         m.virtual_tip_r_inner,
     ):
-        lines.append(Polyline(arc(radius, -span, span), "reference"))
+        lines.append(Polyline(arc(radius, half - span, half + span), "reference"))
 
-    outer_loop = space_loop(outer)
-    inner_loop = space_loop(inner)
+    outer_loop = tooth_loop(outer, pitch_step)
+    inner_loop = tooth_loop(inner, pitch_step)
 
     for i in range(1, neighbours + 1):
         for sign in (-1, 1):
@@ -147,9 +149,12 @@ def developed_scene(geo: SetGeometry, member: str, neighbours: int = 1) -> Scene
                 Polyline(rotate(outer_loop, sign * i * pitch_step), "neighbour", True)
             )
 
-    # What the loft cut actually sketches, behind the nominal space.
-    lines.append(Polyline(list(outer.loop_2d), "cut", True))
-    lines.append(Polyline(list(inner.loop_2d), "cut", True))
+    # What the loft cut actually sketches, behind the tooth: the two spaces
+    # either side of it, which are the two cuts that leave it standing.
+    for section in (outer, inner):
+        cut = list(section.loop_2d)
+        lines.append(Polyline(cut, "cut", True))
+        lines.append(Polyline(rotate(cut, pitch_step), "cut", True))
 
     lines.append(Polyline(outer_loop, "outer", True))
     lines.append(Polyline(inner_loop, "inner", True))
@@ -157,14 +162,14 @@ def developed_scene(geo: SetGeometry, member: str, neighbours: int = 1) -> Scene
     return Scene(
         key="developed",
         title=(
-            f"{member} - developed tooth space, z_v = {m.virtual_teeth:.2f} teeth "
+            f"{member} - developed tooth, z_v = {m.virtual_teeth:.2f} teeth "
             f"at back cone radius {m.virtual_pitch_r:.3f} mm"
         ),
         polylines=lines,
         legend=[
-            ("outer", "outer end space"),
-            ("inner", "inner end space"),
-            ("neighbour", "adjacent spaces"),
+            ("outer", "outer end tooth"),
+            ("inner", "inner end tooth"),
+            ("neighbour", "adjacent teeth"),
             ("cut", "loft cut boundary"),
             ("pitch", "pitch circle"),
             ("reference", "base / root / tip"),
@@ -173,19 +178,24 @@ def developed_scene(geo: SetGeometry, member: str, neighbours: int = 1) -> Scene
 
 
 def axial_scene(geo: SetGeometry, member: str) -> Scene:
-    """Every tooth space of both ends, looking straight down the gear axis.
+    """Every tooth of both ends, looking straight down the gear axis.
 
     The developed plane holds z_v teeth; the real gear holds z. The 1/cos(delta)
     on the mapped angle is what converts one into the other, so if that factor
-    were wrong the spaces here would not close around 360 degrees - they would
+    were wrong the teeth here would not close around 360 degrees - they would
     overlap or leave a gap. That is the whole point of this view.
+
+    Each tooth is assembled in the developed plane, at the pitch the spaces
+    repeat at *there*, and then mapped - which is the same division by
+    cos(delta) doing both jobs at once.
     """
     m = geo.member(member)
     outer = tooth_space_section(geo, member, "outer")
     inner = tooth_space_section(geo, member, "inner")
 
-    outer_loop = to_axial(space_loop(outer), outer)
-    inner_loop = to_axial(space_loop(inner), inner)
+    pitch_step = TAU / m.virtual_teeth
+    outer_loop = to_axial(tooth_loop(outer, pitch_step), outer)
+    inner_loop = to_axial(tooth_loop(inner, pitch_step), inner)
 
     cos_d = math.cos(m.pitch_angle)
     lines: list[Polyline] = [
@@ -214,14 +224,14 @@ def axial_scene(geo: SetGeometry, member: str) -> Scene:
     return Scene(
         key="axial",
         title=(
-            f"{member} - {m.z} tooth spaces about the axis, "
+            f"{member} - {m.z} teeth about the axis, "
             f"outside dia {m.outside_dia:.3f} mm{sweep_note}"
         ),
         polylines=lines,
         legend=[
-            ("outer", "outer end space"),
-            ("inner", "inner end space"),
-            ("neighbour", "the other spaces"),
+            ("outer", "outer end tooth"),
+            ("inner", "inner end tooth"),
+            ("neighbour", "the other teeth"),
             ("pitch", "pitch circle"),
             ("reference", "tip and inner circles"),
         ],

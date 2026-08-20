@@ -88,7 +88,7 @@ which is gitignored along with all SOLIDWORKS file types.
 gears/
   involute.py    the planar involute core, shared by every type
   placement.py   clocking, speed ratio, transform packing
-  preview.py     Scene/View, pan-zoom arithmetic, drawing, DXF
+  preview.py     Scene/View, tooth and space boundaries, pan-zoom, drawing, DXF
   validate.py    Issue / ValidationResult primitives
   params_io.py   preset save/load mixin
   report_format.py  the shared three-column report layout

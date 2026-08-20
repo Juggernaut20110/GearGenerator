@@ -180,6 +180,110 @@ def join_pieces(pieces) -> list[Point2]:
 
 
 # ---------------------------------------------------------------------------
+# The two boundaries a section can be drawn as
+# ---------------------------------------------------------------------------
+#
+# `involute.tooth_space_loop` returns the tooth **space**, because that is the
+# shape the SOLIDWORKS loft cut sketches and circular-patterns z times. Both
+# functions below take that same named-segments dict; they differ only in which
+# closed boundary they assemble out of it, and neither knows or cares which gear
+# type built it.
+
+
+def space_boundary(segments: dict, tip_points: int = 9) -> list[Point2]:
+    """The tooth space closed across the tip circle instead of out past it.
+
+    Swaps the cut-clearance pieces (`riser_neg`, the cap, `riser_pos`) for an
+    arc at the tip radius, which is where the real tooth's top land is. The cut
+    profile runs past the tip on purpose so it clears the blank; drawn as-is
+    that is a notch outside the tip circle where there is no notch.
+
+    Works unchanged on a ring gear. It reads the tip radius off the flank's own
+    endpoint rather than being told it, so "the arc where the flanks stop" is
+    the right answer whether that is the outermost radius or the innermost.
+    """
+    flank_pos = segments.get("flank_pos") or []
+    if not flank_pos:
+        return []
+
+    tip_x, tip_y = flank_pos[0]
+    phi_tip = math.atan2(tip_y, tip_x)
+    top_land = arc(math.hypot(tip_x, tip_y), -phi_tip, phi_tip, tip_points)
+
+    return join_pieces(
+        (
+            segments.get("fillet_neg") or [],
+            segments.get("flank_neg") or [],
+            top_land,
+            flank_pos,
+            segments.get("fillet_pos") or [],
+            segments.get("root") or [],
+        )
+    )
+
+
+def tooth_boundary(
+    segments: dict, pitch_step: float, arc_points: int = 9
+) -> list[Point2]:
+    """The TOOTH between this space and the next one, as a closed loop.
+
+    A tooth is the complement of two adjacent spaces, so it needs one thing the
+    section does not carry: the angular pitch to the next space. Each type
+    supplies its own - `2*pi/z` for a spur gear, `2*pi/z_v` for a bevel gear in
+    the developed plane, where the spaces repeat at the *virtual* tooth count.
+
+    The loop runs counter-clockwise, out of one space and back into the next:
+
+        fillet_pos, flank_pos     reversed - root up to tip, positive side
+        top land                  an arc at the tip radius, across the tooth
+        flank_neg, fillet_neg     reversed and turned a pitch - tip back to root
+        root                      an arc at the root radius, back to the start
+
+    `riser_neg`, the cap and `riser_pos` are skipped for the same reason
+    `space_boundary` skips them: they are cut clearance standing outside the
+    blank, not tooth.
+
+    **The tooth is centred on half an angular pitch, not on zero.** The space is
+    the thing centred on zero - every generator in `involute` builds it that way
+    - so the tooth sits `pitch_step / 2` along, which is where the real gear's
+    tooth is. Do not rotate it home to zero for tidiness: every scene repeats
+    its loop by `i * angular_pitch`, so a tooth centred on zero would be drawn
+    exactly where the spaces are. Nothing would look obviously wrong - a ring of
+    teeth is a ring of teeth - but the planetary train's meshes would be drawn
+    interlocking when they are not. There is a test that mis-centres it on
+    purpose and counts the overlap.
+
+    Read the radii off the segments rather than off the section, like
+    `space_boundary` does, and a ring gear needs no special case: its tip is
+    simply its innermost radius and the arcs still span the same angles.
+    """
+    flank_pos = segments.get("flank_pos") or []
+    root = segments.get("root") or []
+    if not flank_pos or not root:
+        return []
+
+    def turned(pts: list[Point2]) -> list[Point2]:
+        """The far side of the tooth: the next space's piece, a pitch along."""
+        return rotate(pts[::-1], pitch_step)
+
+    tip_x, tip_y = flank_pos[0]
+    r_tip, phi_tip = math.hypot(tip_x, tip_y), math.atan2(tip_y, tip_x)
+    root_x, root_y = root[0]
+    r_root, phi_root = math.hypot(root_x, root_y), math.atan2(root_y, root_x)
+
+    return join_pieces(
+        (
+            (segments.get("fillet_pos") or [])[::-1],
+            flank_pos[::-1],
+            arc(r_tip, phi_tip, pitch_step - phi_tip, arc_points),
+            turned(segments.get("flank_neg") or []),
+            turned(segments.get("fillet_neg") or []),
+            arc(r_root, pitch_step - phi_root, phi_root, arc_points),
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # Drawing
 # ---------------------------------------------------------------------------
 

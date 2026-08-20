@@ -4,14 +4,18 @@ The drawing primitives - Scene, View, styles, DXF - are shared and live in
 `gears.preview`. What is here is the three scenes a spur gear is looked at
 through, the derived-value table, and the tooth-space CSV.
 
-Two boundaries of a tooth space
--------------------------------
+The tooth, and the space it is cut out of
+-----------------------------------------
 `geometry.tooth_space_section` returns the loop the SOLIDWORKS loft cut needs:
-it runs *past* the tip radius so the cut clears the blank. That extension is
-correct for cutting and misleading to look at - it draws a notch outside the tip
-circle where the real tooth has a top land. So the preview shows both: the
-nominal space, closed across the tip circle by `space_loop`, and the cut
-boundary as a faint dashed outline behind it.
+the tooth **space**, run *past* the tip radius so the cut clears the blank.
+That is what gets cut and it is not what anyone wants to look at - a gear drawn
+as its spaces is a ring of holes. So the scenes draw `tooth_loop`, the tooth
+between one space and the next, and keep the cut boundary behind it as a faint
+dashed outline: the two cuts either side are what leave the tooth.
+
+Both boundaries are assembled by `gears.preview` out of the same named segments,
+and `space_loop` is still here because the CSV export and the tests want the
+shape the builder actually sketches.
 
 Showing a helix in two dimensions
 ---------------------------------
@@ -42,10 +46,11 @@ from ..preview import (
     draw_scene,
     dxf_lines,
     fmt as _n,
-    join_pieces as _join,
     nice_length,
     rotate,
+    space_boundary,
     style_for,
+    tooth_boundary,
     write_dxf,
 )
 from .geometry import (
@@ -62,41 +67,23 @@ __all__ = [
     "arc", "blank_scene", "build_scene", "circle", "csv_lines",
     "derived_rows", "draw_scale_bar", "draw_scene", "dxf_lines",
     "SCENE_BUILDERS", "SCENE_LABELS",
-    "nice_length", "rotate", "space_loop", "style_for", "transverse_scene",
-    "twist_scene", "write_csv", "write_dxf",
+    "nice_length", "rotate", "space_loop", "style_for", "tooth_loop",
+    "transverse_scene", "twist_scene", "write_csv", "write_dxf",
 ]
 
 
 def space_loop(section: ToothSpaceSection, tip_points: int = 9) -> list[Point2]:
-    """The tooth space closed across the tip circle instead of out past it.
+    """The tooth space closed across the tip circle instead of out past it."""
+    return space_boundary(section.segments, tip_points) or list(section.loop_2d)
 
-    Takes the section's own segments and swaps the cut-clearance pieces
-    (`riser_neg`, the cap, `riser_pos`) for an arc at the tip radius, which is
-    where the real tooth's top land is. See the module docstring.
 
-    Works unchanged on a ring gear. It reads the tip radius off the flank's own
-    endpoint rather than being told it, so "the arc where the flanks stop" is
-    the right answer whether that is the outermost radius or the innermost.
+def tooth_loop(section: ToothSpaceSection, pitch_step: float) -> list[Point2]:
+    """The tooth between this space and the next, centred on half a pitch.
+
+    `pitch_step` is the member's angular pitch, `2*pi/z`. See
+    `gears.preview.tooth_boundary` for why the tooth is not centred on zero.
     """
-    seg = section.segments
-    flank_pos = seg.get("flank_pos") or []
-    if not flank_pos:
-        return list(section.loop_2d)
-
-    tip_x, tip_y = flank_pos[0]
-    phi_tip = math.atan2(tip_y, tip_x)
-    top_land = arc(math.hypot(tip_x, tip_y), -phi_tip, phi_tip, tip_points)
-
-    return _join(
-        (
-            seg.get("fillet_neg") or [],
-            seg.get("flank_neg") or [],
-            top_land,
-            flank_pos,
-            seg.get("fillet_pos") or [],
-            seg.get("root") or [],
-        )
-    )
+    return tooth_boundary(section.segments, pitch_step) or list(section.loop_2d)
 
 
 # ---------------------------------------------------------------------------
@@ -105,17 +92,21 @@ def space_loop(section: ToothSpaceSection, tip_points: int = 9) -> list[Point2]:
 
 
 def transverse_scene(geo: SpurSetGeometry, member: str, neighbours: int = 1) -> Scene:
-    """The tooth space in the transverse plane, where the involute lives.
+    """The tooth in the transverse plane, where the involute lives.
 
     Unlike the bevel view, this is the real profile and not a development of
     one: a spur gear's transverse section *is* an involute, at the transverse
     module and pressure angle. So this is the view that shows a kinked flank, a
     fillet that failed to fit, or a tip clamped for top land.
+
+    Everything is centred on the tooth rather than on angle 0, because the tooth
+    sits half a pitch along from the space the generator builds.
     """
     m = geo.member(member)
     section = tooth_space_section(geo, member, z=0.0)
 
     pitch_step = TAU / m.z
+    half = pitch_step / 2.0
     span = (neighbours + 0.75) * pitch_step
 
     lines: list[Polyline] = []
@@ -123,36 +114,39 @@ def transverse_scene(geo: SpurSetGeometry, member: str, neighbours: int = 1) -> 
     # Reference circles, drawn first so the profiles sit on top of them. The
     # ring's rim goes in too - without it a ring gear's view stops at its root
     # circle and looks like a gear with nothing holding it together.
-    lines.append(Polyline(arc(m.pitch_r, -span, span), "pitch"))
+    lines.append(Polyline(arc(m.pitch_r, half - span, half + span), "pitch"))
     radii = [m.base_r, m.root_r, m.tip_r]
     if m.internal:
         radii.append(rim_radius(geo, member))
     for radius in radii:
-        lines.append(Polyline(arc(radius, -span, span), "reference"))
+        lines.append(Polyline(arc(radius, half - span, half + span), "reference"))
 
-    loop = space_loop(section)
+    loop = tooth_loop(section, pitch_step)
     for i in range(1, neighbours + 1):
         for sign in (-1, 1):
             lines.append(
                 Polyline(rotate(loop, sign * i * pitch_step), "neighbour", True)
             )
 
-    # What the loft cut actually sketches, behind the nominal space.
-    lines.append(Polyline(list(section.loop_2d), "cut", True))
+    # What the loft cut actually sketches, behind the tooth: the two spaces
+    # either side of it, which are the two cuts that leave it standing.
+    cut = list(section.loop_2d)
+    lines.append(Polyline(cut, "cut", True))
+    lines.append(Polyline(rotate(cut, pitch_step), "cut", True))
     lines.append(Polyline(loop, "outer", True))
 
     kind = "internal ring" if m.internal else member
     return Scene(
         key="transverse",
         title=(
-            f"{member} - transverse tooth space, {kind}, {m.z} teeth at "
+            f"{member} - transverse tooth, {kind}, {m.z} teeth at "
             f"m_t = {geo.transverse_module:.4f} mm, "
             f"alpha_t = {math.degrees(geo.transverse_pressure_angle):.3f} deg"
         ),
         polylines=lines,
         legend=[
-            ("outer", "tooth space"),
-            ("neighbour", "adjacent spaces"),
+            ("outer", "tooth"),
+            ("neighbour", "adjacent teeth"),
             ("cut", "loft cut boundary"),
             ("pitch", "pitch circle"),
             ("reference", "base / root / tip"),
@@ -161,7 +155,7 @@ def transverse_scene(geo: SpurSetGeometry, member: str, neighbours: int = 1) -> 
 
 
 def twist_scene(geo: SpurSetGeometry, member: str) -> Scene:
-    """Every tooth space of both end faces, looking straight down the axis.
+    """Every tooth of both end faces, looking straight down the axis.
 
     For straight teeth the two ends coincide exactly and this is the plain end
     view. For helical teeth the angle between them is the total twist, which is
@@ -169,9 +163,10 @@ def twist_scene(geo: SpurSetGeometry, member: str) -> Scene:
     though their helix angles are equal and opposite, because their radii
     differ.
 
-    Drawing every space rather than one also checks that the spaces close
-    around 360 degrees, which is the cheapest way to catch a tooth count that
-    disagrees with the angular pitch.
+    Drawing every tooth rather than one also checks that they close around 360
+    degrees, which is the cheapest way to catch a tooth count that disagrees
+    with the angular pitch - the root arcs of consecutive teeth join into the
+    root circle only if they do.
     """
     m = geo.member(member)
     b = geo.params.face_width
@@ -188,9 +183,9 @@ def twist_scene(geo: SpurSetGeometry, member: str) -> Scene:
     if m.internal:
         lines.append(Polyline(circle(rim_radius(geo, member)), "blank"))
 
-    front_loop = space_loop(front)
-    back_loop = space_loop(back)
     step = m.angular_pitch
+    front_loop = tooth_loop(front, step)
+    back_loop = tooth_loop(back, step)
     for i in range(m.z):
         angle = i * step
         lines.append(Polyline(rotate(front_loop, angle), "outer", True))
@@ -211,7 +206,7 @@ def twist_scene(geo: SpurSetGeometry, member: str) -> Scene:
 
     return Scene(
         key="twist",
-        title=f"{member} - {m.z} tooth spaces down the axis, {twist_note}",
+        title=f"{member} - {m.z} teeth down the axis, {twist_note}",
         polylines=lines,
         legend=legend,
     )
