@@ -40,6 +40,8 @@ demanded it*. A speculative `--include-package` hides the thing worth knowing.
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -54,11 +56,46 @@ COMPANY = "Carl Rule"
 # not. It reaches the exe's Properties pane and, through the onefile tempdir
 # spec below, the name of the cache directory.
 PRODUCT = "Gear Generator"
-VERSION = "1.0.0"
+# What a local build calls itself. A tagged CI build overrides it - see
+# `resolve_version` - so this is the development version, not the released one.
+VERSION = "0.1.0"
 DESCRIPTION = "Bevel, spur and planetary gear generator for SOLIDWORKS"
 
+# Nuitka's --file-version takes up to four dot-separated numbers and nothing
+# else, so a tag carrying a pre-release suffix cannot become one.
+VERSION_SHAPE = re.compile(r"\d+(\.\d+){0,3}")
 
-def nuitka_command(debug: bool) -> list[str]:
+
+def resolve_version() -> str:
+    """The tag's version when CI is building a tag, the constant otherwise.
+
+    **`GITHUB_REF_NAME` is the branch name on a branch push**, not a version,
+    which is the trap this function exists to avoid: reading it unconditionally
+    would stamp a build with "feat/bevel-gear-generator". `GITHUB_REF_TYPE` is
+    what separates the two cases, and both are set by the runner.
+
+    A tag that cannot be a version is a hard error rather than a fallback. The
+    fallback would be quiet and wrong in the worst way - a release labelled
+    v0.2.0 containing an exe that says 0.1.0 - and the version is not
+    cosmetic: it names the onefile unpack cache, so two builds sharing one
+    number share one directory of unpacked payload.
+    """
+    if os.environ.get("GITHUB_REF_TYPE") != "tag":
+        return VERSION
+
+    tag = os.environ.get("GITHUB_REF_NAME", "")
+    version = tag[1:] if tag.startswith("v") else tag
+    if not VERSION_SHAPE.fullmatch(version):
+        sys.exit(
+            f"The tag {tag!r} cannot be a version number.\n"
+            "Nuitka takes up to four dot-separated numbers, so a tag has to be\n"
+            "shaped like v0.1.0 - a pre-release suffix such as v0.1.0-rc1 has\n"
+            "nowhere to go. Retag, or build locally where the constant applies."
+        )
+    return version
+
+
+def nuitka_command(debug: bool, version: str) -> list[str]:
     """The flag list, with the reason for each flag that has one."""
     command = [
         sys.executable, "-m", "nuitka",
@@ -99,8 +136,8 @@ def nuitka_command(debug: bool) -> list[str]:
         # Right-click -> Properties on the exe shows these.
         f"--company-name={COMPANY}",
         f"--product-name={PRODUCT}",
-        f"--file-version={VERSION}",
-        f"--product-version={VERSION}",
+        f"--file-version={version}",
+        f"--product-version={version}",
         f"--file-description={DESCRIPTION}",
 
         # None of these is reachable from `gears`, so this only guards against
@@ -166,7 +203,13 @@ def main(argv: list[str] | None = None) -> int:
 
     check_environment()
 
-    command = nuitka_command(args.debug)
+    version = resolve_version()
+    # Asked of the environment rather than inferred from the number, which
+    # would misreport a tag that happens to match the constant.
+    source = "tag" if os.environ.get("GITHUB_REF_TYPE") == "tag" else "package.py"
+    print(f"version {version}  (from the {source})\n")
+
+    command = nuitka_command(args.debug, version)
     print(" ".join(command), "\n")
     result = subprocess.run(command, cwd=ROOT)
     if result.returncode != 0:

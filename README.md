@@ -110,7 +110,7 @@ Measured on this machine, Nuitka 4.1.3 / Python 3.13.7 / MSVC 14.3:
 exe                7.6 MB      27.4 MB payload compressed to 28.4 %
 cold start    1.2 - 1.4 s      unpacks Tcl/Tk to the cache directory
 warm start    0.5 - 0.6 s      cache hit, no unpacking
-cache              26.1 MB     %LOCALAPPDATA%\Carl Rule\Gear Generator\1.0.0\
+cache              26.1 MB     %LOCALAPPDATA%\Carl Rule\Gear Generator\0.1.0\
 build              ~2 min      from cold; clcache makes the second one faster
 ```
 
@@ -183,6 +183,21 @@ above everything above it.
 
 **The exe is unsigned**, so SmartScreen will warn on first run on any machine but
 the one that built it. That is a certificate, not a build fault.
+
+### Versioning
+
+`package.py` carries `VERSION = "0.1.0"`, and a **tagged** CI build overrides it
+from the tag — so the constant is the development version and the tag is the
+released one. Tag `v0.2.0` and the exe says 0.2.0 without anyone editing a file.
+
+Two things about `resolve_version` worth knowing before changing it.
+`GITHUB_REF_NAME` is the **branch** name on a branch push, so reading it
+unconditionally would stamp a build `feat/bevel-gear-generator`; `GITHUB_REF_TYPE`
+is what separates the cases. And a tag that cannot be a version number is a hard
+error rather than a fallback, because the quiet version of that failure is a
+release labelled v0.2.0 containing an exe that says 0.1.0 — and the number is not
+cosmetic, since it names the unpack cache directory. Nuitka takes up to four
+dot-separated numbers and nothing else, so `v0.1.0-rc1` has nowhere to go.
 
 ### Continuous integration
 
