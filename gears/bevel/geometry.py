@@ -80,14 +80,19 @@ END_OVERSHOOT_MIN_MM = 0.5
 #
 # The same tolerance and the same argument as the helical spur builder's, which
 # is where this was measured: a loft carries each profile point from one section
-# to the next along a straight chord, and the trace between them is an arc, so
-# the swept surface sits inside the real one by the chord's sagitta -
-# r * (1 - cos(delta / 2)) at radius r over a rotation of delta. A guide curve
-# pins the one point it runs through and leaves the rest interpolated, so it
-# helps and does not fix it.
+# to the next along a straight chord while the trace between them curves away,
+# so the swept surface sits inside the real one. A guide curve pins the one point
+# it runs through and leaves the rest interpolated, so it helps and does not fix
+# it.
+#
+# The **quantity** is a distance from the chord to the trace, and it is measured
+# rather than written down - see `_chord_deviation`. A helix and a spiral bevel
+# trace both let you read it off the two endpoint phases as the sagitta
+# r * (1 - cos(delta / 2)), because their rotation is monotonic; a Zerol trace
+# turns around inside the interval and does not.
 #
 # A straight bevel gear has no rotation between sections at all and still takes
-# exactly two, so this costs nothing until there is a spiral to follow.
+# exactly two, so this costs nothing until there is a trace to follow.
 MAX_SECTION_SAGITTA_MM = 0.02
 
 
@@ -133,23 +138,32 @@ class CrownTrace:
         R * theta = (A * sin delta) * (theta_c / sin delta) = A * theta_c
 
     the same for both members, at every cone distance, whatever their pitch
-    angles. The two traces therefore coincide along the common pitch generator
-    by construction - which is the meshing condition - and no sign anywhere has
-    to be chosen to make that happen.
+    angles. That is what makes the two traces the same curve, and it is half the
+    meshing condition.
 
-    It is also where the opposite hands come from. Nothing flips the gear's
-    trace; mapping one arc through two different pitch angles is the whole of
-    it. The pinion's small delta divides by a small sine and sweeps far - 38.790
+    **Only half, and the missing half cost a build.** An arc length is a
+    magnitude. The two members travel the same one, but they roll on the crown
+    gear in *opposite senses* - that is what meshing is - so they travel it in
+    opposite senses too, and `phase_at_cone_distance` negates the gear's phase to
+    say so. Read its docstring: it carries the derivation and the numbers.
+
+    This class used to claim the opposite, that "no sign anywhere has to be
+    chosen". The claim was wrong and the test that guarded it compared each
+    member's arc length against the other's *without* its sign, so it passed on
+    a pair whose traces bent away from each other. Built, the pinion and the
+    gear interfered in 17 regions.
+
+    The pinion's small delta divides by a small sine and sweeps far - 38.790
     degrees over the face of the anchor 17-tooth pinion, against 15.336 on its
-    43-tooth mate - and looking down each member's own axis in the assembled
-    pair, those two sweeps read as opposite hands.
+    43-tooth mate. That difference in *magnitude* is real and is what the two
+    pitch angles give you; the difference in sense is separate and is imposed.
 
     **Which sign is the right hand has not been measured.** The arithmetic is
     symmetric, so nothing here can settle it: it needs someone to build the
     anchor pinion and look down its axis in SOLIDWORKS. Until then `hand` names
     a direction consistently without any claim about which one a catalogue would
-    call right - and the pair meshes either way, because both members take their
-    hand from the same sign.
+    call right - and the pair meshes either way, because the gear's sense is
+    taken from the pinion's rather than chosen independently.
     """
 
     cutter_radius: float        # r_c
@@ -159,9 +173,20 @@ class CrownTrace:
 
     @classmethod
     def for_set(
-        cls, psi_m: float, cutter_radius: float, mean_cone_dist: float
+        cls,
+        psi_m: float,
+        cutter_radius: float,
+        mean_cone_dist: float,
+        sign: float = 1.0,
     ) -> "CrownTrace":
-        """Place the arc that delivers `psi_m` at the mean cone distance."""
+        """Place the arc that delivers `psi_m` at the mean cone distance.
+
+        `sign` is passed in rather than read off `psi_m`, because at `psi_m == 0`
+        there is nothing to read: a Zerol set is curved and has a hand, and the
+        angle it is quoted at has lost the sign by then. `BevelSetParams.
+        trace_sign` is the property that answers it. Only `abs(psi_m)` is used
+        here in any case - the sign never entered `rho`.
+        """
         rho_sq = (
             mean_cone_dist ** 2
             + cutter_radius ** 2
@@ -171,7 +196,7 @@ class CrownTrace:
             cutter_radius=cutter_radius,
             centre_distance=math.sqrt(max(0.0, rho_sq)),
             mean_cone_dist=mean_cone_dist,
-            sign=-1.0 if psi_m < 0.0 else 1.0,
+            sign=sign,
         )
 
     def spiral_angle_at(self, cone_dist: float) -> float:
@@ -221,9 +246,40 @@ def phase_at_cone_distance(
 ) -> float:
     """How far the section at `cone_dist` is rotated about the gear axis, radians.
 
-    The crown-plane trace angle divided by sin(delta) - see `CrownTrace`. Zero at
-    the mean cone distance, and zero everywhere for a straight bevel gear, which
-    is why nothing downstream needs to ask which kind it is building.
+    The crown-plane trace angle divided by sin(delta) - see `CrownTrace` - and
+    **negated on the gear**. Zero at the mean cone distance, and zero everywhere
+    for a straight bevel gear, which is why nothing downstream needs to ask which
+    kind it is building.
+
+    Why the gear's phase is negated
+    -------------------------------
+    Because the two members roll on the generating crown gear in opposite senses.
+    That is what meshing *is*, and it is the same fact `angular_velocity_ratio`
+    reports as "opposite senses about their outward axes" - so the one crown arc
+    lands on their two cones with opposite signs.
+
+    Take the displacement each member's phase produces at the shared pitch
+    generator, where the two traces have to agree. The contact line is
+    `u = (sin d1, 0, cos d1)` and a point on it sits at `P = A u`. Turning a
+    member about its own axis `w` moves that point along `w x P`:
+
+        pinion   w = (0, 0, 1)          w x P = A (0,  sin d1, 0)
+        gear     w = (sin S, 0, cos S)  w x P = A (0, -sin d2, 0)
+
+    Both give an arc length of `A theta_c` once the phase is substituted - which
+    is the identity the meshing test asserts - but they point **opposite ways**,
+    for any shaft angle, and no clocking can fix that because a clocking is a
+    constant and this grows with the cone distance.
+
+    Measured, and this is the bug it fixes. Placing both traces and comparing
+    them along the contact generator on the anchor spiral set: they diverged by
+    up to 11.53 mm without the negation and 1.06 mm with it, agreeing only at
+    the mean cone distance - which is exactly where the phase is zero, so every
+    test that sampled the reference section saw nothing wrong. Built in
+    SOLIDWORKS, the pair went from **103.507 mm3 of interference in 17 regions
+    to 0.063 mm3 in 5**, and the anchor Zerol pair from 27.461 mm3 to 0.034.
+    Those residues are tangency-level: the straight pair off the same builder
+    has always been clean, and a helical spur pair reads the same way.
     """
     if geo.trace is None:
         return 0.0
@@ -231,7 +287,8 @@ def phase_at_cone_distance(
     sin_d = math.sin(m.pitch_angle)
     if abs(sin_d) < 1e-12:
         return 0.0
-    return geo.trace.sign * geo.trace.theta_at(cone_dist) / sin_d
+    hand = -1.0 if m.name == "gear" else 1.0
+    return hand * geo.trace.sign * geo.trace.theta_at(cone_dist) / sin_d
 
 
 def beyond_back_cone(geo: "SetGeometry", m: "MemberGeometry", pt: "Point3") -> float:
@@ -560,6 +617,7 @@ def compute_set(p: BevelSetParams) -> SetGeometry:
             p.psi_m,
             p.cutter_radius if p.cutter_radius is not None else mean_cone_dist,
             mean_cone_dist,
+            p.trace_sign,
         )
         if p.is_curved
         else None
@@ -765,15 +823,78 @@ def section_span(geo: SetGeometry, member: str) -> tuple[float, float]:
     )
 
 
+def _swept_tip(geo: SetGeometry, member: str, cone_dist: float, r: float):
+    """Where the tip point of the section at `cone_dist` truly sits. mm.
+
+    Radius `r` about the gear axis, turned by the trace's phase, with the cone
+    distance carried as the third coordinate rather than resolved onto the cone
+    as `A cos(delta)`.
+
+    That substitution is free, not an approximation, and it is worth saying why
+    rather than leaving it to be re-derived. `_chord_deviation` only ever
+    compares a chord point against a trace point at the *same* fraction along the
+    same interval, and the third coordinate is linear in A either way - so both
+    points get the identical third component and it cancels out of the distance
+    exactly. Measured both ways on all four anchor members: bit-identical.
+
+    `r` is held at the outer tip radius rather than tracked down the cone, which
+    is the same worst case the old endpoint form took - the furthest any point of
+    the cut gets from the axis it turns about.
+    """
+    phase = phase_at_cone_distance(geo, member, cone_dist)
+    return (r * math.cos(phase), r * math.sin(phase), cone_dist)
+
+
+def _chord_deviation(
+    geo: SetGeometry, member: str, a: float, b: float, samples: int = 25
+) -> float:
+    """How far the loft's chord across one interval leaves the swept surface. mm.
+
+    Measured rather than solved, and that distinction is the whole of this
+    function. The closed form it replaces - `r * (1 - cos(delta / 2))` from the
+    two endpoint phases - is the sagitta of a chord against its arc, and it is
+    right only when the phase runs **monotonically** between the two sections.
+
+    A **Zerol** trace is radial at the mean cone distance, which is to say its
+    phase turns around there. Both ends of the face then lie on the same side and
+    their difference is nearly nothing, while the trace bows away to phase zero
+    in between - so the endpoint form reported success on a tooth that had lost
+    its entire curvature. Measured on the anchor Zerol pinion (m=2, 17x43, a
+    39.3035 mm cutter at zero mean spiral): the phase runs -2.9742 / 0.0000 /
+    -2.0760 degrees at toe / mean / heel, the endpoint form saw a 0.90 degree
+    sweep and stopped at two sections, and the chord those two sections actually
+    build stands 1.3833 mm off the trace - 69 times the tolerance. A 35 degree
+    spiral set never showed it because its phase *is* monotonic.
+
+    So sample inside the interval, put the tip point on the straight chord the
+    loft really carries it along, and measure the distance to where it belongs.
+    That reduces to the old sagitta on a monotonic interval and catches the
+    turning one, which is why the fix is to measure the same quantity honestly
+    rather than to special-case Zerol.
+    """
+    r = geo.member(member).outside_dia / 2.0
+    pa = _swept_tip(geo, member, a, r)
+    pb = _swept_tip(geo, member, b, r)
+
+    worst = 0.0
+    for i in range(1, samples):
+        f = i / samples
+        chord = tuple(pa[k] + f * (pb[k] - pa[k]) for k in range(3))
+        true = _swept_tip(geo, member, a + (b - a) * f, r)
+        worst = max(worst, math.dist(chord, true))
+    return worst
+
+
 def _worst_sagitta(
     geo: SetGeometry, member: str, distances: list[float]
 ) -> float:
     """How far the loft's worst interval falls inside the true swept surface, mm.
 
-    The chord between two sections rotated `delta` apart sits
-    `r * (1 - cos(delta / 2))` inside the arc it should follow, at radius r.
     Evaluated at the tip radius about the gear axis - the furthest any point of
-    the cut gets from the axis it is turning about, and so the worst case.
+    the cut gets from the axis it is turning about, and so the worst case. Each
+    interval is handed to `_chord_deviation`, which measures the chord against
+    the trace instead of assuming the phase between the two sections is
+    monotonic; read its docstring for the Zerol set that assumption threw away.
 
     **Only intervals that reach the blank are counted.** Both ends of the run
     are pushed well past the material by `end_overshoot` - 7.18 mm at the
@@ -784,15 +905,13 @@ def _worst_sagitta(
     and sizing the whole loft by it doubles the section count to chase a
     tolerance in fresh air.
     """
-    r_tip_axis = geo.member(member).outside_dia / 2.0
     face_lo, face_hi = geo.inner_cone_dist, geo.outer_cone_dist
-    phases = [phase_at_cone_distance(geo, member, A) for A in distances]
 
     worst = 0.0
-    for (a, b), (lo, hi) in zip(zip(distances, distances[1:]), zip(phases, phases[1:])):
+    for a, b in zip(distances, distances[1:]):
         if max(a, b) < face_lo or min(a, b) > face_hi:
             continue        # entirely outside the blank; cuts nothing
-        worst = max(worst, r_tip_axis * (1.0 - math.cos(abs(hi - lo) / 2.0)))
+        worst = max(worst, _chord_deviation(geo, member, a, b))
     return worst
 
 
@@ -824,13 +943,29 @@ def section_cone_distances(
     both, and it is the same tactic `end_overshoot` uses a few functions up: this
     module would rather measure a thing than assume it.
 
-    Measured on the anchor spiral set at 35 degrees: **11 sections each**. The
-    two landing on the same number is a coincidence of two effects cancelling,
-    and worth knowing about because the naive expectation is wrong. The pinion
-    sweeps far more - 38.790 degrees against the gear's 15.336 - but the gear's
-    tip stands much further from the axis it is turning about, 43.735 mm against
-    18.860, and the sagitta is proportional to that radius. A straight bevel set
-    takes two either way.
+    Measured, at MAX_SECTION_SAGITTA_MM = 0.02 on the anchor sets:
+
+        straight             2 pinion,  2 gear
+        zerol, 39.3035 mm   12 pinion, 20 gear    worst 0.0187 / 0.0167 mm
+        spiral, 35 degrees  11 pinion, 12 gear    worst 0.0191 / 0.0183 mm
+
+    A straight bevel set takes two either way, having no rotation to follow.
+
+    **The Zerol set takes the most sections of the three, which is backwards from
+    instinct**: it has by far the least sweep - 0.898 degrees on the pinion
+    against the 35 degree set's 38.790 - and still needs more chords than either.
+    The reason is that its sweep is not where its error is. A Zerol trace turns
+    at the mean cone distance, so a chord laid across that turn misses it by the
+    whole depth of the bow no matter how small the endpoints' phase difference
+    is; a 35 degree trace runs one way across the face and its chords cut a
+    corner that shrinks quadratically with the interval. Sweep sizes the second
+    kind of error and says nothing about the first. See `_chord_deviation`.
+
+    The two members of the 35 degree set land one apart rather than equal, and
+    the near-miss is a coincidence of two effects nearly cancelling: the pinion
+    sweeps 2.5 times as far - 38.790 degrees against 15.336 - while the gear's
+    tip stands 2.3 times further from the axis it turns about, 43.735 mm against
+    18.860, and the deviation is proportional to each.
     """
     a_hi, a_lo = section_span(geo, member)
 
@@ -857,9 +992,10 @@ def section_count(
     """How many sections the loft needs to follow the trace closely enough.
 
     Two for a straight bevel gear, which has no rotation between its sections at
-    all; 11 for each member of the anchor spiral set. See
-    `section_cone_distances` for why the number is arrived at by measurement
-    rather than by a closed form.
+    all; 11 and 12 for the anchor spiral set's two members, and 12 and 20 for the
+    anchor Zerol set's. See `section_cone_distances` for why the number is
+    arrived at by measurement rather than by a closed form, and why the Zerol set
+    needs the most of the three despite sweeping the least.
     """
     return len(section_cone_distances(geo, member, max_sagitta))
 

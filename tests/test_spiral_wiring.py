@@ -15,6 +15,7 @@ from gears.__main__ import main
 from gears.bevel.geometry import compute_set, phase_at_cone_distance
 from gears.bevel.params import BevelSetParams
 from gears.bevel.report import params_from_args
+from gears.bevel.validate import validate
 from gears.bevel import preview
 
 ANCHOR = ["--module", "2", "--z1", "17", "--z2", "43"]
@@ -64,6 +65,39 @@ def test_a_zerol_set_is_reachable_from_the_command_line(capsys):
     assert _value(out, "spiral angle at heel") > 0.0
 
 
+def test_zerol_is_reachable_from_one_flag(capsys):
+    """`--zerol` alone, with the cutter radius left to default to Am.
+
+    The two-flag form works and is what this replaces. It is easy to
+    half-remember, though, and half-remembering it - `--spiral 0` with no cutter
+    radius - is not an error but a straight bevel gear, which is the quiet kind
+    of wrong this flag exists to remove.
+    """
+    main(ANCHOR + ["--zerol"])
+    out = capsys.readouterr().out
+    assert "SPIRAL" in out
+    assert _value(out, "spiral angle (mean)") == 0.0
+    assert _value(out, "cutter radius") == pytest.approx(39.3035, abs=1e-3)
+
+
+def test_zerol_is_named_in_the_report_rather_than_left_to_the_angle(capsys):
+    """"spiral angle 0.0000" describes a straight gear and a Zerol one alike."""
+    main(ANCHOR + ["--zerol"])
+    assert "zerol" in capsys.readouterr().out
+
+    main(ANCHOR)
+    assert "straight" in capsys.readouterr().out
+
+    main(ANCHOR + ["--spiral", "35"])
+    assert "spiral" in capsys.readouterr().out
+
+
+def test_zerol_with_a_nonzero_spiral_angle_is_refused():
+    """A contradiction, not a preference to resolve quietly one way."""
+    with pytest.raises(SystemExit):
+        main(ANCHOR + ["--zerol", "--spiral", "35"])
+
+
 def test_the_defaults_leave_a_straight_bevel_set_straight(capsys):
     main(ANCHOR)
     out = capsys.readouterr().out
@@ -80,6 +114,7 @@ class _Args:
     module, z1, z2 = 2.0, 17, 43
     alpha, sigma = 20.0, 90.0
     spiral, hand = 35.0, "right"
+    zerol = False
     cutter_radius = None
     backlash = 0.0
     face_width = bore = hub = min_root = None
@@ -98,6 +133,42 @@ def test_an_explicit_cutter_radius_beats_the_default():
     args = _Args()
     args.cutter_radius = 60.0
     assert params_from_args(args).cutter_radius == 60.0
+
+
+def test_the_zerol_flag_sizes_the_set_the_way_a_cutter_radius_does():
+    """`zerol=True` is a sizing hint; the set it returns carries no trace of it.
+
+    It never reaches the constructor - what it does is fill the cutter radius in
+    with Am, and from there `is_curved` answers off that radius exactly as it
+    does for a set built by naming the radius directly. So the two spellings have
+    to produce the same object, or there are two definitions of curved.
+    """
+    by_flag = BevelSetParams.with_defaults(2.0, 17, 43, zerol=True)
+    by_radius = BevelSetParams.with_defaults(2.0, 17, 43, cutter_radius=39.3035)
+    assert by_flag == by_radius
+    assert by_flag.is_curved and by_flag.spiral_angle == 0.0
+    assert by_flag.trace_kind == "zerol"
+
+
+def test_the_swing_warning_sees_a_zerol_set_straddling_zero():
+    """Taking magnitudes before subtracting cancelled the swing it measures.
+
+    The anchor Zerol set stands at -11.2651 deg at the toe and +9.3936 at the
+    heel - a real 20.6587 deg swing, over the 20 deg threshold. Subtracting the
+    magnitudes gave -1.8716 and no warning at all.
+    """
+    zerol = BevelSetParams.with_defaults(2.0, 17, 43, zerol=True)
+    warnings = [i for i in validate(zerol).warnings if i.field == "cutter_radius"]
+    assert len(warnings) == 1
+    assert "20.7 deg swing" in warnings[0].message
+    # And it points the right way: a larger cutter flattens the swing, which is
+    # also nominal Gleason practice for a Zerol set.
+    assert "larger" in warnings[0].message
+
+    # And it still reads the monotonic case the way it always did: the 35 degree
+    # set runs 30.074 to 40.599, a 10.5 degree swing, which is inside the rail.
+    spiral = BevelSetParams.with_defaults(2.0, 17, 43, spiral_angle=35.0)
+    assert not [i for i in validate(spiral).warnings if i.field == "cutter_radius"]
 
 
 def test_a_spiral_set_is_sized_to_the_tighter_face_limit():

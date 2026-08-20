@@ -62,6 +62,19 @@ def set_input(app: App, attr: str, text: str) -> None:
     app.refresh()
 
 
+def select_trace(app: App, value: str) -> None:
+    """Pick a value in the Tooth trace row, as a click on it would.
+
+    The handler hangs off `<<ComboboxSelected>>` rather than off the variable -
+    so that `refresh` re-rendering the row cannot rewrite the boxes it was
+    rendered from - and a test setting the variable has to call it in the same
+    way the binding does.
+    """
+    app.vars["trace_kind"].set(value)
+    app.on_trace_change()
+    app.refresh()
+
+
 # --- the default state -----------------------------------------------------
 
 
@@ -275,8 +288,160 @@ def test_presets_round_trip_through_json(app, tmp_path):
     app.load_preset(path)
 
     assert app._params.bore == pytest.approx(9.5)
+    # Every row filled in, except the ones whose blank is itself the answer -
+    # `cutter_radius` blank means Am, and writing a number in would change the
+    # set rather than describe it.
     for field in FIELDS:
+        if field.optional:
+            continue
         assert app.vars[field.attr].get() != ""
+
+
+def test_a_blank_optional_field_reads_back_as_none(app):
+    """Blank is a value on an optional row, not a parse error.
+
+    `cutter_radius` is `float | None` and None is what `with_defaults` reads as
+    "the Gleason nominal, Am". Every other row treats an empty box as something
+    the user has not finished typing.
+    """
+    field = next(f for f in FIELDS if f.attr == "cutter_radius")
+    assert field.optional
+    assert field.parse("  ") is None
+    assert field.format(None) == ""
+    # The round trip both ways, which is the pairing every other field is held to.
+    assert field.parse(field.format(39.3035)) == pytest.approx(39.3035)
+
+    set_input(app, "cutter_radius", "")
+    params, problems = app.read_params()
+    assert problems == []
+    assert params.cutter_radius is None
+
+
+def test_a_zerol_set_is_reachable_from_the_window(app):
+    """The window could not express a Zerol set at all before the cutter row.
+
+    With no cutter radius to type, a zero spiral angle could only ever mean a
+    straight gear - so the one bevel variant the geometry had supported all
+    along was the one the GUI could not ask for.
+    """
+    set_input(app, "spiral_angle", "0")
+    set_input(app, "cutter_radius", "39.3035")
+
+    params, problems = app.read_params()
+    assert problems == []
+    assert params.is_curved
+    assert params.trace_kind == "zerol"
+    assert "zerol" in app._status_text()
+
+
+def test_a_zerol_preset_survives_a_load(app, tmp_path):
+    """It did not: the cutter radius was dropped on the way back in.
+
+    `set_params` only writes the widgets its type has rows for, and `read_params`
+    then rebuilds by replacing those values onto the *previous* params object. A
+    field with no row was therefore never written and never read, so a saved
+    Zerol set came back as the straight set the widgets could describe.
+    """
+    set_input(app, "spiral_angle", "0")
+    set_input(app, "cutter_radius", "39.3035")
+    path = tmp_path / "zerol.json"
+    app._params.to_json(path)
+
+    set_input(app, "cutter_radius", "")
+    assert app._params.cutter_radius is None
+
+    app.load_preset(path)
+    assert app._params.cutter_radius == pytest.approx(39.3035)
+    assert app._params.is_curved
+
+
+def test_the_trace_row_names_the_state_the_two_inputs_encode(app):
+    """straight / zerol / spiral, off a spiral angle and a cutter radius.
+
+    The row is derived, so this is really a test that it renders rather than
+    stores: nothing writes "zerol" anywhere: it is what those two inputs *mean*.
+    """
+    assert app.vars["trace_kind"].get() == "straight"
+
+    set_input(app, "cutter_radius", "39.3035")
+    assert app.vars["trace_kind"].get() == "zerol"
+
+    set_input(app, "spiral_angle", "35")
+    assert app.vars["trace_kind"].get() == "spiral"
+
+    set_input(app, "cutter_radius", "")
+    set_input(app, "spiral_angle", "0")
+    assert app.vars["trace_kind"].get() == "straight"
+
+
+def test_selecting_a_trace_writes_the_rows_it_stands_for(app):
+    """The one row that acts rather than being parsed."""
+    select_trace(app, "zerol")
+    assert app._params.spiral_angle == 0.0
+    assert app._params.cutter_radius == pytest.approx(39.3035, abs=1e-3)
+    assert app._params.is_curved
+
+    select_trace(app, "spiral")
+    assert app._params.spiral_angle == pytest.approx(35.0)
+    assert app._params.cutter_radius == pytest.approx(39.3035, abs=1e-3)
+
+    select_trace(app, "straight")
+    assert app._params.spiral_angle == 0.0
+    assert app._params.cutter_radius is None
+    assert not app._params.is_curved
+
+
+def test_selecting_zerol_gives_the_same_set_the_zerol_flag_does(app):
+    """Window and command line have to agree, or one of them is quoting a
+    nominal cutter for a gear the user does not have.
+
+    Am is measured against the face width, and a curved set's face is the
+    tighter Gleason 0.30*Ao - so this only lands if the offered cutter is sized
+    the way `--zerol` sizes it rather than against the straight width still in
+    the box at the moment of selection.
+    """
+    select_trace(app, "zerol")
+    app.auto_size()
+    assert app._params == BevelSetParams.with_defaults(2.0, 17, 43, zerol=True)
+
+
+def test_selecting_a_trace_keeps_a_cutter_radius_already_chosen(app):
+    """A cutter picked to flatten the swing is not re-picked behind your back."""
+    select_trace(app, "zerol")
+    set_input(app, "cutter_radius", "60")
+    select_trace(app, "spiral")
+    assert app._params.cutter_radius == pytest.approx(60.0)
+    select_trace(app, "zerol")
+    assert app._params.cutter_radius == pytest.approx(60.0)
+
+
+def test_the_trace_row_is_never_read_back_as_an_input(app):
+    """`trace_kind` is a property; `dataclasses.replace` would raise on it.
+
+    Asserted through `read_params` rather than by inspecting the flag, because
+    the flag existing is not the point - the point is that a derived row cannot
+    reach the constructor.
+    """
+    field = next(f for f in FIELDS if f.attr == "trace_kind")
+    assert field.derived
+    app.vars["trace_kind"].set("nonsense")
+    params, problems = app.read_params()
+    assert problems == []
+    assert params is not None
+
+
+def test_auto_size_keeps_a_zerol_set_curved(app):
+    """The face width a Zerol set gets is the curved one, 0.30*Ao not Ao/3.
+
+    `auto_kwargs` had to learn about the cutter radius for this: it is the only
+    input saying a Zerol tooth is curved, so without it "Auto-size blank" handed
+    back the straight set's 15.41 mm and the validator then warned about it.
+    """
+    set_input(app, "spiral_angle", "0")
+    set_input(app, "cutter_radius", "39.3035")
+    app.auto_size()
+    assert app._params.face_width == pytest.approx(13.87, abs=0.01)
+    assert app._params.cutter_radius == pytest.approx(39.3035)
 
 
 def test_a_bad_preset_file_does_not_take_the_window_down(app, tmp_path, monkeypatch):

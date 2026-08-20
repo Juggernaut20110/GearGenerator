@@ -4,14 +4,17 @@
     .venv\\Scripts\\python.exe tools\\build_gear.py --module 2 --z1 17 --z2 43 \\
         --member gear --save out\\gear.sldprt
     .venv\\Scripts\\python.exe tools\\build_gear.py --spiral 35
-    .venv\\Scripts\\python.exe tools\\build_gear.py --spiral 0 --cutter-radius 39.3
+    .venv\\Scripts\\python.exe tools\\build_gear.py --zerol
 
-`--spiral 0` is a straight bevel gear and takes two loft sections. Anything else
-is a curved tooth and takes as many as the trace needs - 11 per member on the
-anchor set - plus a guide curve, so it is a noticeably longer build.
+`--spiral 0` on its own is a straight bevel gear and takes two loft sections.
+Anything else is a curved tooth and takes as many as the trace needs - 11 on the
+anchor spiral pinion, 12 on the Zerol one - plus a guide curve, so it is a
+noticeably longer build.
 
-The last line is a **Zerol** set: a zero mean spiral angle with a real cutter
-radius, which curves the tooth without laying it over.
+`--zerol` is a **Zerol** set: a zero mean spiral angle with a real cutter radius,
+which curves the tooth without laying it over. It is the same thing as
+`--spiral 0 --cutter-radius 39.3` and exists because the two-flag form is easy to
+half-remember, and half-remembering it silently gives a straight gear.
 """
 
 from __future__ import annotations
@@ -46,6 +49,10 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--hand", choices=("right", "left"), default="right")
     ap.add_argument(
+        "--zerol", action="store_true",
+        help="Zerol: a curved tooth at zero mean spiral angle",
+    )
+    ap.add_argument(
         "--cutter-radius", type=float, help="face-milling cutter radius, mm"
     )
     ap.add_argument("--face-width", type=float)
@@ -57,6 +64,10 @@ def main(argv=None) -> int:
     ap.add_argument("--save", help="path to save the part to")
     ap.add_argument("--close", action="store_true", help="close the part afterwards")
     args = ap.parse_args(argv)
+
+    if args.zerol and abs(args.spiral) > 1e-12:
+        ap.error(f"--zerol is a zero mean spiral angle; --spiral {args.spiral:g} "
+                 "contradicts it")
 
     overrides = {
         "pressure_angle": args.alpha,
@@ -75,7 +86,9 @@ def main(argv=None) -> int:
         if value is not None:
             overrides[key] = value
 
-    p = BevelSetParams.with_defaults(args.module, args.z1, args.z2, **overrides)
+    p = BevelSetParams.with_defaults(
+        args.module, args.z1, args.z2, zerol=args.zerol, **overrides
+    )
     result = validate(p)
     for issue in result.warnings:
         print(f"WARNING  {issue}")

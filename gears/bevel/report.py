@@ -29,8 +29,8 @@ from .validate import validate
 # backlash in mm taken off the tooth - so the spur module declares it and all
 # three modules claim it. A flag every type claims is refused by none.
 FLAGS = (
-    "alpha", "sigma", "spiral", "cutter_radius", "face_width", "bore", "hub",
-    "min_root", "backlash", "member", "end",
+    "alpha", "sigma", "spiral", "zerol", "cutter_radius", "face_width", "bore",
+    "hub", "min_root", "backlash", "member", "end",
 )
 
 
@@ -49,6 +49,12 @@ def add_arguments(ap) -> None:
         help="mean spiral angle, deg (0 = straight bevel)",
     )
     ap.add_argument(
+        "--zerol",
+        action="store_true",
+        help="Zerol: a curved tooth at zero mean spiral angle. Same as "
+             "--spiral 0 with a cutter radius, which defaults to Am",
+    )
+    ap.add_argument(
         "--cutter-radius",
         type=float,
         help="face-milling cutter radius, mm (default: Am). "
@@ -63,6 +69,16 @@ def add_arguments(ap) -> None:
 
 
 def params_from_args(args) -> BevelSetParams:
+    # A Zerol set *is* a zero mean spiral angle, so asking for both at once is a
+    # contradiction rather than a preference to resolve. Refused for the same
+    # reason the dispatcher refuses another type's flag: a flag that is silently
+    # ignored is worse than one that is rejected.
+    if args.zerol and abs(args.spiral) > 1e-12:
+        raise SystemExit(
+            f"--zerol is a zero mean spiral angle; --spiral {args.spiral:g} "
+            "contradicts it. Drop one."
+        )
+
     overrides = {
         "pressure_angle": args.alpha,
         "shaft_angle": args.sigma,
@@ -80,7 +96,9 @@ def params_from_args(args) -> BevelSetParams:
         overrides["hub_thickness"] = args.hub
     if args.min_root is not None:
         overrides["min_root_thickness"] = args.min_root
-    return BevelSetParams.with_defaults(args.module, args.z1, args.z2, **overrides)
+    return BevelSetParams.with_defaults(
+        args.module, args.z1, args.z2, zerol=args.zerol, **overrides
+    )
 
 
 def print_report(geo) -> None:
@@ -92,6 +110,10 @@ def print_report(geo) -> None:
     print(_row("teeth", p.z1, p.z2))
     print(_row("pressure angle", f(p.pressure_angle), "", "deg"))
     print(_row("shaft angle", f(p.shaft_angle), "", "deg"))
+    # Named outright, because "spiral angle 0.0000" reads as a straight gear and
+    # a Zerol set is not one - the tooth is curved and only crosses the mean
+    # radially. That distinction is the whole of `is_curved`.
+    print(_row("tooth trace", p.trace_kind))
     print(_row("spiral angle (mean)", f(p.spiral_angle), "", "deg"))
     if p.is_curved:
         print(_row("hand (pinion)", p.hand))

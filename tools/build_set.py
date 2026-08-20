@@ -6,11 +6,14 @@ Produces two parts and an assembly with the teeth meshing.
     .venv\\Scripts\\python.exe tools\\build_set.py --module 3 --z1 20 --z2 20 \\
         --sigma 60 --out out\\miter60
     .venv\\Scripts\\python.exe tools\\build_set.py --spiral 35
+    .venv\\Scripts\\python.exe tools\\build_set.py --zerol
 
 The assembly is placed and mated exactly as a straight pair is - a spiral
 changes the tooth, not where the two members sit or how they are held. What it
-does change is the build time: 11 loft sections per member on the anchor set
-against two for a straight pair.
+does change is the build time: 11 and 12 loft sections on the anchor spiral set
+against two apiece for a straight pair, and 12 and 20 for a Zerol one - which
+needs the most of the three despite sweeping the least. See
+`section_cone_distances` for why that is not the paradox it looks like.
 
 `--hand` is the **pinion's**; the gear takes the other, and that falls out of
 the construction rather than being imposed. See `gears/bevel/geometry.py`.
@@ -47,6 +50,10 @@ def main(argv=None) -> int:
         help="the PINION's hand; the gear always takes the other",
     )
     ap.add_argument(
+        "--zerol", action="store_true",
+        help="Zerol: a curved tooth at zero mean spiral angle",
+    )
+    ap.add_argument(
         "--cutter-radius", type=float, help="face-milling cutter radius, mm"
     )
     ap.add_argument("--face-width", type=float)
@@ -66,6 +73,10 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
 
+    if args.zerol and abs(args.spiral) > 1e-12:
+        ap.error(f"--zerol is a zero mean spiral angle; --spiral {args.spiral:g} "
+                 "contradicts it")
+
     overrides = {
         "pressure_angle": args.alpha,
         "shaft_angle": args.sigma,
@@ -83,7 +94,9 @@ def main(argv=None) -> int:
         if value is not None:
             overrides[key] = value
 
-    p = BevelSetParams.with_defaults(args.module, args.z1, args.z2, **overrides)
+    p = BevelSetParams.with_defaults(
+        args.module, args.z1, args.z2, zerol=args.zerol, **overrides
+    )
     result = validate(p)
     for issue in result.warnings:
         print(f"WARNING  {issue}")

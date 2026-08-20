@@ -55,6 +55,22 @@ class Field:
     needs it, and it needs it because a helical pair meshes only if its members
     are wound opposite ways - which makes the pinion's hand a real input rather
     than a detail to leave at a default.
+
+    `optional` makes an empty box mean `None` rather than an error. Only
+    `cutter_radius` needs it, and there the empty box is a real answer and not a
+    missing one: None is what `with_defaults` reads as "the Gleason nominal, Am".
+    Defaulting it to a number in the widget instead would be worse than it
+    sounds - the box would have to be filled in for a *straight* set too, where
+    a cutter radius is not merely unused but is the one thing that would turn it
+    into a Zerol set.
+
+    `derived` marks a row that **names** a state rather than storing one. Only
+    `trace_kind` needs it: it is a property computed from the spiral angle and
+    the cutter radius, so it cannot be written back with `dataclasses.replace`
+    and `read_params` skips it. Selecting a value instead writes the two rows it
+    stands for - see `App.on_trace_change`. The row exists because those two
+    inputs encode three states between them, and "spiral angle 0" reads as a
+    straight gear whether or not a cutter radius is sitting under it.
     """
 
     attr: str
@@ -62,10 +78,14 @@ class Field:
     kind: type
     unit: str = ""
     choices: tuple[str, ...] = ()
+    optional: bool = False
+    derived: bool = False
 
     def parse(self, text: str):
         text = text.strip()
         if not text:
+            if self.optional:
+                return None
             raise ValueError("is empty")
         if self.choices:
             if text not in self.choices:
@@ -91,8 +111,12 @@ class Field:
 
         Paired with `parse` deliberately, and tested as a round trip. A bool
         field goes through the choice labels rather than through `str(True)`,
-        which is not one of them and would not parse back.
+        which is not one of them and would not parse back - and an optional
+        field's None goes back to the empty box it came from, for the same
+        reason: `f"{None:g}"` raises.
         """
+        if value is None and self.optional:
+            return ""
         if self.choices:
             if self.kind is bool:
                 return self.choices[1] if value else self.choices[0]
@@ -108,8 +132,20 @@ BEVEL_FIELDS: tuple[Field, ...] = (
     Field("z2", "Gear teeth z2", int),
     Field("pressure_angle", "Pressure angle", float, "deg"),
     Field("shaft_angle", "Shaft angle", float, "deg"),
+    # Three states off two inputs, named rather than inferred. A combobox and not
+    # a checkbox for the reason `Field.parse` gives about `internal`: the off
+    # state of a "Zerol" tick would have to mean straight *or* spiral, and there
+    # is no honest label for that. Selecting a value writes the two rows below -
+    # this one is derived and is never read back. See `App.on_trace_change`.
+    Field("trace_kind", "Tooth trace", str, "",
+          ("straight", "zerol", "spiral"), derived=True),
     Field("spiral_angle", "Spiral angle (mean)", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
+    # Blank means Am, the Gleason nominal, and selecting `zerol` or `spiral`
+    # above fills it in - so the number is never a mystery and is always
+    # editable. A cutter radius at a zero spiral angle is what makes a tooth
+    # Zerol: curved, crossing the mean cone distance radially.
+    Field("cutter_radius", "Cutter radius", float, "mm", optional=True),
     Field("backlash", "Backlash", float, "mm"),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
@@ -165,8 +201,8 @@ def _ordered_fields() -> tuple[Field, ...]:
     # they are the ones "Auto-size blank" rewrites as a group.
     order = (
         "module", "z1", "z2", "z_sun", "z_planet", "n_planets", "internal",
-        "pressure_angle", "shaft_angle", "spiral_angle", "helix_angle", "hand",
-        "backlash",
+        "pressure_angle", "shaft_angle", "trace_kind", "spiral_angle",
+        "helix_angle", "hand", "cutter_radius", "backlash",
         "face_width", "bore", "hub_thickness", "rim_thickness",
         "min_root_thickness",
     )
@@ -182,10 +218,21 @@ PLANETARY_AUTO = ("face_width", "bore", "hub_thickness", "rim_thickness")
 
 
 def _bevel_status(p, geo) -> str:
-    trace = (
-        "straight teeth" if geo.trace is None
-        else f"spiral {p.spiral_angle:g} deg {p.hand}"
-    )
+    # Three cases, not two. "spiral 0 deg right" is what a Zerol set used to read
+    # as, which is indistinguishable from the straight set it is not - the tooth
+    # is curved and only crosses the mean cone distance radially. `trace_kind`
+    # is shared with the terminal report so the two cannot drift apart.
+    #
+    # Branches rather than a dict keyed on `trace_kind`, because a dict literal
+    # builds every value before it picks one and a straight set's cutter radius
+    # is None - which is not a number `:g` will format.
+    kind = p.trace_kind
+    if kind == "straight":
+        trace = "straight teeth"
+    elif kind == "zerol":
+        trace = f"zerol {p.hand}, {p.cutter_radius:g} mm cutter"
+    else:
+        trace = f"spiral {p.spiral_angle:g} deg {p.hand}"
     return (
         f"m {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
         f"shaft {p.shaft_angle:g} deg   {trace}   "
@@ -315,7 +362,17 @@ KINDS: dict[str, GearKind] = {
         # face width it picks depends on it - a curved tooth takes the tighter
         # Gleason limit of 0.30*Ao. Without it, "Auto-size blank" on a spiral set
         # would hand back the straight set's face width and then warn about it.
-        auto_kwargs=("pressure_angle", "shaft_angle", "spiral_angle", "hand"),
+        #
+        # And the cutter radius for the same reason once removed: on a **Zerol**
+        # set it is the only thing saying the tooth is curved at all, so leaving
+        # it out sized every Zerol set as a straight one - the exact failure
+        # `test_a_zerol_set_is_sized_as_a_curved_one` pins down on the params
+        # side. It is not in `auto_fields`, though: a blank box means Am and
+        # auto-sizing should leave it blank rather than freeze the number in.
+        auto_kwargs=(
+            "pressure_angle", "shaft_angle", "spiral_angle", "hand",
+            "cutter_radius",
+        ),
         default_scene="developed",
         status=_bevel_status,
         result_lines=_bevel_result_lines,
@@ -525,6 +582,13 @@ class App(ttk.Frame):
             widget.grid(row=row, column=1, sticky="e", padx=(10, 4), pady=2)
             unit = ttk.Label(box, text=field.unit, width=4)
             unit.grid(row=row, column=2, sticky="w")
+            if field.derived:
+                # Only a human selection writes the rows this one stands for.
+                # A variable trace would fire on `refresh` re-rendering it too,
+                # and rewrite the very boxes it had just been rendered from.
+                widget.bind(
+                    "<<ComboboxSelected>>", lambda _e: self.on_trace_change()
+                )
             self.entries[field.attr] = widget
             self.field_rows[field.attr] = (label, widget, unit)
 
@@ -679,6 +743,10 @@ class App(ttk.Frame):
         values: dict[str, object] = {}
         problems: list[str] = []
         for field in kind.fields:
+            if field.derived:
+                # A property, not an input - `dataclasses.replace` would raise.
+                # The rows it stands for carry the value; it only names them.
+                continue
             try:
                 values[field.attr] = field.parse(self.vars[field.attr].get())
             except ValueError as exc:
@@ -690,6 +758,59 @@ class App(ttk.Frame):
         if base is None or not isinstance(base, kind.params_cls):
             base = kind.fallback()
         return dataclasses.replace(base, **values), []
+
+    # What `spiral` falls back to when it is selected from a set that has no
+    # spiral angle to keep. The anchor set's, so the window agrees with the
+    # README and with every test that says 35 degrees.
+    DEFAULT_SPIRAL_ANGLE = 35.0
+
+    def on_trace_change(self) -> None:
+        """Translate a trace selection into the two rows that actually carry it.
+
+        The one row that *acts* rather than being parsed, because it is derived:
+        `trace_kind` is computed from the spiral angle and the cutter radius, so
+        selecting a value has to write those two or it would be overwritten by
+        the next refresh.
+
+        Bound to `<<ComboboxSelected>>` rather than to the variable, so that only
+        a human selection triggers it. Writing the row from `refresh` - which is
+        what keeps it honest when someone types a spiral angle straight into the
+        box below - must not come back round and rewrite the boxes it was
+        rendered from.
+        """
+        kind = self.vars["trace_kind"].get()
+        p, _problems = self.read_params()
+        if p is None:
+            return              # some other row is mid-edit; leave this alone
+
+        if kind == "straight":
+            spiral, cutter = 0.0, None
+        else:
+            # Keep whatever cutter is already there - the selection is about the
+            # trace, not about re-picking a cutter the user may have chosen. Only
+            # fill it when there is nothing to keep, and then with exactly the
+            # number `--zerol` produces, so the window and the command line hand
+            # back the same gear.
+            #
+            # That means letting `with_defaults` size the face width rather than
+            # passing the one in the box. Am is measured against the face, and
+            # the face a curved set gets is the Gleason 0.30*Ao - so quoting the
+            # nominal cutter against the *straight* width still in the box gives
+            # 38.5335 mm on the anchor set, a number that is nominal for a set
+            # the user is one button away from not having. The natural next step
+            # is Auto-size blank, which narrows the face to 13.87 and leaves this
+            # cutter exactly right at 39.3035.
+            cutter = p.cutter_radius
+            if cutter is None:
+                cutter = BevelSetParams.with_defaults(
+                    p.module, p.z1, p.z2, zerol=True, shaft_angle=p.shaft_angle,
+                ).cutter_radius
+            spiral = 0.0 if kind == "zerol" else (
+                p.spiral_angle or self.DEFAULT_SPIRAL_ANGLE
+            )
+
+        self.vars["spiral_angle"].set(f"{spiral:g}")
+        self.vars["cutter_radius"].set("" if cutter is None else f"{cutter:g}")
 
     def auto_size(self) -> None:
         """Reset the blank dimensions to what `with_defaults` would pick.
@@ -751,6 +872,19 @@ class App(ttk.Frame):
 
         self._params = p
         self._validation = self.kind.validate(p)
+
+        # Re-render the derived rows from what the inputs actually came to, so
+        # typing 35 into the spiral angle box moves the trace row to "spiral"
+        # rather than leaving it reading "zerol". Under `_loading`, because these
+        # are writes to input variables and would otherwise queue another
+        # refresh behind this one.
+        self._loading = True
+        try:
+            for field in self.kind.fields:
+                if field.derived:
+                    self.vars[field.attr].set(field.format(getattr(p, field.attr)))
+        finally:
+            self._loading = False
 
         geo_error: str | None = None
         try:

@@ -267,19 +267,39 @@ def _check_trace(geo, p: BevelSetParams, result: ValidationResult) -> None:
         return
 
     # --- how hard the spiral angle swings across the face -------------------
-    psi_i = math.degrees(abs(trace.spiral_angle_at(geo.inner_cone_dist)))
-    psi_o = math.degrees(abs(trace.spiral_angle_at(geo.outer_cone_dist)))
-    if psi_o - psi_i > 20.0:
+    #
+    # The swing is the difference of the **signed** angles, and taking magnitudes
+    # first is a real bug rather than a tidier spelling. A gentle spiral crosses
+    # zero inside the face - a Zerol set does so at the mean by definition - and
+    # its two ends then have opposite signs, so subtracting magnitudes cancels
+    # them instead of adding them. Measured on the anchor Zerol set: the toe
+    # stands at -11.2651 deg and the heel at +9.3936, a real 20.6587 deg swing,
+    # which the old form reported as -1.8716 and never warned about.
+    psi_i = math.degrees(trace.spiral_angle_at(geo.inner_cone_dist))
+    psi_o = math.degrees(trace.spiral_angle_at(geo.outer_cone_dist))
+    swing = abs(psi_o - psi_i)
+    if swing > 20.0:
+        # A **larger** cutter flattens it, and the advice used to say "nearer Am",
+        # which is the wrong direction. Measured on the anchor set at 35 deg mean,
+        # against cutter radii of 0.5 / 1 / 1.5 / 2 x Am: the swing runs 36.7 /
+        # 10.5 / 2.1 / -2.1 deg, monotonically. A Zerol set does the same from
+        # 42.1 down to 10.3. The limit is a straight tooth - an infinite cutter
+        # sweeps a radial line - which is why flattening the swing and keeping a
+        # spiral are opposed, and why nominal practice sits at Am rather than as
+        # high as it can. `test_a_larger_cutter_flattens_the_spiral_angle_across
+        # _the_face` had said this all along.
         result.warn(
             "cutter_radius",
-            f"the spiral angle runs {psi_i:.1f} deg at the toe to {psi_o:.1f} "
-            f"at the heel, a {psi_o - psi_i:.1f} deg swing; a cutter nearer "
-            f"Am = {geo.mean_cone_dist:.2f} mm would flatten it",
+            f"the spiral angle runs {abs(psi_i):.1f} deg at the toe to "
+            f"{abs(psi_o):.1f} at the heel, a {swing:.1f} deg swing; a cutter "
+            f"larger than the {trace.cutter_radius:.2f} mm one would flatten it",
         )
-    if psi_o >= 90.0 - 1e-9:
+    # This one stays on the magnitude: it asks how far the trace has laid over,
+    # and either sign of 90 degrees is equally tangent to the pitch circle.
+    if abs(psi_o) >= 90.0 - 1e-9:
         result.error(
             "cutter_radius",
-            f"the trace stands at {psi_o:.1f} deg to the cone generator at the "
+            f"the trace stands at {abs(psi_o):.1f} deg to the cone generator at the "
             "heel, which is tangent to the pitch circle - no tooth runs that way",
         )
 

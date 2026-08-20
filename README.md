@@ -6,9 +6,9 @@ driver that builds the solids.
 
 Three gear types, sharing everything they can:
 
-* **bevel**, straight or spiral — module, tooth counts, pressure angle, shaft
-  angle, mean spiral angle and hand, cutter radius, face width, bore, hub,
-  root rim and backlash
+* **bevel**, straight, spiral or **Zerol** — module, tooth counts, pressure
+  angle, shaft angle, mean spiral angle and hand, cutter radius, face width,
+  bore, hub, root rim and backlash
 * **involute spur**, straight or helical, **external or internal** — normal
   module, tooth counts, normal pressure angle, helix angle and hand, face
   width, bore, hub, backlash, and a rim for a ring gear
@@ -30,6 +30,7 @@ other:
 ```
 bevel        m=2, 17x43, 20 deg pressure angle, 90 deg shafts
              plus 35 deg mean spiral for the spiral set
+             plus a 39.3035 mm cutter at 0 deg for the Zerol set
 spur         m=2, 17x43, 20 deg, plus a 15 deg helix for the helical set
 internal     m=2, 18x60 - which is also the planetary set's planet-ring mesh
 planetary    m=2, sun 24, planet 18, ring 60, 3 planets
@@ -45,10 +46,11 @@ The interpreter is the venv one. Always. There is no global install.
 .venv\Scripts\python.exe run.py                      # the GUI, all three types
 .venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43
 .venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43 --spiral 35
+.venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43 --zerol
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 17 --z2 43 --beta 15
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 18 --z2 60 --internal
 .venv\Scripts\python.exe -m gears --type planetary --module 2 --z1 24 --z2 18
-.venv\Scripts\python.exe -m pytest -q                # 874 tests, no SOLIDWORKS
+.venv\Scripts\python.exe -m pytest -q                # 928 tests, no SOLIDWORKS
 ```
 
 `--type` defaults to `bevel`, which is what the tool generated before there was
@@ -70,6 +72,7 @@ will start it):
 ```
 .venv\Scripts\python.exe tools\build_gear.py --member gear
 .venv\Scripts\python.exe tools\build_gear.py --spiral 35
+.venv\Scripts\python.exe tools\build_gear.py --zerol
 .venv\Scripts\python.exe tools\build_set.py --z1 17 --z2 43 --spiral 35
 .venv\Scripts\python.exe tools\build_spur.py --member gear --beta 15
 .venv\Scripts\python.exe tools\build_spur_set.py --z1 17 --z2 43
@@ -188,16 +191,22 @@ theta_c(A) = acos((rho^2 + A^2 - r_c^2) / (2 rho A))  trace angle, crown plane
 d_theta(A) = theta_c(A) / sin(delta)                 onto a cone
 ```
 
-**One arc serves both members, and that is the whole meshing condition rather
-than half of it.** Arc length along the pitch circle at cone distance `A` comes
-to `A * theta_c` for either member — every pitch-angle term cancels — so the two
-traces coincide along the common pitch generator by construction. It is also
-where the opposite hands come from: nothing flips the gear's trace, and mapping
-one arc through two different pitch angles is all it takes.
+**One arc serves both members, and that is half the meshing condition.** Arc
+length along the pitch circle at cone distance `A` comes to `A * theta_c` for
+either member — every pitch-angle term cancels — so the two traces are the same
+curve.
 
-**Zerol is a zero spiral angle with a real cutter radius.** The tooth is still
-curved; it merely crosses the mean cone distance radially. That is why the
-geometry switches on `is_curved` rather than on the spiral angle being zero.
+**The other half is which way they travel it, and getting that wrong cost a
+build.** The two members roll on the crown gear in *opposite* senses — that is
+what meshing is, and it is the same fact `angular_velocity_ratio` reports about
+their axes — so the gear's phase is negated. This file used to claim the
+opposite, that "no sign anywhere has to be chosen", and the test guarding it
+compared the two arc lengths *without* their signs. An arc length is a
+magnitude; two displacements of equal size can point opposite ways, and these
+did. Measured on the anchor set, the two placed traces pulled apart to **11.53
+mm**, agreeing only at the mean cone distance — which is where the phase is zero
+by construction, so the one place every test looked was the one place that was
+right. See `phase_at_cone_distance`, which carries the derivation.
 
 Measured on the anchor spiral set (35 deg mean, cutter at Am):
 
@@ -206,7 +215,7 @@ face width      13.87 mm    the Gleason 0.30*Ao limit, against Ao/3 straight
 spiral angle    30.074 / 35.000 / 40.599 deg at toe / mean / heel
 sweep           38.790 deg on the pinion, 15.336 on the gear
 face contact ratio  1.818
-loft sections   11 per member, against 2 for a straight set
+loft sections   11 and 12, against 2 apiece for a straight set
 ```
 
 **The section count is measured, not solved, and a test is why.** The closed
@@ -216,10 +225,93 @@ came out at 0.0293 mm against a 0.02 mm tolerance. Only intervals that reach the
 blank are counted — a chord out in the overshoot bounds a cut that removes
 nothing, and chasing it doubled the count for nothing.
 
-The two members landing on 11 sections each is a coincidence of two effects
+The two members landing one apart is a coincidence of two effects nearly
 cancelling, and worth knowing because the naive expectation is wrong: the pinion
 sweeps 2.5 times as far, and the gear's tip stands 2.3 times further from the
-axis it turns about, and the sagitta is proportional to each.
+axis it turns about, and the deviation is proportional to each.
+
+
+### Zerol
+
+**Zerol is a zero spiral angle with a real cutter radius.** The tooth is still
+curved; it merely crosses the mean cone distance radially. That is why the
+geometry switches on `is_curved` rather than on the spiral angle being zero, and
+why `--zerol` is a flag of its own: `--spiral 0` alone is a straight gear, so
+half-remembering the two-flag form gives you the wrong gear rather than an error.
+
+```
+.venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43 --zerol
+```
+
+In the window it is the **Tooth trace** row — `straight` / `zerol` / `spiral` —
+which is a combobox and not a "Zerol" tick for the reason `internal` is one: the
+off state of that tick would have to mean straight *or* spiral, and there is no
+honest label for that. The row is **derived**: it renders what the spiral angle
+and cutter radius already come to, so typing 35 into the angle box moves it to
+`spiral` on its own. Selecting a value writes those two rows rather than being
+read back as a third input, which keeps one definition of what the tooth is —
+`BevelSetParams.trace_kind`, shared with the terminal report.
+
+Selecting `zerol` fills the cutter radius with the same Am that `--zerol` picks,
+so the window and the command line hand back the same gear; press **Auto-size
+blank** afterwards for the narrower face width a curved tooth takes. The cutter
+row stays editable throughout — which matters, because the swing warning below
+is advice you have to be able to act on.
+
+Measured on the anchor Zerol set (0 deg mean, cutter at Am):
+
+```
+spiral angle    -11.265 / 0.000 / +9.394 deg at toe / mean / heel
+sweep           0.898 deg on the pinion, 0.355 on the gear
+face contact ratio  0.000
+loft sections   12 and 20
+```
+
+**The face contact ratio is zero and that is the point of the gear**, not a gap
+in the model. A Zerol tooth has no lengthwise overlap, which is what makes it a
+straight-bevel substitute that throws no axial thrust at its bearings.
+
+**It sweeps the least of the three and needs the most sections**, which is worth
+stating because it looks like a contradiction. Sweep sizes the error of a chord
+cutting the corner off a turn. A Zerol trace does not turn through an angle — it
+*turns around*, at the mean cone distance — and a chord laid straight across that
+bow misses it by the whole depth of the bow however small the endpoint angles
+are. Sweep says nothing about that.
+
+That is not a curiosity; it was a bug, and a quiet one. The count used to read
+each loft interval's error off its two endpoint phases as `r (1 - cos(delta/2))`,
+which is right only while the phase runs monotonically. On a Zerol set both ends
+sit on the same side, the difference is 0.898 deg, and the measure was happy with
+two sections — whose chord stands **1.3833 mm** off the trace against a 0.02 mm
+tolerance. A Zerol pinion built that way is a straight tooth with a slight twist.
+`_chord_deviation` now samples inside each interval and measures the chord
+against the trace instead of inferring it from the ends.
+
+**It is not only exactly-Zerol sets that turn.** The spiral angle crosses zero at
+cone distance `sqrt(rho^2 - r_c^2)`, and with a nominal cutter that lands inside
+the face for every mean angle below about 9.3 deg on the anchor set. So the
+section count is not monotonic in spiral angle — it is U-shaped, and both ends of
+the range cost more than the middle:
+
+```
+psi     0     5     9    10    15    25    35    44
+count  12    12    11    10     9     9    11    15      anchor pinion, 0.02 mm
+```
+
+**A larger cutter flattens the swing**, on a Zerol set and a spiral one alike —
+42.1 / 20.7 / 13.7 / 10.3 deg at 0.5 / 1 / 1.5 / 2 times Am on the Zerol set. The
+limit is a straight tooth, since an infinite cutter sweeps a radial line, which
+is why flattening the swing and keeping a spiral pull against each other and why
+the nominal sits at Am. A default Zerol set therefore warns about its own 20.7
+deg swing, and that warning is worth having rather than tuning away: real Gleason
+Zerol practice does use a cutter larger than the cone distance.
+
+**A Zerol tooth takes its bow from `hand`.** Nothing else can say which way it
+bends — the mean spiral angle is zero for both hands, so the trace's sign is read
+off the hand string rather than off the angle. That was inert until now: every
+Zerol set bowed the same way whatever was asked for, because `-0.0 < 0.0` is
+False. The pair meshes either way, as it does for a spiral set, because both
+members take the same sign.
 
 **Which sign of `hand` a catalogue would call right has not been measured.** The
 arithmetic is symmetric, so nothing in the code can settle it — it needs someone
@@ -445,7 +537,8 @@ entirely, and that comes back as a pointed-tooth error naming the member.
 2. blank: meridian outline sketched on the Top Plane, fully dimensioned with
    *driving* dimensions, revolved 360°
 3. 3D sketches of the tooth-space section — two for a straight gear, and as
-   many as the spiral trace needs for a curved one (11 on the anchor set)
+   many as the spiral trace needs for a curved one (11 and 12 on the anchor
+   spiral set, 12 and 20 on the Zerol one)
 4. loft cut through them, with a guide curve when the teeth are curved
 5. circular pattern of that cut, `z` instances about the axis
 
@@ -711,7 +804,7 @@ rather than debugging inside a builder.
 
 ## Testing
 
-874 tests, all pure Python, all fast. They are closed-form checks on the
+928 tests, all pure Python, all fast. They are closed-form checks on the
 geometry — cone distances agreeing between members, tooth tips landing on the
 mate's back cone, centre distance solved two independent ways, loft sections
 clearing the blank, the guide curve touching a vertex that exists in every
@@ -728,8 +821,9 @@ Three tests earn their keep above the rest, and all three ask the same kind of
 question — *does this actually mesh?* — as something a computer can answer:
 
 * `test_both_members_traces_coincide_along_the_common_pitch_generator` — the
-  spiral bevel meshing condition, asserted as an arc length that must agree to
-  1e-12 for both members at every cone distance
+  spiral bevel meshing condition, asserted as the **distance in space** between
+  the two placed traces. It used to compare two arc lengths and pass on a pair
+  that interfered in 17 regions; a length cannot tell you which way it points
 * `test_the_placed_pair_interlocks_without_the_two_bodies_overlapping` — samples
   the pinion's metal and asks whether any of it is inside the ring's
 * `test_the_whole_train_interlocks_without_any_two_bodies_overlapping` — the
@@ -773,12 +867,14 @@ planetary train  3 planets at (42.0000, 0), (-21.0000, +-36.3731), worst
 backlash         0.1 mm on the helical pair: the zero-volume tangency is gone
                  and interference reads none, which is the observable this
                  section asked for
-spiral bevel     builds and saves, shaft angle exact - but see below
+spiral bevel     0.0631 mm3 in 5 regions, shaft angle exact - see below
+zerol bevel      0.0343 mm3 in 4 regions, mates and articulates
 ```
 
-**The spiral bevel pair interferes, and that one is still open.** 17 regions,
-103.5074 mm3 — one region per pinion tooth, so it is systematic rather than a
-stray sliver. Two things it is *not*, both measured rather than argued:
+**The spiral bevel pair's interference is fixed, and the cause was a sign.** It
+stood at 17 regions and 103.5074 mm3 — one region per pinion tooth, so
+systematic rather than a stray sliver — and two things were measured and ruled
+out at the time:
 
 ```
 loft discretisation   11 sections -> 21 (max_sagitta 0.02 -> 0.005 mm)
@@ -788,11 +884,30 @@ tooth thickness       0.3 mm of backlash - three times what cleared the
                       Not a thin margin either.
 ```
 
-Which leaves the spiral section construction in `sw/bevel_part.py`, not
-`bevel/geometry.py`: the pure-Python meshing test
-(`test_both_members_traces_coincide_along_the_common_pitch_generator`) passes on
-this set, so the two traces agree in the model and disagree in the solid. The
-straight bevel pair off the same builder is clean. That is where to start.
+Both were right, and both pointed away from the answer. The fault was in
+`bevel/geometry.py` after all: **the gear's tooth trace ran the wrong way round
+its axis.** Both members took the same sign off the one crown arc, when meshing
+requires them to roll on that crown in opposite senses. The section above has
+the derivation; what matters here is that the pure-Python meshing test *passed*
+on the broken pair, because it compared two arc lengths and an arc length has no
+direction in it. Rebuilt, on SOLIDWORKS 2026 SP3:
+
+```
+                      before            after
+spiral 35 deg    103.5071 mm3 / 17    0.0631 mm3 / 5
+zerol             27.4611 mm3 /  6    0.0343 mm3 / 4
+straight               none            none        unchanged
+```
+
+0.06 mm3 across 5 regions is tangency-level — the same character as the helical
+spur pair's "one zero-volume tangency where the flanks touch" — against a tooth
+volume three orders of magnitude larger. The straight pair is untouched, since
+it has no trace to get the sign of.
+
+The meshing test now places both traces and measures the distance between them,
+and is paired with one that removes the negation and requires the old 11.53 mm
+divergence back. That pairing is the point: the test that let this through could
+not fail.
 
 Three things are still waiting on a hand on the drag solver, and none of them
 inherits from any of the others:

@@ -102,6 +102,26 @@ class BevelSetParams(JsonParams):
         return magnitude if self.hand == "right" else -magnitude
 
     @property
+    def trace_sign(self) -> float:
+        """Which way the trace bows: +1 right hand, -1 left. The hand, as a number.
+
+        **Not `sign(psi_m)`, and the difference is exactly Zerol.** A Zerol set
+        has `psi_m == 0.0` for both hands - and `-0.0 < 0.0` is False - so
+        reading the bow off the angle landed every Zerol tooth on the same side
+        whatever `hand` said, which made the input inert on the one kind of set
+        where it is the only thing left to say. The hand string still carries a
+        direction at zero, so at zero it is the one asked.
+
+        Only at zero, though. A negative `spiral_angle` typed in directly is
+        permitted by the validator and has to keep meaning what it already meant,
+        so above zero the angle's own sign still wins - otherwise
+        `spiral_angle_at` would hand back +35 degrees for a set built at -35.
+        """
+        if abs(self.spiral_angle) > 1e-12:
+            return -1.0 if self.psi_m < 0.0 else 1.0
+        return 1.0 if self.hand == "right" else -1.0
+
+    @property
     def is_curved(self) -> bool:
         """Whether the tooth trace curves at all, which is the geometry's switch.
 
@@ -119,11 +139,26 @@ class BevelSetParams(JsonParams):
         return abs(self.spiral_angle) > 1e-12 or self.cutter_radius is not None
 
     @property
+    def trace_kind(self) -> str:
+        """What to call this tooth: "straight", "zerol" or "spiral".
+
+        Three names off two booleans, and the pairing is the point: "spiral angle
+        0" describes a straight gear and a Zerol one equally well, so a report
+        that only prints the angle cannot tell them apart. Shared by the terminal
+        report and the GUI status line so they cannot drift.
+        """
+        if not self.is_curved:
+            return "straight"
+        return "spiral" if abs(self.spiral_angle) > 1e-12 else "zerol"
+
+    @property
     def ratio(self) -> float:
         return self.z2 / self.z1
 
     @classmethod
-    def with_defaults(cls, module: float, z1: int, z2: int, **overrides):
+    def with_defaults(
+        cls, module: float, z1: int, z2: int, *, zerol: bool = False, **overrides
+    ):
         """Build a set with sensible face width / bore / hub for the given size.
 
         Face width follows the usual bevel limit of min(Ao/3, 10*m); the bore,
@@ -141,6 +176,14 @@ class BevelSetParams(JsonParams):
         on the same order as the gear's - a much smaller cutter swings the spiral
         angle wildly across the face, and a much larger one approaches a straight
         tooth laid at an angle.
+
+        `zerol=True` asks for a curved tooth at a zero mean spiral angle. It is a
+        **sizing hint and not a field** - it never reaches the constructor. All it
+        does is answer the `curved` question below the way a cutter radius would
+        have, which then fills the cutter radius in with Am; the set that comes
+        back reports `is_curved` on its own, off that radius, exactly as a set
+        built by naming the radius directly does. That is deliberate: there is
+        one definition of curved and it lives in `is_curved`.
         """
         # Ao needs the pitch angle, which needs the shaft angle - resolve it here
         # rather than importing geometry (which would be a circular import).
@@ -153,7 +196,8 @@ class BevelSetParams(JsonParams):
         # a straight one would hand it a face width the validator then complains
         # about.
         curved = (
-            abs(overrides.get("spiral_angle", 0.0)) > 1e-12
+            zerol
+            or abs(overrides.get("spiral_angle", 0.0)) > 1e-12
             or overrides.get("cutter_radius") is not None
         )
         cone_fraction = 0.30 if curved else 1.0 / 3.0
