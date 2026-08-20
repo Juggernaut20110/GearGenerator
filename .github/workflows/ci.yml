@@ -1,0 +1,148 @@
+name: CI
+
+# Windows runners throughout, and not for convenience. pywin32 is in
+# requirements.txt and has no Linux wheel, tests/test_internal_geometry.py
+# imports gears.sw.assembly_common directly, and the product only runs on
+# Windows anyway. On a Linux runner the suite would not so much fail as
+# quietly skip the parts that matter.
+#
+# Note for a private repo: Windows minutes bill at 2x. If that bites, move
+# `compiled-geometry` and `build` onto a `main`/tag/PR trigger and leave
+# `test` on every push - it is the fast one.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer worthless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  test:
+    name: 928 tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The python.org-style layout matters beyond the version number: it puts
+      # tcl/ beside the interpreter, which is where both tkinter and Nuitka's
+      # tk-inter plugin look for it. A Microsoft Store Python does not.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # The suite is already CI-safe: test_gui.py importorskips tkinter and
+      # gears.sw, and skips explicitly when Tk cannot open a display. On this
+      # runner none of those skips should trigger - so `-rs` is here to make it
+      # loud if one starts to, rather than letting coverage quietly drain away.
+      - run: python -m pytest -q -rs
+
+  compiled-geometry:
+    name: compiled arithmetic matches interpreted
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      # Nuitka's C object cache. Without it every run recompiles the CPython
+      # runtime from scratch, which is most of the wall clock here.
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Nuitka\Nuitka\Cache
+          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements-build.txt') }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ hashFiles('requirements-build.txt') }}-
+            nuitka-${{ runner.os }}-
+
+      - run: pip install -r requirements-build.txt
+
+      # The gate this workflow exists for. tests/ measures the source tree; the
+      # exe is a different artifact built from it, and nothing in the suite can
+      # see across that gap. This compiles the anchor sets and requires the
+      # reports to match the interpreted ones byte for byte - which is what
+      # would catch a Nuitka upgrade perturbing the floating-point work, a
+      # failure that would otherwise reach a user as a gear that will not mesh.
+      - run: python tools/probe_compiled_geometry.py --compare
+
+  build:
+    name: BevelClaude.exe
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Nuitka\Nuitka\Cache
+          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements-build.txt') }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ hashFiles('requirements-build.txt') }}-
+            nuitka-${{ runner.os }}-
+
+      - run: pip install -r requirements-build.txt
+
+      # MSVC is preinstalled on this image, so --assume-yes-for-downloads has
+      # nothing to download and the build is non-interactive as it stands.
+      - run: python package.py
+
+      # Nuitka reports success and writes nothing often enough to be worth one
+      # line of paranoia.
+      - name: Check the exe is really there
+        run: |
+          $exe = "build\BevelClaude.exe"
+          if (-not (Test-Path $exe)) { throw "$exe was not produced" }
+          "{0:N1} MB" -f ((Get-Item $exe).Length / 1MB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BevelClaude-${{ github.sha }}
+          path: build/BevelClaude.exe
+          if-no-files-found: error
+
+  release:
+    name: attach the exe to the tag
+    runs-on: ubuntu-latest
+    needs: [test, compiled-geometry, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: BevelClaude-${{ github.sha }}
+
+      # The artifact is unsigned, so say so where someone will read it rather
+      # than leaving SmartScreen to be the first they hear of it.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" BevelClaude.exe \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Standalone Windows build. Needs no Python.
+
+          SOLIDWORKS is required only for the Build button - the preview, the
+          report and the DXF export run without it.
+
+          This binary is unsigned, so SmartScreen will warn on first run."

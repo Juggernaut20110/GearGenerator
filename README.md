@@ -145,18 +145,27 @@ knowing.
 
 ### What was measured, and what is still Carl's to check
 
-Two probes were compiled and thrown away, because both questions are cheaper to
-settle against a compiled binary than to discover in the window:
+Two questions are cheaper to settle against a compiled binary than to discover
+in the window, and both were asked before shipping one:
 
 ```
 COM survives compilation   pythoncom313.dll and pywintypes313.dll are bundled
                            unasked; VARIANT construction, all five builders and
                            SwSession all resolve.  No SOLIDWORKS needed - the
                            DLL load happens at import
-geometry survives it       all six anchor sets' terminal reports, compiled
+geometry survives it       all seven anchor sets' terminal reports, compiled
                            against interpreted: byte-for-byte identical,
-                           396 lines
+                           451 lines
 ```
+
+The second is a standing check rather than a one-off, because the thing it
+guards against arrives with a dependency upgrade rather than with an edit:
+[tools/probe_compiled_geometry.py](tools/probe_compiled_geometry.py) `--compare`
+compiles itself, runs the binary and diffs it against the interpreted run.
+`tests/` measures the source tree and the exe is a different artifact built from
+it, so nothing in the suite can see across that gap. The first was a throwaway;
+the DLL either travels or the program cannot reach SOLIDWORKS at all, which is
+not a subtle failure.
 
 **`sys.frozen` is False under Nuitka**, which is worth knowing because it is the
 attribute everyone reaches for first. `__compiled__` is the global Nuitka
@@ -174,6 +183,36 @@ above everything above it.
 
 **The exe is unsigned**, so SmartScreen will warn on first run on any machine but
 the one that built it. That is a certificate, not a build fault.
+
+### Continuous integration
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs four jobs, three of
+them on `windows-latest`:
+
+```
+test                 928 tests                                    ~1 min
+compiled-geometry    the probe above, --compare                   ~2 min cached
+build                package.py, exe uploaded as an artifact      ~2 min cached
+release              on a v* tag, attaches the exe to the release
+```
+
+**The runner is Windows and not for convenience.** pywin32 has no Linux wheel,
+`tests/test_internal_geometry.py` imports `gears.sw.assembly_common` directly,
+and the product runs nowhere else. On a Linux runner the suite would not fail so
+much as quietly skip the parts that matter — which is also why the test job runs
+with `-rs`. The suite is already CI-safe, `importorskip`-ing tkinter and
+`gears.sw` and skipping explicitly when Tk cannot open a display; on this runner
+none of those should trigger, and `-rs` is what makes it loud if one starts to.
+
+Nuitka's C object cache is carried between runs, which is most of the wall clock
+in the two compiling jobs.
+
+**What CI cannot do is the whole of `sw/`.** There is no SOLIDWORKS on any
+runner, so the 4,584 lines under `gears/sw/` are untouched by all of this, as is
+the Build button inside the frozen exe. CI makes the division this README
+already describes explicit rather than changing it: everything pure-Python is
+gated automatically, and everything that touches a CAD seat is still Carl's by
+hand.
 
 ---
 
