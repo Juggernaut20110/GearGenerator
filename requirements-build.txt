@@ -1,0 +1,13 @@
+# Packaging only. These belong in .venv-build, never in .venv - the runtime
+# environment stays exactly what `requirements.txt` says it is, so that
+# `.venv\Scripts\python.exe -m pytest` keeps measuring the shipped tree and
+# nothing else.
+#
+#     C:\...\Python313\python.exe -m venv .venv-build
+#     .venv-build\Scripts\pip install -r requirements-build.txt
+#     .venv-build\Scripts\python.exe package.py
+
+nuitka>=2.5          # 2.5 is where Python 3.13 support landed; built with 4.1.3
+pywin32>=306         # compiled into the exe, so it has to be here at build time
+ordered-set          # Nuitka's own compile-time speedup, it asks for this by name
+zstandard            # compresses the onefile payload

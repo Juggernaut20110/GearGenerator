@@ -1212,9 +1212,20 @@ class App(ttk.Frame):
             SwSession = sw.SwSession
             build = getattr(sw, builder)
         except ImportError as exc:
+            # The remedy differs by how the program was started, and offering
+            # the wrong one is worse than offering none. From a checkout the
+            # user has a venv to install into; from the packaged exe pywin32
+            # is compiled in, so a missing one is a broken build and pointing
+            # at a venv sends them looking for a directory they do not have.
+            # `__compiled__` is the global Nuitka injects into every module it
+            # compiles - read out of `globals()` so the name is never resolved
+            # when running from source.
+            if "__compiled__" in globals():
+                remedy = "This is a packaging fault in BevelClaude.exe, not something to install."
+            else:
+                remedy = "Install it with: .venv\\Scripts\\pip install pywin32"
             self._build_queue.put(
-                ("error", [f"pywin32 is not available: {exc}",
-                           "Install it with: .venv\\Scripts\\pip install pywin32"])
+                ("error", [f"pywin32 is not available: {exc}", remedy])
             )
             return
 

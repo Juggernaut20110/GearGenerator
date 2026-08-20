@@ -85,6 +85,98 @@ which is gitignored along with all SOLIDWORKS file types.
 
 ---
 
+## Packaging
+
+`package.py` compiles the window into one `BevelClaude.exe` with Nuitka, for
+handing to someone who has no Python and no checkout.
+
+```
+python -m venv .venv-build
+.venv-build\Scripts\pip install -r requirements-build.txt
+.venv-build\Scripts\python.exe package.py            # build\BevelClaude.exe
+.venv-build\Scripts\python.exe package.py --debug    # console attached, .dist kept
+```
+
+**The interpreter is the build venv one, and that is the point of there being
+two.** Nuitka compiles with the interpreter it runs under and bundles that
+interpreter's stdlib and site packages, so the build environment is part of what
+ships. Keeping it out of `.venv` is what lets `.venv` stay exactly what
+`requirements.txt` says it is, so `python -m pytest` there keeps measuring the
+shipped tree and nothing else.
+
+Measured on this machine, Nuitka 4.1.3 / Python 3.13.7 / MSVC 14.3:
+
+```
+exe                7.6 MB      27.4 MB payload compressed to 28.4 %
+cold start         1.25 s      unpacks Tcl/Tk to the cache directory
+warm start         0.55 s      cache hit, no unpacking
+cache              26.1 MB     %LOCALAPPDATA%\Carl Rule\BevelClaude\1.0.0\
+build              ~2 min      from cold; clcache makes the second one faster
+```
+
+**Only the window is packaged.** It reaches all five builders through its Build
+button, and it is the better-exercised path — driving the builders from the GUI
+rather than from `tools/` is what found the four bugs recorded below.
+
+**The exe needs nothing from the machine it runs on until the Build button.**
+The geometry, the preview, the report and the DXF export are pure Python and
+travel whole. Building solids needs SOLIDWORKS installed there, exactly as it
+does from a checkout.
+
+### Why this tree freezes cleanly
+
+Three things that usually break a frozen Python program are absent here, and all
+three are consequences of decisions made for other reasons:
+
+* **There are no data files.** Nothing under `gears/` opens a bundled asset. The
+  only file reads are the user's own preset JSON, chosen from a dialog.
+* **Every import is static.** `sw/__init__.py` imports all five builders
+  eagerly, so the `getattr(sw, builder)` the GUI dispatches through resolves
+  against a module the compiler has already followed.
+* **The COM layer is late-binding only.** `session.py` uses `Dispatch` and never
+  `gencache`/`EnsureDispatch` — forced on it because `EnsureDispatch` cannot
+  introspect `ISldWorks`. A generated `gen_py` cache is the usual way a frozen
+  COM application dies, and this codebase never had one to lose.
+
+So the flag list in `package.py` carries no `--include-data-files` and no
+`--include-package`. If something turns up missing, add the flag *and the
+measurement that demanded it*; a speculative include hides the thing worth
+knowing.
+
+### What was measured, and what is still Carl's to check
+
+Two probes were compiled and thrown away, because both questions are cheaper to
+settle against a compiled binary than to discover in the window:
+
+```
+COM survives compilation   pythoncom313.dll and pywintypes313.dll are bundled
+                           unasked; VARIANT construction, all five builders and
+                           SwSession all resolve.  No SOLIDWORKS needed - the
+                           DLL load happens at import
+geometry survives it       all six anchor sets' terminal reports, compiled
+                           against interpreted: byte-for-byte identical,
+                           396 lines
+```
+
+**`sys.frozen` is False under Nuitka**, which is worth knowing because it is the
+attribute everyone reaches for first. `__compiled__` is the global Nuitka
+injects, and it is what `gui.py` reads to decide which remedy to offer when the
+COM import fails — a checkout has a venv to install pywin32 into and the exe does
+not, so offering the wrong one is worse than offering none.
+
+Also worth knowing when timing a launch: **onefile runs a bootstrap parent that
+spawns the real process**, and the window belongs to the child. Watching the
+parent for a window title waits forever.
+
+What no probe here settles is the Build button from inside the frozen exe
+against a live SOLIDWORKS. That is one for a hand on the machine, and it ranks
+above everything above it.
+
+**The exe is unsigned**, so SmartScreen will warn on first run on any machine but
+the one that built it. That is a certificate, not a build fault.
+
+---
+
 ## Layout
 
 ```

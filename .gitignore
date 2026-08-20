@@ -1,7 +1,12 @@
 .venv/
+.venv-build/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Nuitka
+build/
+dist/
 
 # SOLIDWORKS output and backups
 *.sldprt
