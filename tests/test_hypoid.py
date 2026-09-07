@@ -7,8 +7,10 @@ import pytest
 from gears.__main__ import main
 from gears.hypoid import preview
 from gears.hypoid.geometry import (
+    _cutter_trace,
     blank_outline,
     compute_set,
+    section_cone_bounds,
     section_cone_distances,
     tooth_space_section,
 )
@@ -138,6 +140,153 @@ def test_method_1_anchor_depths_and_angles_use_independent_equations():
     )
     assert method.wheel_face_apex_z == pytest.approx(geo.gear.face_apex_z, abs=1e-12)
     assert method.pinion_root_apex_z == pytest.approx(geo.pinion.root_apex_z, abs=1e-12)
+
+
+def test_method_1_anchor_stores_independent_longitudinal_face_boundaries():
+    geo = compute_set(ANCHOR)
+    pinion, gear = geo.pinion, geo.gear
+
+    assert pinion.tooth_face_inner_cone_distance == pytest.approx(57.6995, abs=0.002)
+    assert pinion.tooth_face_outer_cone_distance == pytest.approx(89.6097, abs=0.002)
+    assert gear.tooth_face_inner_cone_distance == pytest.approx(61.4680, abs=0.002)
+    assert gear.tooth_face_outer_cone_distance == pytest.approx(91.4680, abs=0.002)
+    assert pinion.tooth_face_width == pytest.approx(31.910, abs=0.002)
+    assert gear.tooth_face_width == pytest.approx(30.000, abs=1e-12)
+    assert pinion.tooth_face_width != pytest.approx(gear.tooth_face_width)
+
+    method = geo.method1
+    assert method.pinion_boundary_wheel_inner_cone_distance == pytest.approx(
+        60.9067, abs=0.002
+    )
+    assert method.pinion_boundary_wheel_outer_cone_distance == pytest.approx(
+        92.1631, abs=0.002
+    )
+    zeta_mp = abs(method.pinion_offset_angle_pitch)
+    expected_re21 = math.sqrt(
+        gear.cone_distance ** 2
+        + pinion.outer_face_width ** 2
+        + 2.0 * gear.cone_distance * pinion.outer_face_width * math.cos(zeta_mp)
+    )
+    expected_ri21 = math.sqrt(
+        gear.cone_distance ** 2
+        + pinion.inner_face_width ** 2
+        - 2.0 * gear.cone_distance * pinion.inner_face_width * math.cos(zeta_mp)
+    )
+    assert method.pinion_boundary_wheel_outer_cone_distance == pytest.approx(
+        expected_re21, abs=1e-12
+    )
+    assert method.pinion_boundary_wheel_inner_cone_distance == pytest.approx(
+        expected_ri21, abs=1e-12
+    )
+    wheel_trace = _cutter_trace(gear, geo)
+    assert pinion.outer_spiral_angle == pytest.approx(
+        wheel_trace.spiral_angle_at(expected_re21)
+        + math.asin(abs(geo.pitch_plane_offset) / expected_re21),
+        abs=1e-12,
+    )
+    assert pinion.inner_spiral_angle == pytest.approx(
+        wheel_trace.spiral_angle_at(expected_ri21)
+        + math.asin(abs(geo.pitch_plane_offset) / expected_ri21),
+        abs=1e-12,
+    )
+    assert math.degrees(pinion.inner_spiral_angle) == pytest.approx(44.881, abs=0.01)
+    assert math.degrees(pinion.outer_spiral_angle) == pytest.approx(57.545, abs=0.01)
+    assert math.degrees(gear.inner_spiral_angle) == pytest.approx(30.828, abs=0.01)
+    assert math.degrees(gear.outer_spiral_angle) == pytest.approx(47.676, abs=0.01)
+
+    for member in (pinion, gear):
+        assert member.tooth_face_inner_cone_distance == pytest.approx(
+            member.cone_distance - member.inner_face_width, abs=1e-12
+        )
+        assert member.tooth_face_outer_cone_distance == pytest.approx(
+            member.cone_distance + member.outer_face_width, abs=1e-12
+        )
+        trace = _cutter_trace(member, geo)
+        assert trace.mean_cone_dist == pytest.approx(member.cone_distance, abs=1e-12)
+        assert trace.spiral_angle_at(member.cone_distance) == pytest.approx(
+            member.mean_spiral_angle, abs=1e-12
+        )
+
+
+def test_longitudinal_face_limits_are_separate_from_loft_extensions():
+    geo = compute_set(ANCHOR)
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        bounds = section_cone_bounds(geo, name)
+        distances = section_cone_distances(geo, name)
+        assert bounds.calculation_point == pytest.approx(member.cone_distance, abs=1e-12)
+        assert bounds.tooth_face_inner == pytest.approx(
+            member.tooth_face_inner_cone_distance, abs=1e-12
+        )
+        assert bounds.tooth_face_outer == pytest.approx(
+            member.tooth_face_outer_cone_distance, abs=1e-12
+        )
+        assert bounds.tooth_face_inner <= bounds.calculation_point <= bounds.tooth_face_outer
+        assert distances[0] == pytest.approx(bounds.loft_inner, abs=1e-11)
+        assert distances[-1] == pytest.approx(bounds.loft_outer, abs=1e-11)
+        assert any(
+            value == pytest.approx(bounds.tooth_face_inner, abs=1e-11)
+            for value in distances
+        )
+        assert any(
+            value == pytest.approx(bounds.tooth_face_outer, abs=1e-11)
+            for value in distances
+        )
+        assert any(
+            value == pytest.approx(bounds.calculation_point, abs=1e-11)
+            for value in distances
+        )
+        assert bounds.is_loft_extension(distances[0]) or bounds.is_loft_extension(distances[-1])
+
+
+@pytest.mark.parametrize(
+    "offset,cutter_radius",
+    [(5.0, 40.0), (-10.0, 120.0)],
+)
+def test_longitudinal_boundaries_follow_method_1_for_other_offsets_and_cutters(
+    offset, cutter_radius
+):
+    params = HypoidSetParams(**{
+        **ANCHOR.__dict__,
+        "offset": offset,
+        "cutter_radius": cutter_radius,
+    })
+    geo = compute_set(params)
+    assert geo.pinion.tooth_face_width != pytest.approx(geo.gear.tooth_face_width)
+    assert geo.pinion.tooth_face_width == pytest.approx(
+        geo.pinion.tooth_face_outer_cone_distance
+        - geo.pinion.tooth_face_inner_cone_distance,
+        abs=1e-12,
+    )
+    assert geo.gear.tooth_face_width == pytest.approx(
+        geo.gear.tooth_face_outer_cone_distance
+        - geo.gear.tooth_face_inner_cone_distance,
+        abs=1e-12,
+    )
+    for member in (geo.pinion, geo.gear):
+        trace = _cutter_trace(member, geo)
+        assert trace.cutter_radius == pytest.approx(cutter_radius, abs=1e-12)
+        assert trace.mean_cone_dist == pytest.approx(member.cone_distance, abs=1e-12)
+        bounds = section_cone_bounds(geo, member.name)
+        assert bounds.calculation_point == pytest.approx(member.cone_distance, abs=1e-12)
+        assert bounds.tooth_face_inner <= bounds.calculation_point <= bounds.tooth_face_outer
+
+
+def test_cutter_radius_changes_longitudinal_geometry_at_fixed_offset():
+    smaller = compute_set(
+        HypoidSetParams(**{**ANCHOR.__dict__, "cutter_radius": 40.0})
+    )
+    larger = compute_set(
+        HypoidSetParams(**{**ANCHOR.__dict__, "cutter_radius": 120.0})
+    )
+    for name in ("pinion", "gear"):
+        small, large = smaller.member(name), larger.member(name)
+        assert small.tooth_face_inner_cone_distance != pytest.approx(
+            large.tooth_face_inner_cone_distance
+        )
+        assert small.tooth_face_outer_cone_distance != pytest.approx(
+            large.tooth_face_outer_cone_distance
+        )
 
 
 def test_method_1_anchor_outer_transverse_backlash_is_converted_once():

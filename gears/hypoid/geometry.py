@@ -34,7 +34,11 @@ class HypoidMemberGeometry:
     pitch_radius: float
     cone_distance: float
     outer_cone_distance: float
+    tooth_face_inner_cone_distance: float
+    tooth_face_outer_cone_distance: float
     mean_spiral_angle: float
+    inner_spiral_angle: float
+    outer_spiral_angle: float
     generated_drive_normal_pressure_angle: float
     generated_coast_normal_pressure_angle: float
     addendum: float
@@ -47,6 +51,7 @@ class HypoidMemberGeometry:
     face_angle: float
     root_angle: float
     face_width: float
+    tooth_face_width: float
     outer_face_width: float
     inner_face_width: float
     inner_cone_distance: float
@@ -208,6 +213,12 @@ class HypoidMethod1Geometry:
     wheel_inner_face_width: float | None = None
     pinion_outer_face_width: float | None = None
     pinion_inner_face_width: float | None = None
+    pinion_boundary_wheel_outer_cone_distance: float | None = None
+    pinion_boundary_wheel_inner_cone_distance: float | None = None
+    pinion_inner_spiral_angle: float | None = None
+    pinion_outer_spiral_angle: float | None = None
+    wheel_inner_spiral_angle: float | None = None
+    wheel_outer_spiral_angle: float | None = None
     crossing_to_wheel_mean_z: float | None = None
     crossing_to_pinion_mean_z: float | None = None
     wheel_pitch_apex_z: float | None = None
@@ -258,6 +269,41 @@ class HypoidSection:
             ]
             for key, points in self.segments.items()
         }
+
+
+@dataclass(frozen=True)
+class HypoidSectionBounds:
+    """Actual Method 1 face limits and separate loft-only extensions.
+
+    ``tooth_face_*`` are physical pitch-cone boundaries.  ``loft_*`` are
+    artificial terminal sections used only to let a SOLIDWORKS cut pass clear
+    of the revolved blank.  The calculation point is retained explicitly; it
+    is not inferred as the midpoint of either interval.
+    """
+
+    calculation_point: float
+    tooth_face_inner: float
+    tooth_face_outer: float
+    loft_inner: float
+    loft_outer: float
+
+    @property
+    def tooth_face_width(self) -> float:
+        return self.tooth_face_outer - self.tooth_face_inner
+
+    @property
+    def inner_overshoot(self) -> float:
+        return self.tooth_face_inner - self.loft_inner
+
+    @property
+    def outer_overshoot(self) -> float:
+        return self.loft_outer - self.tooth_face_outer
+
+    def is_loft_extension(self, cone_dist: float, tolerance: float = 1e-9) -> bool:
+        return (
+            cone_dist < self.tooth_face_inner - tolerance
+            or cone_dist > self.tooth_face_outer + tolerance
+        )
 
 
 @dataclass(frozen=True)
@@ -887,6 +933,8 @@ def _member(
     thickness_modification_coefficient,
     generated_drive_normal_pressure_angle,
     generated_coast_normal_pressure_angle,
+    inner_spiral_angle,
+    outer_spiral_angle,
 ):
     """Build one member from the ISO Method 1 blank dimensions.
 
@@ -993,7 +1041,11 @@ def _member(
         pitch_radius=radius,
         cone_distance=cone_distance,
         outer_cone_distance=outer_cone_distance,
+        tooth_face_inner_cone_distance=inner_cone_distance,
+        tooth_face_outer_cone_distance=outer_cone_distance,
         mean_spiral_angle=spiral,
+        inner_spiral_angle=inner_spiral_angle,
+        outer_spiral_angle=outer_spiral_angle,
         generated_drive_normal_pressure_angle=(
             generated_drive_normal_pressure_angle
         ),
@@ -1010,6 +1062,7 @@ def _member(
         face_angle=face_angle,
         root_angle=root_angle,
         face_width=outer_face_width + inner_face_width,
+        tooth_face_width=outer_face_width + inner_face_width,
         outer_face_width=outer_face_width,
         inner_face_width=inner_face_width,
         inner_cone_distance=inner_cone_distance,
@@ -1053,6 +1106,90 @@ def _member(
         tredgold_outer_root_radius=(
             virtual_root * outer_cone_distance / cone_distance * cos_delta
         ),
+    )
+
+
+@dataclass(frozen=True)
+class _Method1BoundarySpirals:
+    pinion_boundary_wheel_outer: float
+    pinion_boundary_wheel_inner: float
+    pinion_inner: float
+    pinion_outer: float
+    wheel_inner: float
+    wheel_outer: float
+
+
+def _method1_boundary_spirals(
+    p: HypoidSetParams,
+    *,
+    R1: float,
+    R2: float,
+    zeta_mp: float,
+    pitch_plane_offset: float,
+    beta1: float,
+    beta2: float,
+    be1: float,
+    bi1: float,
+    be2: float,
+    bi2: float,
+) -> _Method1BoundarySpirals:
+    """Evaluate the Method 1 face-milling spiral geometry at both faces.
+
+    The wheel cone distances corresponding to the pinion boundaries are not
+    the wheel's own ``Re2``/``Ri2``.  ISO 23509 formulas 174/175 obtain them
+    from the pinion face widths and the mean pitch-plane offset angle.  The
+    cutter arc is then evaluated at those corresponding wheel distances
+    (formulas 183/184), and the local pinion offset angle is added to obtain
+    the pinion boundary spiral angles (formulas 185-187).
+    """
+    cos_zeta = math.cos(abs(zeta_mp))
+    Re21 = math.sqrt(R2 * R2 + be1 * be1 + 2.0 * R2 * be1 * cos_zeta)
+    Ri21 = math.sqrt(R2 * R2 + bi1 * bi1 - 2.0 * R2 * bi1 * cos_zeta)
+    if Re21 <= 0.0 or Ri21 <= 0.0:
+        raise ValueError("Method 1 pinion boundary cone distance is not positive")
+
+    hand_sign = 1.0 if p.hand == "right" else -1.0
+
+    def trace_angle(mean_radius: float, mean_angle: float, radius: float) -> float:
+        if p.cutter_radius is None:
+            return mean_angle
+        trace = CrownTrace.for_set(
+            abs(mean_angle), p.cutter_radius, mean_radius, sign=hand_sign
+        )
+        if not trace.reaches(radius, radius):
+            raise ValueError(
+                "cutter radius does not reach a Method 1 longitudinal boundary"
+            )
+        return trace.spiral_angle_at(radius)
+
+    wheel_inner = trace_angle(R2, beta2, R2 - bi2)
+    wheel_outer = trace_angle(R2, beta2, R2 + be2)
+    wheel_at_pinion_inner = trace_angle(R2, beta2, Ri21)
+    wheel_at_pinion_outer = trace_angle(R2, beta2, Re21)
+    if abs(pitch_plane_offset) <= 1e-12:
+        pinion_inner = trace_angle(R1, beta1, R1 - bi1)
+        pinion_outer = trace_angle(R1, beta1, R1 + be1)
+    else:
+        inner_offset_ratio = abs(pitch_plane_offset) / Ri21
+        outer_offset_ratio = abs(pitch_plane_offset) / Re21
+        if inner_offset_ratio > 1.0 or outer_offset_ratio > 1.0:
+            raise ValueError(
+                "Method 1 pitch-plane offset exceeds a longitudinal boundary"
+            )
+        pinion_inner = wheel_at_pinion_inner + hand_sign * math.asin(
+            inner_offset_ratio
+        )
+        pinion_outer = wheel_at_pinion_outer + hand_sign * math.asin(
+            outer_offset_ratio
+        )
+
+    return _Method1BoundarySpirals(
+        pinion_boundary_wheel_outer=Re21,
+        pinion_boundary_wheel_inner=Ri21,
+        pinion_inner=pinion_inner,
+        pinion_outer=pinion_outer,
+        wheel_inner=wheel_inner,
+        wheel_outer=wheel_outer,
     )
 
 
@@ -1212,6 +1349,20 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
     if Ri1 <= 0.0:
         raise ValueError("Method 1 pinion inner cone distance is not positive")
 
+    boundary_spirals = _method1_boundary_spirals(
+        p,
+        R1=R1,
+        R2=R2,
+        zeta_mp=method1.pinion_offset_angle_pitch,
+        pitch_plane_offset=method1.pitch_plane_offset,
+        beta1=beta1,
+        beta2=beta2,
+        be1=be1,
+        bi1=bi1,
+        be2=be2,
+        bi2=bi2,
+    )
+
     method1 = replace(
         method1,
         wheel_face_width_factor=cbe2,
@@ -1219,6 +1370,16 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         wheel_inner_face_width=bi2,
         pinion_outer_face_width=be1,
         pinion_inner_face_width=bi1,
+        pinion_boundary_wheel_outer_cone_distance=(
+            boundary_spirals.pinion_boundary_wheel_outer
+        ),
+        pinion_boundary_wheel_inner_cone_distance=(
+            boundary_spirals.pinion_boundary_wheel_inner
+        ),
+        pinion_inner_spiral_angle=boundary_spirals.pinion_inner,
+        pinion_outer_spiral_angle=boundary_spirals.pinion_outer,
+        wheel_inner_spiral_angle=boundary_spirals.wheel_inner,
+        wheel_outer_spiral_angle=boundary_spirals.wheel_outer,
         crossing_to_wheel_mean_z=tzm2,
         crossing_to_pinion_mean_z=tzm1,
         wheel_pitch_apex_z=tz2,
@@ -1258,6 +1419,8 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         generated_coast_normal_pressure_angle=(
             method1.generated_coast_normal_pressure_angle
         ),
+        inner_spiral_angle=boundary_spirals.pinion_inner,
+        outer_spiral_angle=boundary_spirals.pinion_outer,
     )
     gear = _member(
         "gear", p.z2, d2, r2, R2, beta2, p, m_n,
@@ -1285,6 +1448,8 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         generated_coast_normal_pressure_angle=(
             method1.generated_coast_normal_pressure_angle
         ),
+        inner_spiral_angle=boundary_spirals.wheel_inner,
+        outer_spiral_angle=boundary_spirals.wheel_outer,
     )
     return HypoidSetGeometry(
         params=p,
@@ -1369,13 +1534,13 @@ def _phase_tangent(member: HypoidMemberGeometry, geo: HypoidSetGeometry) -> floa
 def _cutter_trace(
     member: HypoidMemberGeometry, geo: HypoidSetGeometry
 ) -> CrownTrace | None:
-    """Return the local circular cutter trace used for a member's phase.
+    """Return the circular cutter trace in the member's own mean geometry.
 
-    The hypoid contact calculation supplies the first-order phase tangent at
-    the mean cone distance.  A finite cutter radius supplies the curvature
-    away from that point, just as it does for a bevel pair.  The wheel uses
-    the tangent resolved by _gear_section_phase_tangent so the two traces
-    still agree at mean contact.
+    The cutter radius is a lengthwise curvature radius, so each member's arc
+    is placed at that member's Method 1 calculation point and mean spiral
+    angle.  The skew-axis contact calculation may still supply a first-order
+    phase scale, but it must not replace the physical mean geometry used to
+    determine the arc curvature.
     """
     radius = geo.params.cutter_radius
     if radius is None:
@@ -1383,9 +1548,10 @@ def _cutter_trace(
     if radius <= 0.0:
         raise ValueError("cutter radius must be greater than zero")
     return CrownTrace.for_set(
-        math.atan(abs(_phase_tangent(member, geo))),
+        abs(member.mean_spiral_angle),
         radius,
         member.cone_distance,
+        sign=1.0 if geo.params.hand == "right" else -1.0,
     )
 
 
@@ -1400,14 +1566,22 @@ def _phase(member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometr
     if trace is None:
         phase_curve = span * phase_tangent / max(cone_dist, 1e-9)
     else:
-        if abs(geo.params.spiral_angle) > 1e-12:
-            trace_sign = math.copysign(1.0, phase_tangent)
+        mean_tangent = math.tan(member.mean_spiral_angle)
+        if abs(mean_tangent) > 1e-12:
+            # The resolved skew-frame tangent is a first-order placement
+            # correction.  Apply its dimensionless scale to the physical
+            # cutter arc; do not use it to relocate the arc itself.
+            phase_scale = phase_tangent / mean_tangent
+        else:
+            phase_scale = 1.0
+        if abs(member.mean_spiral_angle) > 1e-12:
+            trace_sign = math.copysign(1.0, member.mean_spiral_angle)
         else:
             # At zero mean spiral the tangent has no sign.  The hand still
             # chooses which side of the circular cutter arc the Zerol trace
             # bends toward.
             trace_sign = 1.0 if geo.params.hand == "right" else -1.0
-        phase_curve = -trace_sign * trace.theta_at(cone_dist)
+        phase_curve = -trace_sign * trace.theta_at(cone_dist) * phase_scale
     return mate_sign * phase_curve
 
 
@@ -1633,7 +1807,15 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     )
 
 
-def section_cone_distances(geo: HypoidSetGeometry, member: str, count: int = 8) -> list[float]:
+def _section_clearance_bounds(
+    geo: HypoidSetGeometry, member: str
+) -> tuple[float, float]:
+    """Find terminal loft distances beyond the actual Method 1 tooth face.
+
+    The search is performed from the physical face limits, then bisected.  A
+    fixed face-width overshoot is not valid for the two members because their
+    Method 1 face widths, tooth depths, and cone apex locations differ.
+    """
     m = geo.member(member)
     p = geo.params
     outline = blank_outline(geo, member)
@@ -1641,42 +1823,128 @@ def section_cone_distances(geo: HypoidSetGeometry, member: str, count: int = 8) 
     i_back = 4 if p.min_root_thickness > 0.0 else 3
     z_back = outline[i_back][1]
     margin = max(0.1, 0.1 * p.module)
-    step = max(p.module, p.face_width / 8.0)
+    step = max(p.module, m.tooth_face_width / 8.0)
 
-    # A cut loft is most reliable when both terminal profiles are wholly in
-    # free space.  Walk from the actual Method 1 boundaries just far enough to
-    # clear the blank planes; the pinion and wheel no longer share these
-    # distances.
-    lo = m.inner_cone_distance
-    for _ in range(100):
-        inner = tooth_space_section(geo, member, lo)
-        if max(z for _, _, z in inner.loop_3d()) < z_front - margin:
-            break
-        lo -= step
-        if lo <= 0.0:
-            raise ValueError(f"could not clear the {member} hypoid blank front face")
+    def clears_front(cone_dist: float) -> bool:
+        section = tooth_space_section(geo, member, cone_dist)
+        return max(z for _, _, z in section.loop_3d()) < z_front - margin
+
+    def clears_back(cone_dist: float) -> bool:
+        section = tooth_space_section(geo, member, cone_dist)
+        return min(z for _, _, z in section.loop_3d()) > z_back + margin
+
+    face_inner = m.tooth_face_inner_cone_distance
+    face_outer = m.tooth_face_outer_cone_distance
+
+    if clears_front(face_inner):
+        loft_inner = face_inner
     else:
-        raise ValueError(f"could not clear the {member} hypoid blank front face")
+        hi = face_inner
+        lo = hi - step
+        for _ in range(100):
+            if lo <= 0.0:
+                raise ValueError(
+                    f"could not clear the {member} hypoid blank front face"
+                )
+            if clears_front(lo):
+                break
+            hi, lo = lo, lo - step
+        else:
+            raise ValueError(
+                f"could not clear the {member} hypoid blank front face"
+            )
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if clears_front(mid):
+                lo = mid
+            else:
+                hi = mid
+        loft_inner = lo
 
-    hi = m.outer_cone_distance
-    for _ in range(100):
-        outer = tooth_space_section(geo, member, hi)
-        if min(z for _, _, z in outer.loop_3d()) > z_back + margin:
-            break
-        hi += step
+    if clears_back(face_outer):
+        loft_outer = face_outer
     else:
-        raise ValueError(f"could not clear the {member} hypoid blank back face")
+        lo = face_outer
+        hi = lo + step
+        for _ in range(100):
+            if clears_back(hi):
+                break
+            lo, hi = hi, hi + step
+        else:
+            raise ValueError(
+                f"could not clear the {member} hypoid blank back face"
+            )
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if clears_back(mid):
+                hi = mid
+            else:
+                lo = mid
+        loft_outer = hi
 
-    return [lo + (hi - lo) * i / max(count - 1, 1) for i in range(max(2, count))]
+    return loft_inner, loft_outer
+
+
+def section_cone_bounds(
+    geo: HypoidSetGeometry, member: str
+) -> HypoidSectionBounds:
+    """Return physical Method 1 face limits plus loft-only extensions."""
+    m = geo.member(member)
+    loft_inner, loft_outer = _section_clearance_bounds(geo, member)
+    return HypoidSectionBounds(
+        calculation_point=m.cone_distance,
+        tooth_face_inner=m.tooth_face_inner_cone_distance,
+        tooth_face_outer=m.tooth_face_outer_cone_distance,
+        loft_inner=loft_inner,
+        loft_outer=loft_outer,
+    )
+
+
+def section_cone_distances(
+    geo: HypoidSetGeometry, member: str, count: int = 8
+) -> list[float]:
+    """Return loft profiles, including marked-by-range terminal extensions.
+
+    The first and last values are outside the physical face when clearance is
+    required.  The actual inner/outer face limits and the Method 1 calculation
+    point are inserted explicitly into the profile list so they cannot be lost
+    by an arithmetic interpolation of the extension interval.
+    """
+    bounds = section_cone_bounds(geo, member)
+    n = max(2, count)
+    distances = [
+        bounds.loft_inner
+        + (bounds.loft_outer - bounds.loft_inner) * i / max(n - 1, 1)
+        for i in range(n)
+    ]
+    distances.extend(
+        value
+        for value in (
+            bounds.tooth_face_inner,
+            bounds.calculation_point,
+            bounds.tooth_face_outer,
+        )
+        if bounds.loft_inner < value < bounds.loft_outer
+    )
+    result: list[float] = []
+    for value in sorted(distances):
+        if not result or abs(value - result[-1]) > 1e-12:
+            result.append(value)
+    return result
 
 
 def blank_outline(geo: HypoidSetGeometry, member: str) -> list[tuple[float, float]]:
     m = geo.member(member)
     p = geo.params
     bore = p.bore / 2.0 if member == "pinion" else max(0.5, p.bore / 2.0)
-    # These are physical Method 1 points.  The Tredgold developed radii used
-    # for the approximate tooth section are intentionally not used to size the
-    # revolved blank.
+    # These are physical Method 1 points between the stored tooth-face cone
+    # limits.  The Tredgold developed radii used for the approximate tooth
+    # section are intentionally not used to size the revolved blank.
+    if (
+        m.tooth_face_inner_cone_distance <= 0.0
+        or m.tooth_face_outer_cone_distance <= m.tooth_face_inner_cone_distance
+    ):
+        raise ValueError(f"{member} Method 1 tooth-face boundaries are invalid")
     z_front = m.inner_tip_z
     z_crown = m.outer_tip_z
     z_root = m.outer_root_z
@@ -1701,8 +1969,13 @@ def blank_outline(geo: HypoidSetGeometry, member: str) -> list[tuple[float, floa
 def section_count(geo: HypoidSetGeometry, member: str) -> int:
     m = geo.member(member)
     sag = max(0.01, 0.02 * geo.params.module)
-    inner = m.inner_cone_distance
-    outer = m.outer_cone_distance
+    bounds = section_cone_bounds(geo, member)
+    inner = bounds.loft_inner
+    outer = bounds.loft_outer
     twist = abs(_phase(m, outer, geo) - _phase(m, inner, geo))
     step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - sag / max(m.tip_r, 1e-9))))
-    return max(2, math.ceil(twist / max(step, 1e-9)) + 1)
+    minimum = max(2, math.ceil(twist / max(step, 1e-9)) + 1)
+    # The mandatory physical face limits and Method 1 calculation point may
+    # add profiles to the uniform extension sweep.  Report the count that the
+    # section sampler will actually return, not only the sagitta estimate.
+    return len(section_cone_distances(geo, member, minimum))
