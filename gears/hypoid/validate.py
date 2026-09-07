@@ -48,6 +48,11 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.error("spiral_angle", f"must be between -{MAX_SPIRAL_ANGLE} and {MAX_SPIRAL_ANGLE} degrees")
     if p.cutter_radius is not None and p.cutter_radius <= 0:
         result.error("cutter_radius", "must be greater than zero")
+    if abs(p.offset) > 0.0 and p.cutter_radius is None:
+        result.error(
+            "cutter_radius",
+            "is required for non-zero-offset Method 1 curvature closure",
+        )
     if abs(p.offset) > MAX_OFFSET_FRACTION * p.wheel_outer_diameter:
         result.error("offset", f"must not exceed {MAX_OFFSET_FRACTION:.0%} of the wheel outer diameter")
     if result.errors:
@@ -56,7 +61,13 @@ def validate(p: HypoidSetParams) -> ValidationResult:
     try:
         geo = compute_set(p)
     except Exception as exc:
-        result.error("geometry", str(exc))
+        field = (
+            "cutter_radius"
+            if p.cutter_radius is not None
+            and "Method 1 curvature" in str(exc)
+            else "geometry"
+        )
+        result.error(field, str(exc))
         return result
 
     for member in (geo.pinion, geo.gear):

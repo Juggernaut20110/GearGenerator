@@ -23,7 +23,10 @@ Point3 = tuple[float, float, float]
 WORKING_DEPTH_FACTOR = 2.0
 CLEARANCE_FACTOR = 0.125
 MAX_ITERATIONS = 80
-SOLVER_TOLERANCE = 2e-10
+# ISO 23509 Method 1 formula 11 uses this factor only for the preliminary
+# wheel-angle estimate; the final result is set by the curvature closure.
+METHOD1_INITIAL_FACTOR = 1.2
+METHOD1_CURVATURE_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,49 @@ class HypoidMemberGeometry:
 
 
 @dataclass(frozen=True)
+class HypoidMethod1Geometry:
+    """Published Method 1 pitch-cone iteration results.
+
+    The ISO equations use positive magnitudes for the offset geometry.  The
+    public result restores the sign of the requested offset to the offset
+    angles and pitch-plane offset, while the pitch angles and curvature
+    quantities remain invariant under an offset sign reversal.
+    """
+
+    gear_ratio: float
+    desired_pinion_spiral_angle: float
+    shaft_angle_departure: float
+    approximate_wheel_pitch_angle: float
+    approximate_wheel_mean_radius: float
+    approximate_pinion_offset_angle: float
+    approximate_dimension_factor: float
+    approximate_pinion_mean_radius: float
+    wheel_offset_angle_axial: float
+    intermediate_pinion_offset_angle_axial: float
+    intermediate_pinion_pitch_angle: float
+    intermediate_pinion_offset_angle_pitch: float
+    intermediate_pinion_spiral_angle: float
+    dimension_factor_increment: float
+    pinion_mean_radius_increment: float
+    pinion_offset_angle_axial: float
+    pinion_offset_angle_pitch: float
+    pinion_spiral_angle: float
+    wheel_spiral_angle: float
+    pinion_pitch_angle: float
+    wheel_pitch_angle: float
+    pinion_mean_radius: float
+    wheel_mean_radius: float
+    pinion_mean_cone_distance: float
+    wheel_mean_cone_distance: float
+    pitch_plane_offset: float
+    limit_pressure_angle: float
+    limit_radius_of_curvature: float | None
+    mean_tooth_curvature: float | None
+    curvature_residual: float | None
+    iterations: int
+
+
+@dataclass(frozen=True)
 class HypoidSection:
     member: str
     cone_dist: float
@@ -102,6 +148,7 @@ class HypoidSetGeometry:
     mean_normal_module: float
     offset_angle: float
     pitch_plane_offset: float
+    method1: HypoidMethod1Geometry
     pinion: HypoidMemberGeometry
     gear: HypoidMemberGeometry
 
@@ -179,98 +226,368 @@ def contact_azimuths(geo: HypoidSetGeometry) -> tuple[float, float]:
     return theta1, theta2
 
 
-def _solve_linear3(matrix, vector):
-    """Small Gaussian solver used instead of bringing in a numeric dependency."""
-    a = [list(row) + [value] for row, value in zip(matrix, vector)]
-    for i in range(3):
-        pivot = max(range(i, 3), key=lambda row: abs(a[row][i]))
-        if abs(a[pivot][i]) < 1e-14:
-            raise ValueError("singular hypoid pitch-cone system")
-        a[i], a[pivot] = a[pivot], a[i]
-        scale = a[i][i]
-        for j in range(i, 4):
-            a[i][j] /= scale
-        for row in range(3):
-            if row == i:
-                continue
-            scale = a[row][i]
-            for j in range(i, 4):
-                a[row][j] -= scale * a[i][j]
-    return [a[i][3] for i in range(3)]
+def _checked_asin(value: float, label: str) -> float:
+    """Return asin(value), rejecting geometrically impossible values.
+
+    The solver never clamps an out-of-range design into a result.
+    """
+    if not math.isfinite(value) or abs(value) > 1.0:
+        raise ValueError(f"hypoid Method 1 {label} is outside asin domain: {value!r}")
+    return math.asin(value)
 
 
-def _pitch_solution(p: HypoidSetParams) -> tuple[float, float, float, float, float]:
-    """Solve the three Method 1 macro relations.
+def _checked_external_angle(numerator: float, denominator: float, label: str) -> float:
+    angle = math.atan2(numerator, denominator)
+    if not 0.0 < angle < math.pi / 2.0:
+        raise ValueError(
+            f"hypoid Method 1 {label} is outside the external-pair range: "
+            f"{math.degrees(angle):.6g} degrees"
+        )
+    return angle
 
-    The public offset is the shaft-to-shaft common-normal distance.  Method 1
-    reports the pitch-plane offset, which is slightly larger; the conversion is
-    solved together with the two pitch angles and the pinion offset angle.
+
+def _checked_tangent_angle(tangent: float, label: str) -> float:
+    if not math.isfinite(tangent):
+        raise ValueError(f"hypoid Method 1 {label} is not finite")
+    return _checked_external_angle(tangent, 1.0, label)
+
+
+@dataclass(frozen=True)
+class _Method1Trial:
+    wheel_offset_angle_axial: float
+    intermediate_pinion_offset_angle_axial: float
+    intermediate_pinion_pitch_angle: float
+    intermediate_pinion_offset_angle_pitch: float
+    intermediate_pinion_spiral_angle: float
+    dimension_factor_increment: float
+    pinion_mean_radius_increment: float
+    pinion_offset_angle_axial: float
+    pinion_offset_angle_pitch: float
+    pinion_spiral_angle: float
+    wheel_spiral_angle: float
+    pinion_pitch_angle: float
+    wheel_pitch_angle: float
+    pinion_mean_radius: float
+    wheel_mean_radius: float
+    pinion_mean_cone_distance: float
+    wheel_mean_cone_distance: float
+    limit_pressure_angle: float
+    limit_radius_of_curvature: float
+
+
+def _method1_trial(
+    p: HypoidSetParams,
+    *,
+    offset: float,
+    delta_sigma: float,
+    desired_beta: float,
+    approximate_dimension_factor: float,
+    approximate_pinion_radius: float,
+    wheel_mean_radius: float,
+    eta: float,
+) -> _Method1Trial:
+    """Evaluate ISO 23509 Method 1 formulas 16 through 33 at ``eta``."""
+    ratio = p.ratio
+
+    intermediate_offset = _checked_asin(
+        (offset - approximate_pinion_radius * math.sin(eta)) / wheel_mean_radius,
+        "intermediate pinion axial offset angle",
+    )
+    intermediate_pitch = _checked_tangent_angle(
+        math.sin(eta)
+        / (math.tan(intermediate_offset) * math.cos(delta_sigma))
+        + math.tan(delta_sigma) * math.cos(eta),
+        "intermediate pinion pitch angle",
+    )
+    intermediate_pitch_offset = _checked_asin(
+        math.sin(intermediate_offset) * math.cos(delta_sigma)
+        / math.cos(intermediate_pitch),
+        "intermediate pinion pitch-plane offset angle",
+    )
+    intermediate_beta = math.atan2(
+        approximate_dimension_factor - math.cos(intermediate_pitch_offset),
+        math.sin(intermediate_pitch_offset),
+    )
+    dimension_increment = math.sin(intermediate_pitch_offset) * (
+        math.tan(desired_beta) - math.tan(intermediate_beta)
+    )
+    radius_increment = wheel_mean_radius * dimension_increment / ratio
+    pinion_offset = _checked_asin(
+        math.sin(intermediate_offset)
+        - radius_increment / wheel_mean_radius * math.sin(eta),
+        "pinion axial offset angle",
+    )
+    pinion_pitch = _checked_tangent_angle(
+        math.sin(eta)
+        / (math.tan(pinion_offset) * math.cos(delta_sigma))
+        + math.tan(delta_sigma) * math.cos(eta),
+        "pinion pitch angle",
+    )
+    pinion_pitch_offset = _checked_asin(
+        math.sin(pinion_offset) * math.cos(delta_sigma)
+        / math.cos(pinion_pitch),
+        "pinion pitch-plane offset angle",
+    )
+    pinion_beta = math.atan2(
+        approximate_dimension_factor + dimension_increment
+        - math.cos(pinion_pitch_offset),
+        math.sin(pinion_pitch_offset),
+    )
+    wheel_beta = pinion_beta - pinion_pitch_offset
+    wheel_pitch = _checked_tangent_angle(
+        math.sin(pinion_offset)
+        / (math.tan(eta) * math.cos(delta_sigma))
+        + math.cos(pinion_offset) * math.tan(delta_sigma),
+        "wheel pitch angle",
+    )
+    pinion_radius = approximate_pinion_radius + radius_increment
+    if pinion_radius <= 0.0:
+        raise ValueError("hypoid Method 1 pinion mean pitch radius is not positive")
+    pinion_cone = pinion_radius / math.sin(pinion_pitch)
+    wheel_cone = wheel_mean_radius / math.sin(wheel_pitch)
+    limit_pressure = math.atan(
+        -math.tan(pinion_pitch) * math.tan(wheel_pitch)
+        * (
+            pinion_cone * math.sin(pinion_beta)
+            - wheel_cone * math.sin(wheel_beta)
+        )
+        / (
+            math.cos(pinion_pitch_offset)
+            * (
+                pinion_cone * math.tan(pinion_pitch)
+                + wheel_cone * math.tan(wheel_pitch)
+            )
+        )
+    )
+    denominator = (
+        -math.tan(limit_pressure)
+        * (
+            math.tan(pinion_beta) / (pinion_cone * math.tan(pinion_pitch))
+            + math.tan(wheel_beta) / (wheel_cone * math.tan(wheel_pitch))
+        )
+        + 1.0 / (pinion_cone * math.cos(pinion_beta))
+        - 1.0 / (wheel_cone * math.cos(wheel_beta))
+    )
+    if denominator == 0.0:
+        raise ValueError("hypoid Method 1 curvature equation is singular")
+    limit_radius = (
+        (1.0 / math.cos(limit_pressure))
+        * (math.tan(pinion_beta) - math.tan(wheel_beta))
+        / denominator
+    )
+    if not math.isfinite(limit_radius) or limit_radius <= 0.0:
+        raise ValueError("hypoid Method 1 limit radius of curvature is invalid")
+    return _Method1Trial(
+        wheel_offset_angle_axial=eta,
+        intermediate_pinion_offset_angle_axial=intermediate_offset,
+        intermediate_pinion_pitch_angle=intermediate_pitch,
+        intermediate_pinion_offset_angle_pitch=intermediate_pitch_offset,
+        intermediate_pinion_spiral_angle=intermediate_beta,
+        dimension_factor_increment=dimension_increment,
+        pinion_mean_radius_increment=radius_increment,
+        pinion_offset_angle_axial=pinion_offset,
+        pinion_offset_angle_pitch=pinion_pitch_offset,
+        pinion_spiral_angle=pinion_beta,
+        wheel_spiral_angle=wheel_beta,
+        pinion_pitch_angle=pinion_pitch,
+        wheel_pitch_angle=wheel_pitch,
+        pinion_mean_radius=pinion_radius,
+        wheel_mean_radius=wheel_mean_radius,
+        pinion_mean_cone_distance=pinion_cone,
+        wheel_mean_cone_distance=wheel_cone,
+        limit_pressure_angle=limit_pressure,
+        limit_radius_of_curvature=limit_radius,
+    )
+
+
+def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
+    """Solve the ISO 23509 Method 1 pitch-cone and curvature closure.
+
+    For a non-zero offset this is the Method 1 face-milling construction:
+    the preliminary pitch design is iterated through the axial offset and
+    spiral-angle equations until the limit lengthwise curvature equals the
+    cutter radius.  No empirical pitch-plane correction is applied.
     """
     sigma = p.sigma
+    if not 0.0 < sigma < math.pi:
+        raise ValueError("shaft angle must be between 0 and 180 degrees")
+    ratio = p.ratio
+    sign = 1.0 if p.offset >= 0.0 else -1.0
+    desired_beta = abs(p.psi1)
+    delta_sigma = sigma - math.pi / 2.0
+
     if abs(p.offset) < 1e-12:
-        d1 = math.atan2(math.sin(sigma), p.ratio + math.cos(sigma))
+        d1 = math.atan2(math.sin(sigma), ratio + math.cos(sigma))
         d2 = sigma - d1
-        r2 = (p.wheel_outer_radius / math.sin(d2) - p.face_width / 2.0) * math.sin(d2)
-        return d1, d2, 0.0, r2 / p.ratio, r2
+        if not 0.0 < d1 < math.pi / 2.0 or not 0.0 < d2 < math.pi / 2.0:
+            raise ValueError("zero-offset pitch cones are outside the external-pair range")
+        R2 = p.wheel_outer_radius / math.sin(d2) - p.face_width / 2.0
+        if R2 <= 0.0:
+            raise ValueError("zero-offset mean cone distance is not positive")
+        r2 = R2 * math.sin(d2)
+        r1 = r2 / ratio
+        beta = sign * desired_beta if p.psi1 >= 0.0 else -desired_beta
+        return HypoidMethod1Geometry(
+            gear_ratio=ratio,
+            desired_pinion_spiral_angle=p.psi1,
+            shaft_angle_departure=delta_sigma,
+            approximate_wheel_pitch_angle=d2,
+            approximate_wheel_mean_radius=r2,
+            approximate_pinion_offset_angle=0.0,
+            approximate_dimension_factor=1.0,
+            approximate_pinion_mean_radius=r1,
+            wheel_offset_angle_axial=0.0,
+            intermediate_pinion_offset_angle_axial=0.0,
+            intermediate_pinion_pitch_angle=d1,
+            intermediate_pinion_offset_angle_pitch=0.0,
+            intermediate_pinion_spiral_angle=abs(beta),
+            dimension_factor_increment=0.0,
+            pinion_mean_radius_increment=0.0,
+            pinion_offset_angle_axial=0.0,
+            pinion_offset_angle_pitch=0.0,
+            pinion_spiral_angle=abs(beta),
+            wheel_spiral_angle=abs(beta),
+            pinion_pitch_angle=d1,
+            wheel_pitch_angle=d2,
+            pinion_mean_radius=r1,
+            wheel_mean_radius=r2,
+            pinion_mean_cone_distance=R2,
+            wheel_mean_cone_distance=R2,
+            pitch_plane_offset=0.0,
+            limit_pressure_angle=0.0,
+            limit_radius_of_curvature=None,
+            mean_tooth_curvature=None,
+            curvature_residual=None,
+            iterations=0,
+        )
 
-    sign = 1.0 if p.offset > 0.0 else -1.0
-    target = abs(p.offset)
-    beta1 = abs(p.psi1)
-    # The initial estimate is the ordinary hypoid offset angle.  The wheel
-    # pitch radius is evaluated at the middle of the face width.
-    d0 = math.atan2(math.sin(sigma), p.ratio + math.cos(sigma))
-    d2 = max(0.2, sigma - d0)
-    eps = math.asin(min(0.95, target / max(p.wheel_outer_radius, target + 1e-9)))
-    d1 = d0
-    x = [d1, d2, eps]
+    if p.cutter_radius is None:
+        raise ValueError("non-zero-offset Method 1 geometry requires cutter_radius")
+    if p.cutter_radius <= 0.0:
+        raise ValueError("cutter radius must be greater than zero")
 
-    def residual(v):
-        d1, d2, eps = v
-        if not (0.05 < d1 < math.pi - 0.05 and 0.05 < d2 < math.pi - 0.05):
-            return (1e3, 1e3, 1e3)
-        re2 = p.wheel_outer_radius / math.sin(d2)
-        rm2 = re2 - p.face_width / 2.0
-        r2 = rm2 * math.sin(d2)
-        beta2 = beta1 - eps
-        r1 = r2 * math.cos(beta2) / (p.ratio * max(math.cos(beta1), 1e-9))
-        # Skew-cone relation, common-normal offset, and pitch-plane offset.
-        f1 = math.cos(d1) * math.cos(d2) * math.cos(eps) - math.sin(d1) * math.sin(d2) - math.cos(sigma)
-        f2 = (r1 * math.cos(d2) + r2 * math.cos(d1)) * math.sin(eps) / max(math.sin(sigma), 1e-9) - target
-        f3 = rm2 * math.sin(eps) - target * (1.0 + 0.005 * abs(math.sin(sigma)))
-        return f1, f2, f3
+    offset = abs(p.offset)
+    approximate_wheel_angle = _checked_external_angle(
+        ratio * math.cos(delta_sigma),
+        METHOD1_INITIAL_FACTOR * (1.0 - ratio * math.sin(delta_sigma)),
+        "approximate wheel pitch angle",
+    )
+    approximate_wheel_radius = (
+        p.wheel_outer_diameter
+        - p.face_width * math.sin(approximate_wheel_angle)
+    ) / 2.0
+    if approximate_wheel_radius <= 0.0:
+        raise ValueError("approximate wheel mean pitch radius is not positive")
+    approximate_offset = _checked_asin(
+        offset * math.sin(approximate_wheel_angle) / approximate_wheel_radius,
+        "approximate pitch-plane offset angle",
+    )
+    approximate_dimension = (
+        math.tan(desired_beta) * math.sin(approximate_offset)
+        + math.cos(approximate_offset)
+    )
+    approximate_pinion_radius = approximate_wheel_radius * approximate_dimension / ratio
+    if approximate_pinion_radius <= 0.0:
+        raise ValueError("approximate pinion mean pitch radius is not positive")
+    eta = _checked_external_angle(
+        offset,
+        approximate_wheel_radius
+        * (
+            math.tan(approximate_wheel_angle) * math.cos(delta_sigma)
+            - math.sin(delta_sigma)
+        )
+        + approximate_pinion_radius,
+        "initial wheel axial offset angle",
+    )
 
-    for _ in range(MAX_ITERATIONS):
-        f = residual(x)
-        if max(abs(v) for v in f) < SOLVER_TOLERANCE:
+    trial = None
+    for iteration in range(1, MAX_ITERATIONS + 1):
+        trial = _method1_trial(
+            p,
+            offset=offset,
+            delta_sigma=delta_sigma,
+            desired_beta=desired_beta,
+            approximate_dimension_factor=approximate_dimension,
+            approximate_pinion_radius=approximate_pinion_radius,
+            wheel_mean_radius=approximate_wheel_radius,
+            eta=eta,
+        )
+        residual = trial.limit_radius_of_curvature - p.cutter_radius
+        if abs(residual) <= METHOD1_CURVATURE_TOLERANCE:
             break
         h = 1e-6
-        columns = []
-        for j in range(3):
-            trial = list(x)
-            trial[j] += h
-            g = residual(trial)
-            columns.append([(g[i] - f[i]) / h for i in range(3)])
-        jacobian = [[columns[col][row] for col in range(3)] for row in range(3)]
         try:
-            step = _solve_linear3(jacobian, [-v for v in f])
+            trial_h = _method1_trial(
+                p,
+                offset=offset,
+                delta_sigma=delta_sigma,
+                desired_beta=desired_beta,
+                approximate_dimension_factor=approximate_dimension,
+                approximate_pinion_radius=approximate_pinion_radius,
+                wheel_mean_radius=approximate_wheel_radius,
+                eta=eta + h,
+            )
         except ValueError as exc:
-            raise ValueError("hypoid pitch-cone iteration became singular") from exc
-        length = math.sqrt(sum(v * v for v in step))
-        if length > 0.15:
-            step = [v * 0.15 / length for v in step]
-        x = [x[i] + step[i] for i in range(3)]
+            raise ValueError(
+                "hypoid Method 1 curvature iteration left the valid geometry domain"
+            ) from exc
+        derivative = (
+            trial_h.limit_radius_of_curvature
+            - trial.limit_radius_of_curvature
+        ) / h
+        if not math.isfinite(derivative) or abs(derivative) < 1e-12:
+            raise ValueError("hypoid Method 1 curvature iteration became singular")
+        next_eta = eta - residual / derivative
+        if not 0.0 < next_eta < math.pi / 2.0:
+            raise ValueError("hypoid Method 1 curvature iteration did not converge")
+        eta = next_eta
     else:
-        raise ValueError("hypoid Method 1 pitch-cone iteration did not converge")
+        raise ValueError("hypoid Method 1 curvature iteration did not converge")
 
-    d1, d2, eps = x
-    if not (0.0 < d1 < math.pi / 2 and 0.0 < d2 < math.pi / 2):
-        raise ValueError("hypoid pitch angles are outside the external-pair range")
-    re2 = p.wheel_outer_radius / math.sin(d2)
-    rm2 = re2 - p.face_width / 2.0
-    r2 = rm2 * math.sin(d2)
-    beta2 = beta1 - eps
-    r1 = r2 * math.cos(beta2) / (p.ratio * max(math.cos(beta1), 1e-9))
-    return d1, d2, sign * eps, r1, r2
+    assert trial is not None
+    if abs(trial.limit_radius_of_curvature - p.cutter_radius) > METHOD1_CURVATURE_TOLERANCE:
+        raise ValueError("hypoid Method 1 curvature closure did not converge")
+    signed = lambda value: sign * value
+    return HypoidMethod1Geometry(
+        gear_ratio=ratio,
+        desired_pinion_spiral_angle=p.psi1,
+        shaft_angle_departure=delta_sigma,
+        approximate_wheel_pitch_angle=approximate_wheel_angle,
+        approximate_wheel_mean_radius=approximate_wheel_radius,
+        approximate_pinion_offset_angle=signed(approximate_offset),
+        approximate_dimension_factor=approximate_dimension,
+        approximate_pinion_mean_radius=approximate_pinion_radius,
+        wheel_offset_angle_axial=signed(trial.wheel_offset_angle_axial),
+        intermediate_pinion_offset_angle_axial=signed(
+            trial.intermediate_pinion_offset_angle_axial
+        ),
+        intermediate_pinion_pitch_angle=trial.intermediate_pinion_pitch_angle,
+        intermediate_pinion_offset_angle_pitch=signed(
+            trial.intermediate_pinion_offset_angle_pitch
+        ),
+        intermediate_pinion_spiral_angle=trial.intermediate_pinion_spiral_angle,
+        dimension_factor_increment=trial.dimension_factor_increment,
+        pinion_mean_radius_increment=trial.pinion_mean_radius_increment,
+        pinion_offset_angle_axial=signed(trial.pinion_offset_angle_axial),
+        pinion_offset_angle_pitch=signed(trial.pinion_offset_angle_pitch),
+        pinion_spiral_angle=trial.pinion_spiral_angle,
+        wheel_spiral_angle=trial.wheel_spiral_angle,
+        pinion_pitch_angle=trial.pinion_pitch_angle,
+        wheel_pitch_angle=trial.wheel_pitch_angle,
+        pinion_mean_radius=trial.pinion_mean_radius,
+        wheel_mean_radius=trial.wheel_mean_radius,
+        pinion_mean_cone_distance=trial.pinion_mean_cone_distance,
+        wheel_mean_cone_distance=trial.wheel_mean_cone_distance,
+        pitch_plane_offset=signed(
+            trial.wheel_mean_cone_distance
+            * math.sin(trial.pinion_offset_angle_pitch)
+        ),
+        limit_pressure_angle=trial.limit_pressure_angle,
+        limit_radius_of_curvature=trial.limit_radius_of_curvature,
+        mean_tooth_curvature=p.cutter_radius,
+        curvature_residual=trial.limit_radius_of_curvature - p.cutter_radius,
+        iterations=iteration,
+    )
 
 
 def _member(name, z, delta, radius, cone_distance, spiral, p, tooth_module, mate=False):
@@ -315,14 +632,16 @@ def _member(name, z, delta, radius, cone_distance, spiral, p, tooth_module, mate
 
 
 def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
-    d1, d2, eps, r1, r2 = _pitch_solution(p)
-    beta1 = p.psi1
-    # Offset changes the two spiral-angle magnitudes; it does not change which
-    # hand was requested.  Subtracting signed epsilon directly made a left-hand
-    # or negative-offset wheel jump to the wrong side of 50 degrees.
-    beta2 = math.copysign(max(1e-9, abs(beta1) - abs(eps)), beta1)
-    R1 = r1 / max(math.sin(d1), 1e-9)
-    R2 = r2 / max(math.sin(d2), 1e-9)
+    method1 = _pitch_solution(p)
+    d1 = method1.pinion_pitch_angle
+    d2 = method1.wheel_pitch_angle
+    spiral_sign = 1.0 if p.psi1 >= 0.0 else -1.0
+    beta1 = spiral_sign * method1.pinion_spiral_angle
+    beta2 = spiral_sign * method1.wheel_spiral_angle
+    r1 = method1.pinion_mean_radius
+    r2 = method1.wheel_mean_radius
+    R1 = method1.pinion_mean_cone_distance
+    R2 = method1.wheel_mean_cone_distance
     inner1 = max(1e-6, R1 - p.face_width / 2.0)
     inner2 = max(1e-6, R2 - p.face_width / 2.0)
     m_n = 2.0 * r2 * math.cos(beta2) / p.z2
@@ -331,8 +650,9 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
     return HypoidSetGeometry(
         params=p, outer_cone_dist=max(R1, R2) + p.face_width / 2.0,
         mean_cone_dist=0.5 * (R1 + R2), inner_cone_dist=min(inner1, inner2),
-        mean_normal_module=m_n, offset_angle=eps,
-        pitch_plane_offset=abs(R2 * math.sin(eps)), pinion=pinion, gear=gear,
+        mean_normal_module=m_n, offset_angle=method1.pinion_offset_angle_pitch,
+        pitch_plane_offset=method1.pitch_plane_offset, method1=method1,
+        pinion=pinion, gear=gear,
     )
 
 

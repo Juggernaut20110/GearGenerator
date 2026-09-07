@@ -51,6 +51,10 @@ def print_report(geo) -> None:
     print(_row("mean normal module", f(geo.mean_normal_module), "", "mm"))
     print(_row("pitch-plane offset", f(geo.pitch_plane_offset), "", "mm"))
     print(_row("offset angle", f(geo.offset_angle_deg), "", "deg"))
+    if geo.method1.mean_tooth_curvature is not None:
+        print(_row("cutter curvature", f(geo.method1.mean_tooth_curvature), "", "mm"))
+        print(_row("limit curvature", f(geo.method1.limit_radius_of_curvature), "", "mm"))
+        print(_row("curvature residual", f(geo.method1.curvature_residual), "", "mm"))
     print(_row("face contact ratio", f(geo.face_contact_ratio)))
     print(f"\nMEMBERS{'':<21}{'PINION':>14}{'GEAR':>14}")
     a, b = geo.pinion, geo.gear

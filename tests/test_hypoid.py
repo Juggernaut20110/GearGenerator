@@ -37,12 +37,97 @@ def test_method_1_anchor_converges_to_published_macro_geometry():
     assert geo.gear.pitch_angle_deg == pytest.approx(68.324, abs=0.02)
     assert geo.offset_angle_deg == pytest.approx(11.39, abs=0.03)
     assert geo.pitch_plane_offset == pytest.approx(15.075, abs=0.002)
-    assert geo.pinion.mean_spiral_angle_deg == pytest.approx(50.0, abs=1e-9)
+    assert geo.pinion.mean_spiral_angle_deg == pytest.approx(50.0, abs=0.01)
     assert geo.gear.mean_spiral_angle_deg == pytest.approx(38.61, abs=0.03)
     assert geo.mean_normal_module == pytest.approx(2.64, abs=0.01)
     assert (
         geo.pinion.normal_tooth_thickness + geo.gear.normal_tooth_thickness
     ) == pytest.approx(math.pi * geo.mean_normal_module - ANCHOR.backlash)
+
+
+def _independent_limit_radius(geo):
+    """Re-evaluate ISO 23509 formulas 32 and 33 from public result fields."""
+    a, b, method = geo.pinion, geo.gear, geo.method1
+    beta1 = abs(a.mean_spiral_angle)
+    beta2 = abs(b.mean_spiral_angle)
+    zeta = abs(method.pinion_offset_angle_pitch)
+    alpha_lim = math.atan(
+        -math.tan(a.pitch_angle) * math.tan(b.pitch_angle)
+        * (
+            a.cone_distance * math.sin(beta1)
+            - b.cone_distance * math.sin(beta2)
+        )
+        / (
+            math.cos(zeta)
+            * (
+                a.cone_distance * math.tan(a.pitch_angle)
+                + b.cone_distance * math.tan(b.pitch_angle)
+            )
+        )
+    )
+    denominator = (
+        -math.tan(alpha_lim)
+        * (
+            math.tan(beta1) / (a.cone_distance * math.tan(a.pitch_angle))
+            + math.tan(beta2) / (b.cone_distance * math.tan(b.pitch_angle))
+        )
+        + 1.0 / (a.cone_distance * math.cos(beta1))
+        - 1.0 / (b.cone_distance * math.cos(beta2))
+    )
+    return alpha_lim, (
+        1.0 / math.cos(alpha_lim)
+        * (math.tan(beta1) - math.tan(beta2))
+        / denominator
+    )
+
+
+def test_method_1_public_fields_close_independent_pitch_and_curvature_equations():
+    geo = compute_set(ANCHOR)
+    method = geo.method1
+    assert (
+        geo.gear.pitch_radius * math.cos(abs(geo.gear.mean_spiral_angle))
+        / (geo.pinion.pitch_radius * math.cos(abs(geo.pinion.mean_spiral_angle)))
+    ) == pytest.approx(ANCHOR.ratio, abs=1e-12)
+    assert method.pitch_plane_offset == pytest.approx(
+        method.wheel_mean_cone_distance
+        * math.sin(method.pinion_offset_angle_pitch),
+        abs=1e-12,
+    )
+    assert geo.mean_normal_module == pytest.approx(
+        2.0 * method.wheel_mean_cone_distance
+        * math.sin(method.wheel_pitch_angle)
+        * math.cos(abs(geo.gear.mean_spiral_angle))
+        / ANCHOR.z2,
+        abs=1e-12,
+    )
+    alpha_lim, rho_lim = _independent_limit_radius(geo)
+    assert method.limit_pressure_angle == pytest.approx(alpha_lim, abs=1e-12)
+    assert method.limit_radius_of_curvature == pytest.approx(rho_lim, abs=1e-9)
+    assert method.limit_radius_of_curvature == pytest.approx(ANCHOR.cutter_radius, abs=1e-8)
+    assert abs(method.curvature_residual) < 1e-8
+    assert method.pinion_mean_cone_distance == pytest.approx(73.521, abs=0.002)
+    assert method.wheel_mean_cone_distance == pytest.approx(76.337, abs=0.002)
+
+
+@pytest.mark.parametrize(
+    "module,z1,z2,offset,face_width,spiral,cutter,shaft_angle",
+    [
+        (2.0, 17, 43, 6.0, 8.0, 35.0, 30.0, 90.0),
+        (3.0, 19, 57, -10.0, 12.0, 35.0, 50.0, 90.0),
+        (2.0, 17, 43, 5.0, 6.0, 35.0, 25.0, 60.0),
+    ],
+)
+def test_method_1_closes_non_anchor_valid_designs(
+    module, z1, z2, offset, face_width, spiral, cutter, shaft_angle
+):
+    params = HypoidSetParams.with_defaults(
+        module, z1, z2, offset=offset, face_width=face_width,
+        spiral_angle=spiral, cutter_radius=cutter, shaft_angle=shaft_angle,
+    )
+    geo = compute_set(params)
+    assert geo.method1.limit_radius_of_curvature == pytest.approx(cutter, abs=1e-8)
+    assert geo.pinion.pitch_angle + geo.gear.pitch_angle < params.sigma + math.pi / 2.0
+    assert validate(params).ok
 
 
 def test_zero_offset_transverse_thicknesses_close_one_pitch_and_backlash_once():
@@ -70,7 +155,15 @@ def test_offset_is_signed_but_axis_distance_is_positive():
     positive = compute_set(ANCHOR)
     negative = compute_set(HypoidSetParams(**{**ANCHOR.__dict__, "offset": -15.0}))
     assert positive.offset_angle == pytest.approx(-negative.offset_angle)
-    assert abs(positive.pitch_plane_offset) == pytest.approx(abs(negative.pitch_plane_offset))
+    assert positive.pitch_plane_offset == pytest.approx(-negative.pitch_plane_offset)
+    assert positive.pinion.pitch_angle == pytest.approx(negative.pinion.pitch_angle)
+    assert positive.gear.pitch_angle == pytest.approx(negative.gear.pitch_angle)
+    assert positive.method1.limit_radius_of_curvature == pytest.approx(
+        negative.method1.limit_radius_of_curvature
+    )
+    assert positive.method1.wheel_offset_angle_axial == pytest.approx(
+        -negative.method1.wheel_offset_angle_axial
+    )
     assert gear_translation(positive)[1] == pytest.approx(15.0)
     assert gear_translation(negative)[1] == pytest.approx(-15.0)
 
@@ -80,6 +173,12 @@ def test_zero_offset_reduces_to_intersecting_pitch_cones():
     geo = compute_set(p)
     assert geo.offset_angle == 0.0
     assert geo.pinion.pitch_angle + geo.gear.pitch_angle == pytest.approx(p.sigma)
+    changed_cutter = compute_set(
+        HypoidSetParams(**{**p.__dict__, "cutter_radius": 100.0})
+    )
+    assert changed_cutter.pinion.pitch_angle == pytest.approx(geo.pinion.pitch_angle, abs=1e-12)
+    assert changed_cutter.gear.pitch_angle == pytest.approx(geo.gear.pitch_angle, abs=1e-12)
+    assert geo.method1.limit_radius_of_curvature is None
     assert validate(p).ok
 
 
@@ -189,6 +288,10 @@ def test_cutter_radius_changes_off_mean_loft_sections():
     larger = compute_set(
         HypoidSetParams(**{**ANCHOR.__dict__, "cutter_radius": 120.0})
     )
+    assert larger.pinion.pitch_angle != pytest.approx(smaller.pinion.pitch_angle)
+    assert larger.gear.pitch_angle != pytest.approx(smaller.gear.pitch_angle)
+    assert larger.method1.limit_radius_of_curvature == pytest.approx(120.0, abs=1e-8)
+    assert smaller.method1.limit_radius_of_curvature == pytest.approx(63.5, abs=1e-8)
     for member in ("pinion", "gear"):
         small = smaller.member(member)
         large = larger.member(member)
@@ -209,6 +312,15 @@ def test_cutter_radius_changes_off_mean_loft_sections():
 def test_cutter_radius_must_cover_both_member_faces():
     p = HypoidSetParams(**{**ANCHOR.__dict__, "cutter_radius": 10.0})
     result = validate(p)
+    assert not result.ok
+    assert any(issue.field == "cutter_radius" for issue in result.errors)
+
+
+def test_method_1_reports_a_non_convergent_curvature_design():
+    invalid = HypoidSetParams(**{**ANCHOR.__dict__, "cutter_radius": 1.0})
+    with pytest.raises(ValueError, match="curvature"):
+        compute_set(invalid)
+    result = validate(invalid)
     assert not result.ok
     assert any(issue.field == "cutter_radius" for issue in result.errors)
 

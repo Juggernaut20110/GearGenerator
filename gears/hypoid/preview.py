@@ -94,6 +94,10 @@ def derived_rows(geo: HypoidSetGeometry) -> list[Row]:
         Row("pitch-plane offset", f"{geo.pitch_plane_offset:.4f}", unit="mm"),
         Row("offset angle", f"{geo.offset_angle_deg:.4f}", unit="deg"),
         Row("mean normal module", f"{geo.mean_normal_module:.4f}", unit="mm"),
+        *([] if geo.method1.mean_tooth_curvature is None else [
+            Row("cutter curvature", f"{geo.method1.mean_tooth_curvature:.4f}", unit="mm"),
+            Row("limit curvature", f"{geo.method1.limit_radius_of_curvature:.4f}", unit="mm"),
+        ]),
         Row("face contact ratio", f"{geo.face_contact_ratio:.4f}"),
         Row("MEMBERS", "PINION", "GEAR", header=True),
         Row("teeth", str(a.z), str(b.z)),

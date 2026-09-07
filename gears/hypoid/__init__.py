@@ -3,6 +3,7 @@
 from .geometry import (
     HypoidSection,
     HypoidSetGeometry,
+    HypoidMethod1Geometry,
     HypoidMemberGeometry,
     blank_outline,
     compute_set,
@@ -14,7 +15,7 @@ from .params import HypoidSetParams
 from .validate import validate
 
 __all__ = [
-    "HypoidMemberGeometry", "HypoidSection", "HypoidSetGeometry",
+    "HypoidMemberGeometry", "HypoidMethod1Geometry", "HypoidSection", "HypoidSetGeometry",
     "HypoidSetParams", "blank_outline", "compute_set",
     "section_cone_distances", "section_count", "tooth_space_section", "validate",
 ]
