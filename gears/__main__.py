@@ -26,11 +26,13 @@ import sys
 from pathlib import Path
 
 from .bevel import report as bevel_report
+from .hypoid import report as hypoid_report
 from .planetary import report as planetary_report
 from .spur import report as spur_report
 
 TYPES = {
     "bevel": bevel_report,
+    "hypoid": hypoid_report,
     "spur": spur_report,
     "planetary": planetary_report,
 }

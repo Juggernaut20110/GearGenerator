@@ -4,7 +4,7 @@ Generates gear sets as real SOLIDWORKS parts and meshed assemblies, from a
 handful of numbers. Pure-Python geometry engine, a tkinter front end, and a COM
 driver that builds the solids.
 
-Three gear types, sharing everything they can:
+Four gear types, sharing everything they can:
 
 * **bevel**, straight, spiral or **Zerol** — module, tooth counts, pressure
   angle, shaft angle, mean spiral angle and hand, cutter radius, face width,
@@ -14,6 +14,10 @@ Three gear types, sharing everything they can:
   width, bore, hub, backlash, and a rim for a ring gear
 * **planetary** — a sun, N planets and an internal ring on one set of numbers:
   normal module, sun and planet tooth counts, how many planets, backlash
+* **hypoid**, Gleason/ISO Method 1 — a skew-axis external pair: outer transverse
+  module, tooth counts, shaft angle, signed axis offset, face width, pinion
+  spiral angle, cutter radius, pressure angle, hand, bore, hub, root rim and
+  backlash
 
 Every one produces:
 
@@ -34,6 +38,8 @@ bevel        m=2, 17x43, 20 deg pressure angle, 90 deg shafts
 spur         m=2, 17x43, 20 deg, plus a 15 deg helix for the helical set
 internal     m=2, 18x60 - which is also the planetary set's planet-ring mesh
 planetary    m=2, sun 24, planet 18, ring 60, 3 planets
+hypoid       m_o=170/42, 13x42, 20 deg, 90 deg shafts, 15 mm offset,
+             50 deg pinion spiral, 63.5 mm cutter (ISO Method 1 sample)
 ```
 
 ---
@@ -43,14 +49,15 @@ planetary    m=2, sun 24, planet 18, ring 60, 3 planets
 The interpreter is the venv one. Always. There is no global install.
 
 ```
-.venv\Scripts\python.exe run.py                      # the GUI, all three types
+.venv\Scripts\python.exe run.py                      # the GUI, all four types
 .venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43
 .venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43 --spiral 35
 .venv\Scripts\python.exe -m gears --module 2 --z1 17 --z2 43 --zerol
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 17 --z2 43 --beta 15
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 18 --z2 60 --internal
 .venv\Scripts\python.exe -m gears --type planetary --module 2 --z1 24 --z2 18
-.venv\Scripts\python.exe -m pytest -q                # 928 tests, no SOLIDWORKS
+.venv\Scripts\python.exe -m gears --type hypoid --module 4.047619 --z1 13 --z2 42 --offset 15 --face-width 30 --spiral 50 --cutter-radius 63.5
+.venv\Scripts\python.exe -m pytest -q                # 944 tests, no SOLIDWORKS
 ```
 
 `--type` defaults to `bevel`, which is what the tool generated before there was
@@ -78,6 +85,7 @@ will start it):
 .venv\Scripts\python.exe tools\build_spur_set.py --z1 17 --z2 43
 .venv\Scripts\python.exe tools\build_spur_set.py --z1 18 --z2 60 --internal
 .venv\Scripts\python.exe tools\build_planetary.py --z-sun 24 --z-planet 18
+.venv\Scripts\python.exe tools\build_hypoid_set.py --offset 15 --face-width 30 --spiral 50 --cutter-radius 63.5
 ```
 
 `--help` on any of those lists the parameter flags. Output lands in `out/`,
@@ -114,7 +122,7 @@ cache              26.1 MB     %LOCALAPPDATA%\Carl Rule\Gear Generator\0.1.0\
 build              ~2 min      from cold; clcache makes the second one faster
 ```
 
-**Only the window is packaged.** It reaches all five builders through its Build
+**Only the window is packaged.** It reaches all seven builders through its Build
 button, and it is the better-exercised path — driving the builders from the GUI
 rather than from `tools/` is what found the four bugs recorded below.
 
@@ -130,7 +138,7 @@ three are consequences of decisions made for other reasons:
 
 * **There are no data files.** Nothing under `gears/` opens a bundled asset. The
   only file reads are the user's own preset JSON, chosen from a dialog.
-* **Every import is static.** `sw/__init__.py` imports all five builders
+* **Every import is static.** `sw/__init__.py` imports all seven builders
   eagerly, so the `getattr(sw, builder)` the GUI dispatches through resolves
   against a module the compiler has already followed.
 * **The COM layer is late-binding only.** `session.py` uses `Dispatch` and never
@@ -150,10 +158,10 @@ in the window, and both were asked before shipping one:
 
 ```
 COM survives compilation   pythoncom313.dll and pywintypes313.dll are bundled
-                           unasked; VARIANT construction, all five builders and
+                           unasked; VARIANT construction, all seven builders and
                            SwSession all resolve.  No SOLIDWORKS needed - the
                            DLL load happens at import
-geometry survives it       all seven anchor sets' terminal reports, compiled
+geometry survives it       all eight anchor sets' terminal reports, compiled
                            against interpreted: byte-for-byte identical,
                            451 lines
 ```
@@ -205,7 +213,7 @@ dot-separated numbers and nothing else, so `v0.1.0-rc1` has nowhere to go.
 them on `windows-latest`:
 
 ```
-test                 928 tests                                    ~1 min
+test                 944 tests                                    ~1 min
 compiled-geometry    the probe above, --compare                   ~2 min cached
 build                package.py, exe uploaded as an artifact      ~2 min cached
 release              on a v* tag, attaches the exe to the release
@@ -243,7 +251,7 @@ gears/
   report_format.py  the shared three-column report layout
   gui.py         tkinter widgets and wiring, nothing else
   __main__.py    terminal report, dispatches on --type
-  bevel/ spur/ planetary/
+  bevel/ spur/ planetary/ hypoid/
                  params.py geometry.py validate.py mesh.py preview.py report.py
   sw/            everything that touches pywin32 lives here
     session.py             COM connection, unit conversion, checked calls
@@ -254,6 +262,8 @@ gears/
     spur_part.py           spur and ring blanks, guide curve for helical teeth
     spur_assembly.py       parallel axes at a centre distance
     planetary_assembly.py  N + 2 components on concentric and orbiting axes
+    hypoid_part.py         skew-axis hypoid blank and tooth loft
+    hypoid_assembly.py     offset shafts, clocking and hypoid gear mate
 tools/           standalone drivers and API probes, one per question asked
 tests/           pure-Python; SOLIDWORKS is never involved
 ```
@@ -466,6 +476,40 @@ because both members take their hand from the same sign.
 
 ---
 
+## The hypoid geometry, in brief
+
+Hypoid sets use the Gleason/ISO Method 1 macro calculation. Unlike a bevel
+pair, the two shaft axes do not intersect: `--offset` is the signed distance
+between them along their common normal, positive on the assembly `+Y` side.
+The input module is the wheel's outer transverse module, so the published
+13/42 anchor is entered as `170/42`, with a 15 mm offset, 30 mm face width,
+50 degree pinion spiral and 63.5 mm cutter.
+
+The solver iterates the two pitch-cone angles and the hypoid offset angle at the
+mean contact point. The anchor returns 21.284 / 68.329 degree pitch angles,
+11.370 degree offset angle and 15.075 mm pitch-plane offset. The pinion and
+wheel spiral angles differ: 50.000 / 38.630 degrees. The tooth sections then
+reuse the shared involute/Tredgold profile core, while `hypoid.mesh` places the
+parts on skew axes rather than a common apex.
+
+The two lofts wind in opposite local phase senses. Their mean trace tangents
+are resolved in the same skew-axis contact plane instead of copying the bevel
+common-apex phase rule. The blank and loft sections span the full face about
+the mean cone distance; the outer diameter is therefore evaluated at the heel,
+not incorrectly at the mean section. Assembly placement leaves the solved mean
+pitch points coincident at zero backlash.
+
+Tooth thickness is balanced across the pair in the normal plane. The Method 1
+thickness factor transfers thickness from the wheel to the pinion instead of
+being added to both members; the two normal thicknesses sum to one normal pitch
+minus backlash. Each is then converted by its own spiral angle for the
+transverse Tredgold section. Consequently zero backlash closes at the pitch
+point instead of leaving a spiral-angle-sized visible gap.
+
+The Method 1 solver is deliberately bounded and reports non-convergence as a
+validation error. This keeps an impossible offset from reaching the loft or the
+SOLIDWORKS assembly builder.
+
 ## The spur geometry, in brief
 
 Read the module docstring in [gears/spur/geometry.py](gears/spur/geometry.py).
@@ -633,7 +677,7 @@ carrier held: ring / sun     -2.5000
 
 ## Backlash
 
-One input, shared by all three types, because there is only one thing it means:
+One input, shared by all four types, because there is only one thing it means:
 `--backlash 0.1` is a **circular backlash in millimetres, measured at the pitch
 circle**, and it does the same arithmetic in every geometry module.
 
@@ -942,15 +986,16 @@ These were each found by breaking something. Don't undo them:
   **spanning tree** over the members.
 
 `tools/smoke_com.py`, `tools/probe_dimension.py`, `tools/probe_mate.py`,
-`tools/probe_gear_sense.py` and `tools/probe_helix_loft.py` exist to answer API
-questions in isolation before trusting an answer inside a build. Add to them
-rather than debugging inside a builder.
+`tools/probe_gear_sense.py`, `tools/probe_helix_loft.py` and
+`tools/probe_hypoid_loft.py` exist to answer API questions in isolation before
+trusting an answer inside a build. Add to them rather than debugging inside a
+builder.
 
 ---
 
 ## Testing
 
-928 tests, all pure Python, all fast. They are closed-form checks on the
+944 tests, all pure Python, all fast. They are closed-form checks on the
 geometry — cone distances agreeing between members, tooth tips landing on the
 mate's back cone, centre distance solved two independent ways, loft sections
 clearing the blank, the guide curve touching a vertex that exists in every
@@ -985,6 +1030,15 @@ planetary train from 0 to 1890.
 by building the anchor set in SOLIDWORKS and looking at it. **Carl does that
 verification, and his hands-on result outranks any API probe.** If you change
 `sw/`, say plainly that you have not run it.
+
+The Method 1 hypoid anchor was built live on SOLIDWORKS 2026. Both parts are
+single solids (13-tooth pinion: 59 faces; 42-tooth gear: 175 faces), the saved
+assembly measures 90.0000 degrees between its shafts and 15.0000 mm axis offset
+with zero reported placement error, and its 13:42 gear mate leaves both members
+under defined so the pair articulates. The skew contact solution clocks the
+pinion and wheel traces in opposite local senses, resolves their mean tangents
+in the shared contact plane, and keeps the solved mean pitch points coincident
+at zero backlash without an assembly-clearance offset.
 
 What the spur builders have been run against, on SOLIDWORKS 2026 SP3:
 

@@ -30,6 +30,10 @@ from .bevel import preview as bevel_preview
 from .bevel.geometry import compute_set as bevel_compute_set
 from .bevel.params import BevelSetParams
 from .bevel.validate import validate as bevel_validate
+from .hypoid import preview as hypoid_preview
+from .hypoid.geometry import compute_set as hypoid_compute_set
+from .hypoid.params import HypoidSetParams
+from .hypoid.validate import validate as hypoid_validate
 from .planetary import preview as planetary_preview
 from .planetary.geometry import compute_set as planetary_compute_set
 from .planetary.params import PlanetarySetParams
@@ -168,6 +172,23 @@ SPUR_FIELDS: tuple[Field, ...] = (
     Field("rim_thickness", "Ring rim thickness", float, "mm"),
 )
 
+HYPOID_FIELDS: tuple[Field, ...] = (
+    Field("module", "Outer transverse module", float, "mm"),
+    Field("z1", "Pinion teeth z1", int),
+    Field("z2", "Gear teeth z2", int),
+    Field("pressure_angle", "Pressure angle", float, "deg"),
+    Field("shaft_angle", "Shaft angle", float, "deg"),
+    Field("offset", "Hypoid offset", float, "mm"),
+    Field("spiral_angle", "Pinion spiral angle", float, "deg"),
+    Field("hand", "Hand (pinion)", str, "", ("right", "left")),
+    Field("cutter_radius", "Cutter radius", float, "mm", optional=True),
+    Field("backlash", "Backlash", float, "mm"),
+    Field("face_width", "Face width", float, "mm"),
+    Field("bore", "Bore diameter", float, "mm"),
+    Field("hub_thickness", "Hub thickness", float, "mm"),
+    Field("min_root_thickness", "Min root thickness", float, "mm"),
+)
+
 PLANETARY_FIELDS: tuple[Field, ...] = (
     Field("module", "Normal module", float, "mm"),
     Field("z_sun", "Sun teeth", int),
@@ -193,7 +214,7 @@ PLANETARY_FIELDS: tuple[Field, ...] = (
 # spur set is still there if you switch to a spiral bevel one.
 def _ordered_fields() -> tuple[Field, ...]:
     seen: dict[str, Field] = {}
-    for field in BEVEL_FIELDS + SPUR_FIELDS + PLANETARY_FIELDS:
+    for field in BEVEL_FIELDS + SPUR_FIELDS + PLANETARY_FIELDS + HYPOID_FIELDS:
         seen.setdefault(field.attr, field)
     # Backlash sits with the tooth form rather than with the blank, which is
     # what it is: it changes the thickness of a tooth, not a dimension of the
@@ -201,7 +222,7 @@ def _ordered_fields() -> tuple[Field, ...]:
     # they are the ones "Auto-size blank" rewrites as a group.
     order = (
         "module", "z1", "z2", "z_sun", "z_planet", "n_planets", "internal",
-        "pressure_angle", "shaft_angle", "trace_kind", "spiral_angle",
+        "pressure_angle", "shaft_angle", "trace_kind", "offset", "spiral_angle",
         "helix_angle", "hand", "cutter_radius", "backlash",
         "face_width", "bore", "hub_thickness", "rim_thickness",
         "min_root_thickness",
@@ -215,6 +236,7 @@ ALL_FIELDS: tuple[Field, ...] = _ordered_fields()
 BEVEL_AUTO = ("face_width", "bore", "hub_thickness", "min_root_thickness")
 SPUR_AUTO = ("face_width", "bore", "hub_thickness", "rim_thickness")
 PLANETARY_AUTO = ("face_width", "bore", "hub_thickness", "rim_thickness")
+HYPOID_AUTO = ("face_width", "bore", "hub_thickness", "min_root_thickness")
 
 
 def _bevel_status(p, geo) -> str:
@@ -267,6 +289,15 @@ def _planetary_status(p, geo) -> str:
     )
 
 
+def _hypoid_status(p, geo) -> str:
+    return (
+        f"m_o {p.module:g}   {p.z1}:{p.z2} teeth   ratio {p.ratio:.3f}:1   "
+        f"offset {p.offset:g} mm   spiral {p.spiral_angle:g} deg {p.hand}   "
+        f"pitch cones {geo.pinion.pitch_angle_deg:.3f} / "
+        f"{geo.gear.pitch_angle_deg:.3f} deg"
+    )
+
+
 # Each of these ends with how the set was clocked, because that is the one line
 # the three types genuinely disagree about rather than merely word differently.
 # A pair has a single number - the gear's - and a planetary train has one per
@@ -301,6 +332,16 @@ def _planetary_result_lines(result) -> list[str]:
         f"  worst planet position error {result.worst_position_error_mm:+.2e} mm",
         f"  planets clocked {clockings} deg",
         f"  ring clocked {result.ring_clocking_deg:.4f} deg",
+    ]
+
+
+def _hypoid_result_lines(result) -> list[str]:
+    return [
+        f"  shaft angle {result.measured_shaft_angle_deg:.4f} deg "
+        f"({result.shaft_angle_error_deg:+.2e} deg error)",
+        f"  axis offset {result.measured_offset_mm:.4f} mm "
+        f"({result.offset_error_mm:+.2e} mm error)",
+        f"  gear clocked {result.clocking_deg:.4f} deg",
     ]
 
 
@@ -392,6 +433,24 @@ KINDS: dict[str, GearKind] = {
         status=_spur_status,
         result_lines=_spur_result_lines,
         builder="build_spur_set",
+    ),
+    "hypoid": GearKind(
+        key="hypoid",
+        label="Hypoid",
+        params_cls=HypoidSetParams,
+        compute_set=hypoid_compute_set,
+        validate=hypoid_validate,
+        preview=hypoid_preview,
+        fields=HYPOID_FIELDS,
+        auto_fields=HYPOID_AUTO,
+        auto_kwargs=(
+            "pressure_angle", "shaft_angle", "offset", "spiral_angle", "hand",
+            "cutter_radius",
+        ),
+        default_scene="contact",
+        status=_hypoid_status,
+        result_lines=_hypoid_result_lines,
+        builder="build_hypoid_set",
     ),
     "planetary": GearKind(
         key="planetary",

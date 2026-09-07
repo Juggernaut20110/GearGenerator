@@ -22,6 +22,7 @@ from gears.gui import (                            # noqa: E402
     App,
     KINDS,
     _bevel_result_lines,
+    _hypoid_result_lines,
     _planetary_result_lines,
     _spur_result_lines,
 )
@@ -176,7 +177,7 @@ def test_auto_size_rewrites_only_the_blank_fields(app):
     assert (app._params.module, app._params.z1) == (2.0, 17)
 
 
-@pytest.mark.parametrize("key", ["bevel", "spur", "planetary"])
+@pytest.mark.parametrize("key", ["bevel", "spur", "hypoid", "planetary"])
 def test_auto_size_works_on_every_tab(app, key):
     """It read `p.z1` off whatever was in hand, and a planetary set has no z1.
 
@@ -213,7 +214,7 @@ def test_auto_size_keeps_a_backlash_that_was_typed(app):
 SHARED_SCENES = {"trace"}
 
 
-@pytest.mark.parametrize("kind_key", ["bevel", "spur", "planetary"])
+@pytest.mark.parametrize("kind_key", ["bevel", "spur", "hypoid", "planetary"])
 def test_every_field_round_trips_through_format_and_parse(kind_key):
     """`format` writes the widget, `parse` reads it back - they must agree.
 
@@ -754,6 +755,29 @@ def test_a_planetary_set_computes_and_draws(app):
     assert len(app._scene.polylines) > 100
 
 
+def test_a_hypoid_set_computes_and_draws(app):
+    app.kind_key.set("hypoid")
+    app.on_kind_change()
+    for attr, value in (
+        ("module", str(170.0 / 42.0)),
+        ("z1", "13"),
+        ("z2", "42"),
+        ("offset", "15"),
+        ("face_width", "30"),
+        ("spiral_angle", "50"),
+        ("cutter_radius", "63.5"),
+    ):
+        set_input(app, attr, value)
+
+    assert app._validation.ok
+    assert app._geo is not None
+    assert app._geo.pitch_plane_offset == pytest.approx(15.075, abs=0.002)
+    assert app._scene is not None
+    assert app._scene.key == "contact"
+    assert "offset 15 mm" in app.status.cget("text")
+    assert app.build_button.instate(["!disabled"])
+
+
 def test_a_failed_assembly_condition_blocks_the_build_button(app):
     app.kind_key.set("planetary")
     app.on_kind_change()
@@ -806,7 +830,7 @@ def test_the_report_formatter_reads_fields_the_real_result_classes_have():
     the attribute the formatter's way, which is exactly the blind spot.
 
     So this asserts against the dataclasses themselves rather than against a
-    stub: every field the formatter and the three `result_lines` touch has to
+    stub: every field the formatter and the four `result_lines` touch has to
     exist on the class that will really be passed in. It imports from `sw`,
     which needs pywin32 only at call time, not at import time.
     """
@@ -821,6 +845,11 @@ def test_the_report_formatter_reads_fields_the_real_result_classes_have():
             _spur_result_lines,
             ("measured_centre_distance_mm", "centre_distance_error_mm",
              "measured_axis_angle_deg", "clocking_deg"),
+        ),
+        sw.HypoidSetResult: (
+            _hypoid_result_lines,
+            ("measured_shaft_angle_deg", "shaft_angle_error_deg",
+             "measured_offset_mm", "offset_error_mm", "clocking_deg"),
         ),
         sw.PlanetarySetResult: (
             _planetary_result_lines,

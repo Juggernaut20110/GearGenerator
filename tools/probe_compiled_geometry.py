@@ -54,6 +54,9 @@ ANCHORS = [
     ["--type", "spur", "--module", "2", "--z1", "17", "--z2", "43", "--beta", "15"],
     ["--type", "spur", "--module", "2", "--z1", "18", "--z2", "60", "--internal"],
     ["--type", "planetary", "--module", "2", "--z1", "24", "--z2", "18"],
+    ["--type", "hypoid", "--module", str(170 / 42), "--z1", "13", "--z2", "42",
+     "--offset", "15", "--face-width", "30", "--spiral", "50",
+     "--cutter-radius", "63.5"],
 ]
 
 
