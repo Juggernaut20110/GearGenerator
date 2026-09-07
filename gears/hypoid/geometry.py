@@ -10,7 +10,7 @@ the local cone frames are later placed on skew axes by :mod:`hypoid.mesh`.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .. import involute
 from ..bevel.geometry import CrownTrace, to_cone_3d
@@ -20,8 +20,6 @@ from .params import HypoidSetParams
 Point2 = tuple[float, float]
 Point3 = tuple[float, float, float]
 
-WORKING_DEPTH_FACTOR = 2.0
-CLEARANCE_FACTOR = 0.125
 MAX_ITERATIONS = 80
 # ISO 23509 Method 1 formula 11 uses this factor only for the preliminary
 # wheel-angle estimate; the final result is set by the curvature closure.
@@ -40,8 +38,42 @@ class HypoidMemberGeometry:
     mean_spiral_angle: float
     addendum: float
     dedendum: float
+    working_depth: float
+    clearance: float
+    whole_depth: float
+    addendum_angle: float
+    dedendum_angle: float
     face_angle: float
     root_angle: float
+    face_width: float
+    outer_face_width: float
+    inner_face_width: float
+    inner_cone_distance: float
+    pitch_apex_z: float
+    mean_pitch_z: float
+    face_apex_z: float
+    root_apex_z: float
+    inner_tip_z: float
+    outer_tip_z: float
+    inner_root_z: float
+    outer_root_z: float
+    outer_pitch_diameter: float
+    inner_pitch_diameter: float
+    outer_tip_diameter: float
+    inner_tip_diameter: float
+    outer_addendum: float
+    inner_addendum: float
+    outer_dedendum: float
+    inner_dedendum: float
+    outer_whole_depth: float
+    inner_whole_depth: float
+    mean_tip_radius: float
+    mean_root_radius: float
+    inner_tip_radius: float
+    outer_tip_radius: float
+    inner_root_radius: float
+    outer_root_diameter: float
+    inner_root_diameter: float
     virtual_teeth: float
     virtual_pitch_r: float
     virtual_base_r: float
@@ -53,6 +85,7 @@ class HypoidMemberGeometry:
     root_r: float
     outside_dia: float
     outer_root_radius: float
+    tredgold_outer_root_radius: float
 
     @property
     def pitch_angle_deg(self) -> float:
@@ -61,6 +94,14 @@ class HypoidMemberGeometry:
     @property
     def mean_spiral_angle_deg(self) -> float:
         return math.degrees(self.mean_spiral_angle)
+
+    @property
+    def face_angle_deg(self) -> float:
+        return math.degrees(self.face_angle)
+
+    @property
+    def root_angle_deg(self) -> float:
+        return math.degrees(self.root_angle)
 
     @property
     def angular_pitch(self) -> float:
@@ -108,6 +149,25 @@ class HypoidMethod1Geometry:
     mean_tooth_curvature: float | None
     curvature_residual: float | None
     iterations: int
+    # Method 1 blank closure values.  They live with the pitch solution so
+    # callers can audit the complete calculation without reconstructing the
+    # hidden intermediate geometry used by compute_set().
+    wheel_face_width_factor: float | None = None
+    wheel_outer_face_width: float | None = None
+    wheel_inner_face_width: float | None = None
+    pinion_outer_face_width: float | None = None
+    pinion_inner_face_width: float | None = None
+    crossing_to_wheel_mean_z: float | None = None
+    crossing_to_pinion_mean_z: float | None = None
+    wheel_pitch_apex_z: float | None = None
+    pinion_pitch_apex_z: float | None = None
+    wheel_face_apex_z: float | None = None
+    wheel_root_apex_z: float | None = None
+    pinion_face_apex_z: float | None = None
+    pinion_root_apex_z: float | None = None
+    pinion_root_plane_offset_angle: float | None = None
+    pinion_face_plane_offset_angle: float | None = None
+    pinion_face_width_auxiliary_angle: float | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +206,12 @@ class HypoidSetGeometry:
     mean_cone_dist: float
     inner_cone_dist: float
     mean_normal_module: float
+    basic_addendum_factor: float
+    basic_dedendum_factor: float
+    profile_shift_coefficient: float
+    mean_working_depth: float
+    mean_clearance: float
+    mean_whole_depth: float
     offset_angle: float
     pitch_plane_offset: float
     method1: HypoidMethod1Geometry
@@ -175,15 +241,15 @@ class HypoidSetGeometry:
 
     @property
     def working_depth(self) -> float:
-        return WORKING_DEPTH_FACTOR * self.mean_normal_module
+        return self.mean_working_depth
 
     @property
     def clearance(self) -> float:
-        return CLEARANCE_FACTOR * self.mean_normal_module
+        return self.mean_clearance
 
     @property
     def whole_depth(self) -> float:
-        return self.working_depth + self.clearance
+        return self.mean_whole_depth
 
     def member(self, which: str) -> HypoidMemberGeometry:
         if which == "pinion":
@@ -590,44 +656,241 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
     )
 
 
-def _member(name, z, delta, radius, cone_distance, spiral, p, tooth_module, mate=False):
-    # The 0.54/0.46 split is the Gleason long/short addendum convention.  The
-    # published Method 1 profile-shift factor nudges the split; depth and
-    # clearance remain explicit advanced inputs rather than magic constants.
-    split = (0.54 if not mate else 0.46) + 0.02 * p.profile_shift
-    addendum = split * tooth_module
-    dedendum = p.depth_factor * tooth_module + p.clearance_factor * tooth_module - addendum
-    virtual_pitch = radius / max(math.cos(delta), 1e-9)
-    base = virtual_pitch * math.cos(p.alpha)
-    tip = virtual_pitch + addendum
-    root = max(base * 1.001, virtual_pitch - dedendum)
+@dataclass(frozen=True)
+class _Method1Depth:
+    """Method 1 tooth-depth factors and dimensions at the calculation point."""
+
+    basic_addendum_factor: float
+    basic_dedendum_factor: float
+    profile_shift_coefficient: float
+    working_depth: float
+    clearance: float
+    whole_depth: float
+    pinion_addendum: float
+    pinion_dedendum: float
+    gear_addendum: float
+    gear_dedendum: float
+
+
+def _method1_depth(p: HypoidSetParams, mean_normal_module: float) -> _Method1Depth:
+    """Convert the type-II tooth data and apply ISO 23509 formulas 132-139."""
+    if p.depth_factor <= 0.0:
+        raise ValueError("Method 1 depth factor must be greater than zero")
+    if p.clearance_factor < 0.0:
+        raise ValueError("Method 1 clearance factor cannot be negative")
+    if not 0.0 < p.gear_mean_addendum_factor < 1.0:
+        raise ValueError("Method 1 gear mean addendum factor must be between zero and one")
+
+    # ISO 23509 Table 4: type-II (kd, kc, c_ham) to type-I (k_hap, k_hfp,
+    # x_hm1).  The ``2*kc`` term is important: kc is half the type-I
+    # clearance convention used by the Method 1 reference.
+    k_hap = 0.5 * p.depth_factor
+    k_hfp = 0.5 * p.depth_factor + 2.0 * p.clearance_factor
+    x_hm1 = p.depth_factor * (0.5 - p.gear_mean_addendum_factor)
+    working_depth = 2.0 * k_hap * mean_normal_module
+    clearance = (k_hfp - k_hap) * mean_normal_module
+    whole_depth = (k_hap + k_hfp) * mean_normal_module
+    pinion_addendum = mean_normal_module * (k_hap + x_hm1)
+    pinion_dedendum = mean_normal_module * (k_hfp - x_hm1)
+    gear_addendum = mean_normal_module * (k_hap - x_hm1)
+    gear_dedendum = mean_normal_module * (k_hfp + x_hm1)
+    values = (
+        working_depth, clearance, whole_depth, pinion_addendum,
+        pinion_dedendum, gear_addendum, gear_dedendum,
+    )
+    if any(not math.isfinite(value) or value <= 0.0 for value in values):
+        raise ValueError("Method 1 tooth-depth inputs produce non-positive dimensions")
+    return _Method1Depth(
+        basic_addendum_factor=k_hap,
+        basic_dedendum_factor=k_hfp,
+        profile_shift_coefficient=x_hm1,
+        working_depth=working_depth,
+        clearance=clearance,
+        whole_depth=whole_depth,
+        pinion_addendum=pinion_addendum,
+        pinion_dedendum=pinion_dedendum,
+        gear_addendum=gear_addendum,
+        gear_dedendum=gear_dedendum,
+    )
+
+
+def _member(
+    name,
+    z,
+    delta,
+    radius,
+    cone_distance,
+    spiral,
+    p,
+    tooth_module,
+    *,
+    addendum,
+    dedendum,
+    working_depth,
+    clearance,
+    whole_depth,
+    addendum_angle,
+    dedendum_angle,
+    inner_cone_distance,
+    outer_face_width,
+    inner_face_width,
+    pitch_apex_z,
+    mean_pitch_z,
+    face_apex_z,
+    root_apex_z,
+):
+    """Build one member from the ISO Method 1 blank dimensions.
+
+    ``tip_r`` and ``root_r`` deliberately remain the Tredgold back-cone
+    section radii used by the involute approximation.  The physical Method 1
+    blank radii are the explicit ``*_tip_radius`` and ``*_root_radius``
+    fields below; they are not forced to agree with the developed section.
+    """
+    cos_delta = math.cos(delta)
+    sin_delta = math.sin(delta)
+    if not 0.0 < delta < math.pi / 2.0 or abs(cos_delta) < 1e-12:
+        raise ValueError(f"{name} Method 1 pitch angle is outside the external-pair range")
+    if cone_distance <= 0.0 or inner_cone_distance <= 0.0:
+        raise ValueError(f"{name} Method 1 cone distance is not positive")
+    if outer_face_width <= 0.0 or inner_face_width <= 0.0:
+        raise ValueError(f"{name} Method 1 face boundary is not positive")
+    outer_cone_distance = cone_distance + outer_face_width
+    if not math.isfinite(addendum_angle) or not math.isfinite(dedendum_angle):
+        raise ValueError(f"{name} Method 1 tooth angles are not finite")
+    face_angle = delta + addendum_angle
+    root_angle = delta - dedendum_angle
+    if not 0.0 < face_angle < math.pi / 2.0:
+        raise ValueError(f"{name} Method 1 face angle is outside the external-pair range")
+    if not 0.0 < root_angle < math.pi / 2.0:
+        raise ValueError(f"{name} Method 1 root angle is outside the external-pair range")
+
+    outer_pitch_diameter = 2.0 * outer_cone_distance * sin_delta
+    inner_pitch_diameter = 2.0 * inner_cone_distance * sin_delta
+    outer_addendum = addendum + outer_face_width * math.tan(addendum_angle)
+    inner_addendum = addendum - inner_face_width * math.tan(addendum_angle)
+    outer_dedendum = dedendum + outer_face_width * math.tan(dedendum_angle)
+    inner_dedendum = dedendum - inner_face_width * math.tan(dedendum_angle)
+    depths = (outer_addendum, inner_addendum, outer_dedendum, inner_dedendum)
+    if any(not math.isfinite(value) or value <= 0.0 for value in depths):
+        raise ValueError(f"{name} Method 1 face boundaries produce non-positive tooth depth")
+
+    mean_tip_radius = radius + addendum * cos_delta
+    mean_root_radius = radius - dedendum * cos_delta
+    inner_tip_radius = inner_pitch_diameter / 2.0 + inner_addendum * cos_delta
+    outer_tip_radius = outer_pitch_diameter / 2.0 + outer_addendum * cos_delta
+    inner_root_radius = inner_pitch_diameter / 2.0 - inner_dedendum * cos_delta
+    outer_root_radius = outer_pitch_diameter / 2.0 - outer_dedendum * cos_delta
+    radii = (
+        mean_tip_radius, mean_root_radius, inner_tip_radius, outer_tip_radius,
+        inner_root_radius, outer_root_radius,
+    )
+    if any(not math.isfinite(value) or value <= 0.0 for value in radii):
+        raise ValueError(f"{name} Method 1 blank radius is not positive")
+
+    # The axial positions below are the ISO Method 1 meridian layout.  The
+    # face and root apexes are retained separately from the Tredgold section
+    # apex, because the latter is only an involute-section approximation.
+    inner_tip_z = (
+        mean_pitch_z - inner_face_width * cos_delta
+        - inner_addendum * sin_delta
+    )
+    outer_tip_z = (
+        mean_pitch_z + outer_face_width * cos_delta
+        - outer_addendum * sin_delta
+    )
+    inner_root_z = (
+        mean_pitch_z - inner_face_width * cos_delta
+        + inner_dedendum * sin_delta
+    )
+    outer_root_z = (
+        mean_pitch_z + outer_face_width * cos_delta
+        + outer_dedendum * sin_delta
+    )
+
+    virtual_pitch = radius / cos_delta
+    virtual_base = virtual_pitch * math.cos(p.alpha)
+    virtual_tip = virtual_pitch + addendum
+    virtual_root = virtual_pitch - dedendum
+    if virtual_root <= 0.0:
+        raise ValueError(f"{name} Method 1 Tredgold root radius is not positive")
+    tip_r = virtual_tip * cos_delta
+    root_r = virtual_root * cos_delta
+
     # Method 1's thickness factor redistributes one normal circular pitch
-    # between the members; it must not be added to both.  Backlash is likewise
-    # split here so it is applied once across the pair.  The Tredgold profile is
-    # transverse to each member, hence the final 1/cos(beta) conversion.
-    thickness_share = 0.5 * (1.0 - p.thickness_factor if mate else 1.0 + p.thickness_factor)
+    # between the members; backlash is split once across the pair.  This is
+    # still the repository's approximate Tredgold tooth-section thickness,
+    # not a generated drive/coast flank calculation.
+    thickness_share = 0.5 * (
+        1.0 - p.thickness_factor if name == "gear" else 1.0 + p.thickness_factor
+    )
     normal_thickness = math.pi * tooth_module * thickness_share - p.backlash / 2.0
-    transverse_thickness = normal_thickness / max(abs(math.cos(spiral)), 1e-9)
-    half_pitch = math.pi / (z / max(math.cos(delta), 1e-9))
-    # Outer diameter is represented in the local cone section.  The published
-    # macro dimensions, rather than this presentation value, remain authoritative.
-    tip_r = tip * math.cos(delta)
-    root_r = root * math.cos(delta)
-    outer_scale = (cone_distance + p.face_width / 2.0) / cone_distance
-    outer_tip_r = tip_r * outer_scale
-    outer_root_r = root_r * outer_scale
+    if normal_thickness <= 0.0:
+        raise ValueError(f"{name} tooth thickness is not positive")
+    spiral_cos = abs(math.cos(spiral))
+    if spiral_cos < 1e-12:
+        raise ValueError(f"{name} transverse tooth thickness is singular")
+    transverse_thickness = normal_thickness / spiral_cos
+
     return HypoidMemberGeometry(
-        name=name, z=z, pitch_angle=delta, pitch_radius=radius,
-        cone_distance=cone_distance, outer_cone_distance=cone_distance + p.face_width / 2.0,
-        mean_spiral_angle=spiral, addendum=addendum, dedendum=dedendum,
-        face_angle=delta + math.atan2(addendum, max(cone_distance, 1e-9)),
-        root_angle=max(0.01, delta - math.atan2(dedendum, max(cone_distance, 1e-9))),
-        virtual_teeth=z / max(math.cos(delta), 1e-9), virtual_pitch_r=virtual_pitch,
-        virtual_base_r=base, virtual_tip_r=tip, virtual_root_r=root,
+        name=name,
+        z=z,
+        pitch_angle=delta,
+        pitch_radius=radius,
+        cone_distance=cone_distance,
+        outer_cone_distance=outer_cone_distance,
+        mean_spiral_angle=spiral,
+        addendum=addendum,
+        dedendum=dedendum,
+        working_depth=working_depth,
+        clearance=clearance,
+        whole_depth=whole_depth,
+        addendum_angle=addendum_angle,
+        dedendum_angle=dedendum_angle,
+        face_angle=face_angle,
+        root_angle=root_angle,
+        face_width=outer_face_width + inner_face_width,
+        outer_face_width=outer_face_width,
+        inner_face_width=inner_face_width,
+        inner_cone_distance=inner_cone_distance,
+        pitch_apex_z=pitch_apex_z,
+        mean_pitch_z=mean_pitch_z,
+        face_apex_z=face_apex_z,
+        root_apex_z=root_apex_z,
+        inner_tip_z=inner_tip_z,
+        outer_tip_z=outer_tip_z,
+        inner_root_z=inner_root_z,
+        outer_root_z=outer_root_z,
+        outer_pitch_diameter=outer_pitch_diameter,
+        inner_pitch_diameter=inner_pitch_diameter,
+        outer_tip_diameter=2.0 * outer_tip_radius,
+        inner_tip_diameter=2.0 * inner_tip_radius,
+        outer_addendum=outer_addendum,
+        inner_addendum=inner_addendum,
+        outer_dedendum=outer_dedendum,
+        inner_dedendum=inner_dedendum,
+        outer_whole_depth=outer_addendum + outer_dedendum,
+        inner_whole_depth=inner_addendum + inner_dedendum,
+        mean_tip_radius=mean_tip_radius,
+        mean_root_radius=mean_root_radius,
+        inner_tip_radius=inner_tip_radius,
+        outer_tip_radius=outer_tip_radius,
+        inner_root_radius=inner_root_radius,
+        outer_root_radius=outer_root_radius,
+        outer_root_diameter=2.0 * outer_root_radius,
+        inner_root_diameter=2.0 * inner_root_radius,
+        virtual_teeth=z / cos_delta,
+        virtual_pitch_r=virtual_pitch,
+        virtual_base_r=virtual_base,
+        virtual_tip_r=virtual_tip,
+        virtual_root_r=virtual_root,
         normal_tooth_thickness=normal_thickness,
         transverse_tooth_thickness=transverse_thickness,
-        tip_r=tip_r, root_r=root_r, outside_dia=2.0 * outer_tip_r,
-        outer_root_radius=outer_root_r,
+        tip_r=tip_r,
+        root_r=root_r,
+        outside_dia=2.0 * outer_tip_radius,
+        tredgold_outer_root_radius=(
+            virtual_root * outer_cone_distance / cone_distance * cos_delta
+        ),
     )
 
 
@@ -642,15 +905,215 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
     r2 = method1.wheel_mean_radius
     R1 = method1.pinion_mean_cone_distance
     R2 = method1.wheel_mean_cone_distance
-    inner1 = max(1e-6, R1 - p.face_width / 2.0)
-    inner2 = max(1e-6, R2 - p.face_width / 2.0)
     m_n = 2.0 * r2 * math.cos(beta2) / p.z2
-    pinion = _member("pinion", p.z1, d1, r1, R1, beta1, p, m_n, False)
-    gear = _member("gear", p.z2, d2, r2, R2, beta2, p, m_n, True)
+    depth = _method1_depth(p, m_n)
+
+    # ISO 23509 formulas 122-128.  The wheel outer transverse diameter is an
+    # input, so the Method 1 calculation point is not generally at b2/2.
+    sin_d2 = math.sin(d2)
+    if sin_d2 <= 0.0:
+        raise ValueError("Method 1 wheel pitch angle has no positive sine")
+    Re2 = p.wheel_outer_radius / sin_d2
+    be2 = Re2 - R2
+    bi2 = p.face_width - be2
+    if be2 <= 0.0 or bi2 <= 0.0:
+        raise ValueError(
+            "Method 1 wheel outer diameter and face width do not contain the "
+            "wheel calculation point"
+        )
+    Ri2 = R2 - bi2
+    if Ri2 <= 0.0:
+        raise ValueError("Method 1 wheel inner cone distance is not positive")
+    cbe2 = be2 / p.face_width
+
+    # ISO 23509 formulas 129-131 locate the calculation point and the two
+    # pitch-cone apices relative to the crossing point.  The axial offset is
+    # used as a magnitude here: reversing the signed hypoid offset mirrors the
+    # blank, but cannot change its dimensions.
+    delta_sigma = method1.shaft_angle_departure
+    zeta_m = abs(method1.pinion_offset_angle_axial)
+    dm1 = 2.0 * R1 * math.sin(d1)
+    dm2 = 2.0 * R2 * math.sin(d2)
+    tzm2 = (
+        dm1 * math.sin(d2) / (2.0 * math.cos(d1))
+        - 0.5 * math.cos(zeta_m) * math.tan(delta_sigma)
+        * (dm2 + dm1 * math.cos(d2) / math.cos(d1))
+    )
+    tzm1 = dm2 / 2.0 * math.cos(zeta_m) * math.cos(delta_sigma)
+    tzm1 -= tzm2 * math.sin(delta_sigma)
+    tz1 = R1 * math.cos(d1) - tzm1
+    tz2 = R2 * math.cos(d2) - tzm2
+
+    theta_a2 = math.radians(p.gear_addendum_angle)
+    theta_f2 = math.radians(p.gear_dedendum_angle)
+    delta_a2 = d2 + theta_a2
+    delta_f2 = d2 - theta_f2
+    if not 0.0 < delta_a2 < math.pi / 2.0:
+        raise ValueError("Method 1 wheel face angle is outside the external-pair range")
+    if not 0.0 < delta_f2 < math.pi / 2.0:
+        raise ValueError("Method 1 wheel root angle is outside the external-pair range")
+
+    offset = abs(p.offset)
+    den_root = R2 * math.cos(theta_f2) - tz2 * math.cos(delta_f2)
+    den_face = R2 * math.cos(theta_a2) - tz2 * math.cos(delta_a2)
+    if abs(den_root) < 1e-12 or abs(den_face) < 1e-12:
+        raise ValueError("Method 1 root/face angle calculation is singular")
+    phi_r = math.atan2(
+        offset * math.tan(delta_sigma) * math.cos(theta_f2), den_root
+    )
+    phi_o = math.atan2(
+        offset * math.tan(delta_sigma) * math.cos(theta_a2), den_face
+    )
+    zeta_r = _checked_asin(
+        offset * math.cos(phi_r) * math.sin(delta_f2) / den_root,
+        "pinion root-plane offset angle",
+    ) - phi_r
+    zeta_o = _checked_asin(
+        offset * math.cos(phi_o) * math.sin(delta_a2) / den_face,
+        "pinion face-plane offset angle",
+    ) - phi_o
+    delta_a1 = _checked_asin(
+        math.sin(delta_sigma) * math.sin(delta_f2)
+        + math.cos(delta_sigma) * math.cos(delta_f2) * math.cos(zeta_r),
+        "pinion face angle",
+    )
+    delta_f1 = _checked_asin(
+        math.sin(delta_sigma) * math.sin(delta_a2)
+        + math.cos(delta_sigma) * math.cos(delta_a2) * math.cos(zeta_o),
+        "pinion root angle",
+    )
+    theta_a1 = delta_a1 - d1
+    theta_f1 = d1 - delta_f1
+
+    # ISO 23509 formulas 150-153.  These are stored as apex locations rather
+    # than folded into a single face-angle approximation.
+    if abs(math.sin(delta_a1)) < 1e-12 or abs(math.sin(delta_f1)) < 1e-12:
+        raise ValueError("Method 1 pinion apex calculation is singular")
+    tzF2 = tz2 - (
+        R2 * math.sin(theta_a2) - depth.gear_addendum * math.cos(theta_a2)
+    ) / math.sin(delta_a2)
+    tzR2 = tz2 + (
+        R2 * math.sin(theta_f2) - depth.gear_dedendum * math.cos(theta_f2)
+    ) / math.sin(delta_f2)
+    tzF1 = (
+        offset * math.sin(zeta_r) * math.cos(delta_f2)
+        - tzR2 * math.sin(delta_f2) - depth.clearance
+    ) / math.sin(delta_a1)
+    tzR1 = (
+        offset * math.sin(zeta_o) * math.cos(delta_a2)
+        - tzF2 * math.sin(delta_a2) - depth.clearance
+    ) / math.sin(delta_f1)
+
+    # ISO 23509 formulas 159-166.  Method 1's pinion calculation point is
+    # generally not in the middle of the pinion face.
+    denominator_lambda = (
+        p.ratio * math.cos(d1) + math.cos(d2) * math.cos(abs(method1.pinion_offset_angle_pitch))
+    )
+    lambda_prime = math.atan2(
+        math.sin(abs(method1.pinion_offset_angle_pitch)) * math.cos(d2),
+        denominator_lambda,
+    )
+    cos_lambda = math.cos(abs(method1.pinion_offset_angle_pitch) - lambda_prime)
+    if abs(cos_lambda) < 1e-12:
+        raise ValueError("Method 1 pinion face-width closure is singular")
+    breri1 = p.face_width * math.cos(lambda_prime) / cos_lambda
+    delta_bx1 = depth.working_depth * math.sin(abs(zeta_r)) * (1.0 - 1.0 / p.ratio)
+    cos_theta_a1 = math.cos(theta_a1)
+    cos_delta_a1 = math.cos(delta_a1)
+    if abs(cos_theta_a1) < 1e-12 or abs(cos_delta_a1) < 1e-12:
+        raise ValueError("Method 1 pinion face-width closure is singular")
+    delta_gxe = (
+        cbe2 * breri1 * cos_delta_a1 / cos_theta_a1
+        + delta_bx1
+        - (depth.gear_dedendum - depth.clearance) * math.sin(d1)
+    )
+    delta_gxi = (
+        (1.0 - cbe2) * breri1 * cos_delta_a1 / cos_theta_a1
+        + delta_bx1
+        + (depth.gear_dedendum - depth.clearance) * math.sin(d1)
+    )
+    be1 = (
+        delta_gxe + depth.pinion_addendum * math.sin(d1)
+    ) * cos_theta_a1 / cos_delta_a1
+    denominator_bi1 = math.cos(d1) - math.tan(theta_a1) * math.sin(d1)
+    if abs(denominator_bi1) < 1e-12:
+        raise ValueError("Method 1 pinion inner face-width closure is singular")
+    bi1 = (
+        delta_gxi - depth.pinion_addendum * math.sin(d1)
+    ) / denominator_bi1
+    if be1 <= 0.0 or bi1 <= 0.0:
+        raise ValueError("Method 1 pinion face-width closure is not positive")
+    Ri1 = R1 - bi1
+    if Ri1 <= 0.0:
+        raise ValueError("Method 1 pinion inner cone distance is not positive")
+
+    method1 = replace(
+        method1,
+        wheel_face_width_factor=cbe2,
+        wheel_outer_face_width=be2,
+        wheel_inner_face_width=bi2,
+        pinion_outer_face_width=be1,
+        pinion_inner_face_width=bi1,
+        crossing_to_wheel_mean_z=tzm2,
+        crossing_to_pinion_mean_z=tzm1,
+        wheel_pitch_apex_z=tz2,
+        pinion_pitch_apex_z=tz1,
+        wheel_face_apex_z=tzF2,
+        wheel_root_apex_z=tzR2,
+        pinion_face_apex_z=tzF1,
+        pinion_root_apex_z=tzR1,
+        pinion_root_plane_offset_angle=zeta_r,
+        pinion_face_plane_offset_angle=zeta_o,
+        pinion_face_width_auxiliary_angle=lambda_prime,
+    )
+
+    pinion = _member(
+        "pinion", p.z1, d1, r1, R1, beta1, p, m_n,
+        addendum=depth.pinion_addendum,
+        dedendum=depth.pinion_dedendum,
+        working_depth=depth.working_depth,
+        clearance=depth.clearance,
+        whole_depth=depth.whole_depth,
+        addendum_angle=theta_a1,
+        dedendum_angle=theta_f1,
+        inner_cone_distance=Ri1,
+        outer_face_width=be1,
+        inner_face_width=bi1,
+        pitch_apex_z=tz1,
+        mean_pitch_z=tzm1,
+        face_apex_z=tzF1,
+        root_apex_z=tzR1,
+    )
+    gear = _member(
+        "gear", p.z2, d2, r2, R2, beta2, p, m_n,
+        addendum=depth.gear_addendum,
+        dedendum=depth.gear_dedendum,
+        working_depth=depth.working_depth,
+        clearance=depth.clearance,
+        whole_depth=depth.whole_depth,
+        addendum_angle=theta_a2,
+        dedendum_angle=theta_f2,
+        inner_cone_distance=Ri2,
+        outer_face_width=be2,
+        inner_face_width=bi2,
+        pitch_apex_z=tz2,
+        mean_pitch_z=tzm2,
+        face_apex_z=tzF2,
+        root_apex_z=tzR2,
+    )
     return HypoidSetGeometry(
-        params=p, outer_cone_dist=max(R1, R2) + p.face_width / 2.0,
-        mean_cone_dist=0.5 * (R1 + R2), inner_cone_dist=min(inner1, inner2),
-        mean_normal_module=m_n, offset_angle=method1.pinion_offset_angle_pitch,
+        params=p,
+        outer_cone_dist=gear.outer_cone_distance,
+        mean_cone_dist=gear.cone_distance,
+        inner_cone_dist=gear.inner_cone_distance,
+        mean_normal_module=m_n,
+        basic_addendum_factor=depth.basic_addendum_factor,
+        basic_dedendum_factor=depth.basic_dedendum_factor,
+        profile_shift_coefficient=depth.profile_shift_coefficient,
+        mean_working_depth=depth.working_depth,
+        mean_clearance=depth.clearance,
+        mean_whole_depth=depth.whole_depth,
+        offset_angle=method1.pinion_offset_angle_pitch,
         pitch_plane_offset=method1.pitch_plane_offset, method1=method1,
         pinion=pinion, gear=gear,
     )
@@ -806,19 +1269,21 @@ def section_cone_distances(geo: HypoidSetGeometry, member: str, count: int = 8) 
     step = max(p.module, p.face_width / 8.0)
 
     # A cut loft is most reliable when both terminal profiles are wholly in
-    # free space.  The nominal mean +/- half-face positions are still inside
-    # the sloping face/back cones, which made InsertCutBlend reject the closed
-    # volume.  Walk each end just far enough to clear the actual blank planes.
-    lo = max(0.05 * m.cone_distance, m.cone_distance - p.face_width / 2.0)
+    # free space.  Walk from the actual Method 1 boundaries just far enough to
+    # clear the blank planes; the pinion and wheel no longer share these
+    # distances.
+    lo = m.inner_cone_distance
     for _ in range(100):
         inner = tooth_space_section(geo, member, lo)
         if max(z for _, _, z in inner.loop_3d()) < z_front - margin:
             break
-        lo = max(0.05 * m.cone_distance, lo - step)
+        lo -= step
+        if lo <= 0.0:
+            raise ValueError(f"could not clear the {member} hypoid blank front face")
     else:
         raise ValueError(f"could not clear the {member} hypoid blank front face")
 
-    hi = m.cone_distance + p.face_width / 2.0
+    hi = m.outer_cone_distance
     for _ in range(100):
         outer = tooth_space_section(geo, member, hi)
         if min(z for _, _, z in outer.loop_3d()) > z_back + margin:
@@ -834,26 +1299,23 @@ def blank_outline(geo: HypoidSetGeometry, member: str) -> list[tuple[float, floa
     m = geo.member(member)
     p = geo.params
     bore = p.bore / 2.0 if member == "pinion" else max(0.5, p.bore / 2.0)
-    outer = m.cone_distance + p.face_width / 2.0
-    inner = max(0.05 * m.cone_distance, m.cone_distance - p.face_width / 2.0)
-    cos_d = math.cos(m.pitch_angle)
-    sin_d = math.sin(m.pitch_angle)
-
-    def mapped(radius: float, cone_dist: float) -> tuple[float, float]:
-        """Physical R/z of a developed section radius on its back cone."""
-        developed = radius * cone_dist / m.cone_distance
-        return developed * cos_d, cone_dist / cos_d - developed * sin_d
-
-    inner_tip, z_front = mapped(m.virtual_tip_r, inner)
-    outer_tip, z_crown = mapped(m.virtual_tip_r, outer)
-    outer_root, z_root = mapped(m.virtual_root_r, outer)
+    # These are physical Method 1 points.  The Tredgold developed radii used
+    # for the approximate tooth section are intentionally not used to size the
+    # revolved blank.
+    z_front = m.inner_tip_z
+    z_crown = m.outer_tip_z
+    z_root = m.outer_root_z
     z_back = z_root + max(0.0, p.min_root_thickness)
-    outline = [(bore, z_front), (inner_tip, z_front),
-               (outer_tip, z_crown), (outer_root, z_root)]
+    outline = [
+        (bore, z_front),
+        (m.inner_tip_radius, z_front),
+        (m.outer_tip_radius, z_crown),
+        (m.outer_root_radius, z_root),
+    ]
     if p.min_root_thickness > 0.0:
-        outline.append((outer_root, z_back))
+        outline.append((m.outer_root_radius, z_back))
     if p.hub_thickness > 0.0:
-        hub_r = min(outer_root * 0.7, bore + 2.0 * max(p.module, 1.0))
+        hub_r = min(m.outer_root_radius * 0.7, bore + 2.0 * max(p.module, 1.0))
         outline.extend([(hub_r, z_back), (hub_r, z_back + p.hub_thickness),
                         (bore, z_back + p.hub_thickness)])
     else:
@@ -864,8 +1326,8 @@ def blank_outline(geo: HypoidSetGeometry, member: str) -> list[tuple[float, floa
 def section_count(geo: HypoidSetGeometry, member: str) -> int:
     m = geo.member(member)
     sag = max(0.01, 0.02 * geo.params.module)
-    inner = max(0.05 * m.cone_distance, m.cone_distance - geo.params.face_width / 2.0)
-    outer = m.cone_distance + geo.params.face_width / 2.0
+    inner = m.inner_cone_distance
+    outer = m.outer_cone_distance
     twist = abs(_phase(m, outer, geo) - _phase(m, inner, geo))
     step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - sag / max(m.tip_r, 1e-9))))
     return max(2, math.ceil(twist / max(step, 1e-9)) + 1)

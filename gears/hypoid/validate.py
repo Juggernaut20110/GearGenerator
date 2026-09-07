@@ -87,11 +87,8 @@ def validate(p: HypoidSetParams) -> ValidationResult:
     if p.cutter_radius is not None:
         for member in (geo.pinion, geo.gear):
             trace = _cutter_trace(member, geo)
-            inner = max(
-                0.05 * member.cone_distance,
-                member.cone_distance - p.face_width / 2.0,
-            )
-            outer = member.cone_distance + p.face_width / 2.0
+            inner = member.inner_cone_distance
+            outer = member.outer_cone_distance
             if not trace.reaches(inner, outer):
                 lo = abs(trace.centre_distance - trace.cutter_radius)
                 hi = trace.centre_distance + trace.cutter_radius

@@ -45,6 +45,75 @@ def test_method_1_anchor_converges_to_published_macro_geometry():
     ) == pytest.approx(math.pi * geo.mean_normal_module - ANCHOR.backlash)
 
 
+def test_method_1_anchor_depths_and_angles_use_independent_equations():
+    geo = compute_set(ANCHOR)
+    x_hm1 = ANCHOR.depth_factor * (0.5 - ANCHOR.gear_mean_addendum_factor)
+    k_hap = 0.5 * ANCHOR.depth_factor
+    k_hfp = 0.5 * ANCHOR.depth_factor + 2.0 * ANCHOR.clearance_factor
+    mn = geo.mean_normal_module
+
+    assert geo.profile_shift_coefficient == pytest.approx(x_hm1, abs=1e-12)
+    assert geo.basic_addendum_factor == pytest.approx(k_hap, abs=1e-12)
+    assert geo.basic_dedendum_factor == pytest.approx(k_hfp, abs=1e-12)
+    assert geo.working_depth == pytest.approx(2.0 * k_hap * mn, abs=1e-12)
+    assert geo.clearance == pytest.approx((k_hfp - k_hap) * mn, abs=1e-12)
+    assert geo.whole_depth == pytest.approx((k_hap + k_hfp) * mn, abs=1e-12)
+    assert geo.pinion.addendum == pytest.approx(mn * (k_hap + x_hm1), abs=1e-12)
+    assert geo.pinion.dedendum == pytest.approx(mn * (k_hfp - x_hm1), abs=1e-12)
+    assert geo.gear.addendum == pytest.approx(mn * (k_hap - x_hm1), abs=1e-12)
+    assert geo.gear.dedendum == pytest.approx(mn * (k_hfp + x_hm1), abs=1e-12)
+
+    assert geo.pinion.addendum == pytest.approx(3.432, abs=0.002)
+    assert geo.pinion.dedendum == pytest.approx(2.508, abs=0.002)
+    assert geo.gear.addendum == pytest.approx(1.848, abs=0.002)
+    assert geo.gear.dedendum == pytest.approx(4.092, abs=0.002)
+    assert geo.pinion.face_angle_deg == pytest.approx(25.231, abs=0.002)
+    assert geo.pinion.root_angle_deg == pytest.approx(20.302, abs=0.002)
+    assert geo.gear.face_angle_deg == pytest.approx(69.324, abs=0.002)
+    assert geo.gear.root_angle_deg == pytest.approx(64.324, abs=0.002)
+
+    for member in (geo.pinion, geo.gear):
+        assert member.face_angle == pytest.approx(
+            member.pitch_angle + member.addendum_angle, abs=1e-12
+        )
+        assert member.root_angle == pytest.approx(
+            member.pitch_angle - member.dedendum_angle, abs=1e-12
+        )
+        assert member.outer_addendum == pytest.approx(
+            member.addendum + member.outer_face_width * math.tan(member.addendum_angle),
+            abs=1e-12,
+        )
+        assert member.inner_dedendum == pytest.approx(
+            member.dedendum - member.inner_face_width * math.tan(member.dedendum_angle),
+            abs=1e-12,
+        )
+        assert member.outer_tip_diameter == pytest.approx(
+            member.outer_pitch_diameter
+            + 2.0 * member.outer_addendum * math.cos(member.pitch_angle),
+            abs=1e-12,
+        )
+        assert member.outer_root_diameter == pytest.approx(
+            member.outer_pitch_diameter
+            - 2.0 * member.outer_dedendum * math.cos(member.pitch_angle),
+            abs=1e-12,
+        )
+
+    assert geo.pinion.face_width == pytest.approx(31.910, abs=0.002)
+    assert geo.gear.face_width == pytest.approx(30.0, abs=1e-12)
+    method = geo.method1
+    assert method.wheel_face_width_factor == pytest.approx(
+        geo.gear.outer_face_width / geo.gear.face_width, abs=1e-12
+    )
+    assert method.pinion_outer_face_width == pytest.approx(
+        geo.pinion.outer_face_width, abs=1e-12
+    )
+    assert method.pinion_inner_face_width == pytest.approx(
+        geo.pinion.inner_face_width, abs=1e-12
+    )
+    assert method.wheel_face_apex_z == pytest.approx(geo.gear.face_apex_z, abs=1e-12)
+    assert method.pinion_root_apex_z == pytest.approx(geo.pinion.root_apex_z, abs=1e-12)
+
+
 def _independent_limit_radius(geo):
     """Re-evaluate ISO 23509 formulas 32 and 33 from public result fields."""
     a, b, method = geo.pinion, geo.gear, geo.method1
@@ -164,6 +233,14 @@ def test_offset_is_signed_but_axis_distance_is_positive():
     assert positive.method1.wheel_offset_angle_axial == pytest.approx(
         -negative.method1.wheel_offset_angle_axial
     )
+    for member in ("pinion", "gear"):
+        a, b = positive.member(member), negative.member(member)
+        assert a.face_width == pytest.approx(b.face_width, abs=1e-12)
+        assert a.outer_face_width == pytest.approx(b.outer_face_width, abs=1e-12)
+        assert a.inner_face_width == pytest.approx(b.inner_face_width, abs=1e-12)
+        assert a.outside_dia == pytest.approx(b.outside_dia, abs=1e-12)
+        assert a.outer_root_diameter == pytest.approx(b.outer_root_diameter, abs=1e-12)
+        assert a.outer_tip_z == pytest.approx(b.outer_tip_z, abs=1e-12)
     assert gear_translation(positive)[1] == pytest.approx(15.0)
     assert gear_translation(negative)[1] == pytest.approx(-15.0)
 
@@ -173,6 +250,9 @@ def test_zero_offset_reduces_to_intersecting_pitch_cones():
     geo = compute_set(p)
     assert geo.offset_angle == 0.0
     assert geo.pinion.pitch_angle + geo.gear.pitch_angle == pytest.approx(p.sigma)
+    assert geo.pinion.face_width == pytest.approx(geo.gear.face_width, abs=1e-12)
+    assert geo.pinion.outer_face_width == pytest.approx(geo.gear.outer_face_width, abs=1e-12)
+    assert geo.pinion.inner_face_width == pytest.approx(geo.gear.inner_face_width, abs=1e-12)
     changed_cutter = compute_set(
         HypoidSetParams(**{**p.__dict__, "cutter_radius": 100.0})
     )
@@ -223,20 +303,26 @@ def test_blank_spans_both_sides_of_mean_cone_and_uses_heel_diameter():
     for member in ("pinion", "gear"):
         m = geo.member(member)
         outline = blank_outline(geo, member)
-        radial_per_cone_distance = (
-            m.virtual_tip_r * math.cos(m.pitch_angle) / m.cone_distance
+        assert outline[1] == pytest.approx((m.inner_tip_radius, m.inner_tip_z), abs=1e-9)
+        assert outline[2] == pytest.approx((m.outer_tip_radius, m.outer_tip_z), abs=1e-9)
+        assert outline[3] == pytest.approx((m.outer_root_radius, m.outer_root_z), abs=1e-9)
+        assert m.inner_cone_distance == pytest.approx(
+            m.cone_distance - m.inner_face_width, abs=1e-12
         )
-        assert outline[1][0] / radial_per_cone_distance == pytest.approx(
-            m.cone_distance - geo.params.face_width / 2.0, abs=1e-9
+        assert m.outer_cone_distance == pytest.approx(
+            m.cone_distance + m.outer_face_width, abs=1e-12
         )
-        assert outline[2][0] / radial_per_cone_distance == pytest.approx(
-            m.cone_distance + geo.params.face_width / 2.0, abs=1e-9
-        )
-        outer_pitch_radius = (
-            m.cone_distance + geo.params.face_width / 2.0
-        ) * math.sin(m.pitch_angle)
         assert m.outside_dia / 2.0 == pytest.approx(outline[2][0], abs=1e-9)
-        assert m.outside_dia / 2.0 > outer_pitch_radius
+        assert m.outside_dia / 2.0 > m.outer_pitch_diameter / 2.0
+
+
+def test_method_1_physical_root_is_separate_from_tredgold_root():
+    geo = compute_set(ANCHOR)
+    for member in (geo.pinion, geo.gear):
+        assert member.outer_root_radius != pytest.approx(
+            member.tredgold_outer_root_radius, abs=1e-6
+        )
+        assert member.root_r == pytest.approx(member.mean_root_radius, abs=1e-12)
 
 
 def test_mesh_clocking_and_preview_are_available():

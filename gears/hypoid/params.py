@@ -18,7 +18,7 @@ from ..params_io import JsonParams
 class HypoidSetParams(JsonParams):
     """Inputs for one external hypoid pair.
 
-    The advanced factors are the Method 1 data-type-I defaults used by the
+    The advanced factors are the Method 1 data-type-II inputs used by the
     published anchor.  They remain fields so a saved preset can retain a
     cutter/design choice without changing the basic GUI surface.
     """
@@ -41,12 +41,15 @@ class HypoidSetParams(JsonParams):
 
     # ISO Method 1 data-type-I factors.  These are intentionally editable in
     # JSON/API use but are not put in the first GUI pass.
-    profile_shift: float = 0.35       # x_hm1 - c_ham
-    depth_factor: float = 2.0         # k_d
-    clearance_factor: float = 0.125   # k_c
+    # Type-II inputs.  ``gear_mean_addendum_factor`` is c_ham, not a profile
+    # shift.  ISO converts it to the type-I profile-shift coefficient before
+    # calculating the member addenda.
+    gear_mean_addendum_factor: float = 0.35  # c_ham
+    depth_factor: float = 2.0               # k_d
+    clearance_factor: float = 0.125         # k_c
     thickness_factor: float = 0.10    # k_t
-    gear_addendum_angle: float = 1.0  # theta_a2, degrees
-    gear_dedendum_angle: float = 4.0  # theta_f2, degrees
+    gear_addendum_angle: float = 1.0  # Method 1 theta_a2, degrees
+    gear_dedendum_angle: float = 4.0  # Method 1 theta_f2, degrees
 
     @property
     def alpha(self) -> float:
