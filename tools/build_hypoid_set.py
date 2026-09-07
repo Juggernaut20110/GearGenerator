@@ -29,7 +29,10 @@ def main(argv=None) -> int:
     ap.add_argument("--face-width", type=float, default=30.0)
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
-    ap.add_argument("--backlash", type=float, default=0.0)
+    ap.add_argument(
+        "--backlash", type=float, default=0.0,
+        help="outer transverse backlash at the wheel outer cone, mm",
+    )
     ap.add_argument("--out", default="out")
     ap.add_argument("--no-save", action="store_true")
     ap.add_argument("--no-mates", action="store_true")

@@ -94,6 +94,10 @@ def derived_rows(geo: HypoidSetGeometry) -> list[Row]:
         Row("pitch-plane offset", f"{geo.pitch_plane_offset:.4f}", unit="mm"),
         Row("offset angle", f"{geo.offset_angle_deg:.4f}", unit="deg"),
         Row("mean normal module", f"{geo.mean_normal_module:.4f}", unit="mm"),
+        Row("outer transverse backlash", f"{geo.outer_transverse_backlash:.4f}", unit="mm"),
+        Row("backlash convention", "outer transverse at wheel outer cone"),
+        Row("mean transverse backlash", f"{geo.mean_transverse_backlash:.4f}", unit="mm"),
+        Row("mean normal backlash", f"{geo.mean_normal_backlash:.4f}", unit="mm"),
         *([] if geo.method1.mean_tooth_curvature is None else [
             Row("cutter curvature", f"{geo.method1.mean_tooth_curvature:.4f}", unit="mm"),
             Row("limit curvature", f"{geo.method1.limit_radius_of_curvature:.4f}", unit="mm"),
@@ -110,8 +114,9 @@ def derived_rows(geo: HypoidSetGeometry) -> list[Row]:
         Row("dedendum", f"{a.dedendum:.4f}", f"{b.dedendum:.4f}", "mm"),
         Row("face angle", f"{a.face_angle_deg:.4f}", f"{b.face_angle_deg:.4f}", "deg"),
         Row("root angle", f"{a.root_angle_deg:.4f}", f"{b.root_angle_deg:.4f}", "deg"),
-        Row("normal tooth thickness", f"{a.normal_tooth_thickness:.4f}", f"{b.normal_tooth_thickness:.4f}", "mm"),
-        Row("transverse tooth thickness", f"{a.transverse_tooth_thickness:.4f}", f"{b.transverse_tooth_thickness:.4f}", "mm"),
+        Row("thickness modification coefficient", f"{a.x_sm:.4f}", f"{b.x_sm:.4f}"),
+        Row("mean normal tooth thickness", f"{a.mean_normal_tooth_thickness:.4f}", f"{b.mean_normal_tooth_thickness:.4f}", "mm"),
+        Row("mean transverse tooth thickness", f"{a.mean_transverse_tooth_thickness:.4f}", f"{b.mean_transverse_tooth_thickness:.4f}", "mm"),
         Row("outside diameter", f"{a.outside_dia:.4f}", f"{b.outside_dia:.4f}", "mm"),
     ]
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 
 from ..validate import (
-    MAX_BACKLASH_FRACTION,
     MAX_PRESSURE_ANGLE,
     MIN_PRESSURE_ANGLE,
     MIN_TEETH,
@@ -38,8 +37,8 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.error("bore", "cannot be negative")
     if p.hub_thickness < 0 or p.min_root_thickness < 0:
         result.error("hub_thickness", "backing dimensions cannot be negative")
-    if p.backlash < 0:
-        result.error("backlash", "cannot be negative")
+    if not math.isfinite(p.backlash) or p.backlash < 0:
+        result.error("backlash", "must be finite and non-negative")
     if not -0.95 < p.thickness_factor < 0.95:
         result.error("thickness_factor", "must be between -0.95 and 0.95")
     if p.hand not in ("right", "left"):
@@ -61,12 +60,13 @@ def validate(p: HypoidSetParams) -> ValidationResult:
     try:
         geo = compute_set(p)
     except Exception as exc:
-        field = (
-            "cutter_radius"
-            if p.cutter_radius is not None
-            and "Method 1 curvature" in str(exc)
-            else "geometry"
-        )
+        message = str(exc)
+        if p.cutter_radius is not None and "Method 1 curvature" in message:
+            field = "cutter_radius"
+        elif "tooth thickness" in message:
+            field = "backlash"
+        else:
+            field = "geometry"
         result.error(field, str(exc))
         return result
 
@@ -77,8 +77,11 @@ def validate(p: HypoidSetParams) -> ValidationResult:
             result.error(member.name, "tip circle does not reach the involute")
         if member.virtual_root_r <= 0:
             result.error(member.name, "root radius is not positive")
-        if member.normal_tooth_thickness <= 0.0:
-            result.error(member.name, "backlash closes the member tooth thickness")
+        if member.mean_normal_tooth_thickness <= 0.0:
+            result.error(
+                "backlash",
+                f"{member.name} mean normal tooth thickness is not positive",
+            )
         try:
             tooth_space_section(geo, member.name)
         except Exception as exc:
@@ -103,8 +106,6 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.warn("cutter_radius", "a very small cutter produces a sharply varying spiral")
     if abs(p.offset) > 0.15 * p.wheel_outer_diameter:
         result.warn("offset", "offset exceeds the usual 15% design range")
-    if p.backlash > MAX_BACKLASH_FRACTION * geo.circular_pitch:
-        result.warn("backlash", "backlash exceeds 5% of the generated mean circular pitch")
     if abs(p.spiral_angle) > 45:
         result.warn("spiral_angle", "high spiral angle increases axial thrust")
     if p.bore / 2.0 + p.module >= geo.pinion.root_r:

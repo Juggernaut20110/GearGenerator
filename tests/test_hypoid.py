@@ -29,6 +29,9 @@ ANCHOR = HypoidSetParams.with_defaults(
     170.0 / 42.0, 13, 42,
     offset=15.0, face_width=30.0, spiral_angle=50.0, cutter_radius=63.5,
 )
+ANCHOR_BACKLASH = HypoidSetParams(
+    **{**ANCHOR.__dict__, "backlash": 0.2}
+)
 
 
 def test_method_1_anchor_converges_to_published_macro_geometry():
@@ -112,6 +115,76 @@ def test_method_1_anchor_depths_and_angles_use_independent_equations():
     )
     assert method.wheel_face_apex_z == pytest.approx(geo.gear.face_apex_z, abs=1e-12)
     assert method.pinion_root_apex_z == pytest.approx(geo.pinion.root_apex_z, abs=1e-12)
+
+
+def test_method_1_anchor_outer_transverse_backlash_is_converted_once():
+    geo = compute_set(ANCHOR_BACKLASH)
+    p = ANCHOR_BACKLASH
+    thickness = geo.thickness
+    mn = geo.mean_normal_module
+    alpha_n = p.alpha
+    expected_mean_transverse = (
+        p.backlash * geo.gear.cone_distance / geo.gear.outer_cone_distance
+    )
+    expected_mean_normal = expected_mean_transverse * abs(
+        math.cos(geo.gear.mean_spiral_angle)
+    )
+    expected_backlash_x = expected_mean_normal / (
+        4.0 * mn * math.cos(alpha_n)
+    )
+    x_smn = 0.5 * p.thickness_factor
+
+    assert p.outer_transverse_backlash == pytest.approx(0.2)
+    assert thickness.outer_transverse_backlash == pytest.approx(0.2)
+    assert thickness.mean_transverse_backlash == pytest.approx(
+        expected_mean_transverse, abs=1e-12
+    )
+    assert thickness.mean_normal_backlash == pytest.approx(
+        expected_mean_normal, abs=1e-12
+    )
+    assert thickness.backlash_thickness_modification == pytest.approx(
+        expected_backlash_x, abs=1e-12
+    )
+    assert geo.pinion.x_sm == pytest.approx(x_smn - expected_backlash_x, abs=1e-12)
+    assert geo.gear.x_sm == pytest.approx(-x_smn - expected_backlash_x, abs=1e-12)
+    # These are the published coefficient values to the stated precision.
+    assert geo.pinion.x_sm == pytest.approx(0.038, abs=0.002)
+    assert geo.gear.x_sm == pytest.approx(-0.062, abs=0.002)
+
+    expected_pinion = 0.5 * mn * (
+        math.pi + 2.0 * (geo.pinion.x_sm + geo.profile_shift_coefficient)
+        * math.tan(alpha_n)
+    )
+    expected_gear = 0.5 * mn * (
+        math.pi + 2.0 * (geo.gear.x_sm - geo.profile_shift_coefficient)
+        * math.tan(alpha_n)
+    )
+    assert geo.pinion.mean_normal_tooth_thickness == pytest.approx(
+        expected_pinion, abs=1e-12
+    )
+    assert geo.gear.mean_normal_tooth_thickness == pytest.approx(
+        expected_gear, abs=1e-12
+    )
+    assert geo.pinion.mean_transverse_tooth_thickness == pytest.approx(
+        expected_pinion / abs(math.cos(geo.pinion.mean_spiral_angle)), abs=1e-12
+    )
+    assert geo.gear.mean_transverse_tooth_thickness == pytest.approx(
+        expected_gear / abs(math.cos(geo.gear.mean_spiral_angle)), abs=1e-12
+    )
+
+
+def test_hypoid_zero_backlash_has_no_backlash_thickness_correction():
+    geo = compute_set(ANCHOR)
+    assert geo.outer_transverse_backlash == 0.0
+    assert geo.mean_transverse_backlash == 0.0
+    assert geo.mean_normal_backlash == 0.0
+    assert geo.thickness.backlash_thickness_modification == 0.0
+    assert geo.pinion.x_sm == pytest.approx(0.5 * ANCHOR.thickness_factor)
+    assert geo.gear.x_sm == pytest.approx(-0.5 * ANCHOR.thickness_factor)
+    assert (
+        geo.pinion.mean_normal_tooth_thickness
+        + geo.gear.mean_normal_tooth_thickness
+    ) == pytest.approx(math.pi * geo.mean_normal_module, abs=1e-12)
 
 
 def _independent_limit_radius(geo):
@@ -212,11 +285,21 @@ def test_zero_offset_transverse_thicknesses_close_one_pitch_and_backlash_once():
         HypoidSetParams(**{**base.__dict__, "backlash": 0.2})
     )
     normal_sum = (
-        with_backlash.pinion.normal_tooth_thickness
-        + with_backlash.gear.normal_tooth_thickness
+        with_backlash.pinion.mean_normal_tooth_thickness
+        + with_backlash.gear.mean_normal_tooth_thickness
+    )
+    expected_loss = (
+        2.0 * with_backlash.mean_normal_module
+        * with_backlash.thickness.backlash_thickness_modification
+        * math.tan(with_backlash.thickness.mean_normal_pressure_angle)
     )
     assert normal_sum == pytest.approx(
-        math.pi * with_backlash.mean_normal_module - 0.2, abs=1e-9
+        math.pi * with_backlash.mean_normal_module - expected_loss, abs=1e-9
+    )
+    assert with_backlash.mean_transverse_backlash == pytest.approx(
+        0.2 * with_backlash.gear.cone_distance
+        / with_backlash.gear.outer_cone_distance,
+        abs=1e-12,
     )
 
 
@@ -402,6 +485,54 @@ def test_cutter_radius_must_cover_both_member_faces():
     assert any(issue.field == "cutter_radius" for issue in result.errors)
 
 
+@pytest.mark.parametrize(
+    "module,z1,z2,offset,face_width,spiral,cutter",
+    [
+        (2.0, 17, 43, 6.0, 8.0, 25.0, 30.0),
+        (3.0, 19, 57, -10.0, 12.0, 48.0, 50.0),
+    ],
+)
+def test_non_anchor_backlash_uses_each_member_spiral_angle(
+    module, z1, z2, offset, face_width, spiral, cutter
+):
+    p = HypoidSetParams.with_defaults(
+        module, z1, z2, offset=offset, face_width=face_width,
+        spiral_angle=spiral, cutter_radius=cutter, backlash=0.2,
+    )
+    geo = compute_set(p)
+    expected_mean_transverse = (
+        p.backlash * geo.gear.cone_distance / geo.gear.outer_cone_distance
+    )
+    expected_mean_normal = expected_mean_transverse * abs(
+        math.cos(geo.gear.mean_spiral_angle)
+    )
+    assert geo.mean_transverse_backlash == pytest.approx(
+        expected_mean_transverse, abs=1e-12
+    )
+    assert geo.mean_normal_backlash == pytest.approx(
+        expected_mean_normal, abs=1e-12
+    )
+    for member in (geo.pinion, geo.gear):
+        assert member.mean_transverse_tooth_thickness == pytest.approx(
+            member.mean_normal_tooth_thickness / abs(math.cos(member.mean_spiral_angle)),
+            abs=1e-12,
+        )
+    assert geo.pinion.mean_spiral_angle != pytest.approx(geo.gear.mean_spiral_angle)
+
+
+def test_excessive_outer_transverse_backlash_is_rejected_by_tooth_thickness():
+    invalid = HypoidSetParams(**{**ANCHOR.__dict__, "backlash": 100.0})
+    result = validate(invalid)
+    assert not result.ok
+    assert any(
+        issue.field == "backlash" and "tooth thickness" in issue.message
+        for issue in result.errors
+    )
+    assert not any(
+        "5%" in issue.message for issue in result.warnings
+    )
+
+
 def test_method_1_reports_a_non_convergent_curvature_design():
     invalid = HypoidSetParams(**{**ANCHOR.__dict__, "cutter_radius": 1.0})
     with pytest.raises(ValueError, match="curvature"):
@@ -456,8 +587,11 @@ def test_hypoid_is_selectable_from_the_cli(capsys):
         "--type", "hypoid", "--module", str(170.0 / 42.0),
         "--z1", "13", "--z2", "42", "--offset", "15",
         "--face-width", "30", "--spiral", "50", "--cutter-radius", "63.5",
+        "--backlash", "0.2",
     ])
     assert status == 0
     output = capsys.readouterr().out
     assert "pitch-plane offset" in output
     assert "pitch cone angle" in output
+    assert "outer transverse backlash" in output
+    assert "mean normal backlash" in output

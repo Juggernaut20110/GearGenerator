@@ -31,7 +31,10 @@ def add_arguments(ap) -> None:
     ap.add_argument(
         "--beta", type=float, default=0.0, help="helix angle, deg (0 = straight)"
     )
-    ap.add_argument("--backlash", type=float, default=0.0, help="circular backlash, mm")
+    ap.add_argument(
+        "--backlash", type=float, default=0.0,
+        help="backlash allowance, mm (hypoid: outer transverse at wheel outer cone)",
+    )
     ap.add_argument(
         "--internal",
         action="store_true",

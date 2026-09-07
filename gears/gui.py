@@ -182,7 +182,7 @@ HYPOID_FIELDS: tuple[Field, ...] = (
     Field("spiral_angle", "Pinion spiral angle", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
     Field("cutter_radius", "Cutter radius", float, "mm", optional=True),
-    Field("backlash", "Backlash", float, "mm"),
+    Field("backlash", "Outer transverse backlash (j_et2)", float, "mm"),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),

@@ -36,6 +36,9 @@ class HypoidSetParams(JsonParams):
     spiral_angle: float = 35.0    # pinion mean spiral angle, degrees
     hand: str = "right"
     cutter_radius: float | None = None
+    # Compatibility name retained for the CLI/GUI and saved JSON schema.
+    # For hypoids this value is specifically the ISO outer transverse
+    # backlash allowance j_et2, measured at the wheel outer pitch cone.
     backlash: float = 0.0
     min_root_thickness: float = 0.5
 
@@ -73,6 +76,11 @@ class HypoidSetParams(JsonParams):
     def hypoid_offset(self) -> float:
         """Descriptive alias for callers that prefer the full term."""
         return self.offset
+
+    @property
+    def outer_transverse_backlash(self) -> float:
+        """ISO ``j_et2``; the convention of the public ``backlash`` input."""
+        return self.backlash
 
     @property
     def ratio(self) -> float:

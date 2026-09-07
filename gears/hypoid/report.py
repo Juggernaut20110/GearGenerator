@@ -45,10 +45,14 @@ def print_report(geo) -> None:
     print(_row("pinion spiral angle", f(p.spiral_angle), "", "deg"))
     print(_row("cutter radius", f(p.cutter_radius or 0), "", "mm"))
     print(_row("face width", f(p.face_width), "", "mm"))
-    print(_row("backlash", f(p.backlash), "", "mm"))
+    print(_row("outer transverse backlash (j_et2)", f(geo.outer_transverse_backlash), "", "mm"))
+    print(_row("backlash convention", "outer transverse at wheel outer cone"))
     print("\nSET")
     print(_row("ratio", f(p.ratio)))
     print(_row("mean normal module", f(geo.mean_normal_module), "", "mm"))
+    print(_row("mean normal pressure angle", f(geo.thickness.mean_normal_pressure_angle_deg), "", "deg"))
+    print(_row("mean transverse backlash", f(geo.mean_transverse_backlash), "", "mm"))
+    print(_row("mean normal backlash", f(geo.mean_normal_backlash), "", "mm"))
     print(_row("pitch-plane offset", f(geo.pitch_plane_offset), "", "mm"))
     print(_row("offset angle", f(geo.offset_angle_deg), "", "deg"))
     if geo.method1.mean_tooth_curvature is not None:
@@ -71,8 +75,9 @@ def print_report(geo) -> None:
         ("dedendum", f(a.dedendum), f(b.dedendum), "mm"),
         ("face angle", f(a.face_angle_deg), f(b.face_angle_deg), "deg"),
         ("root angle", f(a.root_angle_deg), f(b.root_angle_deg), "deg"),
-        ("normal tooth thickness", f(a.normal_tooth_thickness), f(b.normal_tooth_thickness), "mm"),
-        ("transverse tooth thickness", f(a.transverse_tooth_thickness), f(b.transverse_tooth_thickness), "mm"),
+        ("thickness modification coefficient", f(a.x_sm), f(b.x_sm), ""),
+        ("mean normal tooth thickness", f(a.mean_normal_tooth_thickness), f(b.mean_normal_tooth_thickness), "mm"),
+        ("mean transverse tooth thickness", f(a.mean_transverse_tooth_thickness), f(b.mean_transverse_tooth_thickness), "mm"),
         ("outside diameter", f(a.outside_dia), f(b.outside_dia), "mm"),
         ("outer root diameter", f(a.outer_root_diameter), f(b.outer_root_diameter), "mm"),
         ("Tredgold mean root radius", f(a.root_r), f(b.root_r), "mm"),

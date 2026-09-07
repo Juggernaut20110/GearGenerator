@@ -79,8 +79,9 @@ class HypoidMemberGeometry:
     virtual_base_r: float
     virtual_tip_r: float
     virtual_root_r: float
-    normal_tooth_thickness: float
-    transverse_tooth_thickness: float
+    thickness_modification_coefficient: float
+    mean_normal_tooth_thickness: float
+    mean_transverse_tooth_thickness: float
     tip_r: float
     root_r: float
     outside_dia: float
@@ -106,6 +107,45 @@ class HypoidMemberGeometry:
     @property
     def angular_pitch(self) -> float:
         return 2.0 * math.pi / self.z
+
+    @property
+    def normal_tooth_thickness(self) -> float:
+        """Compatibility alias for the ISO mean-normal thickness."""
+        return self.mean_normal_tooth_thickness
+
+    @property
+    def transverse_tooth_thickness(self) -> float:
+        """Compatibility alias for the ISO mean-transverse thickness."""
+        return self.mean_transverse_tooth_thickness
+
+    @property
+    def x_sm(self) -> float:
+        """ISO thickness-modification coefficient, including backlash."""
+        return self.thickness_modification_coefficient
+
+
+@dataclass(frozen=True)
+class HypoidThicknessGeometry:
+    """ISO 23509 tooth-thickness calculation at the mean point.
+
+    ``outer_transverse_backlash`` is the public input convention.  The two
+    mean backlash values are derived at the calculation point; they are not
+    additional clearances applied to the members.  ``backlash_thickness_...``
+    is the one common correction used to obtain x_sm1 and x_sm2.
+    """
+
+    mean_normal_pressure_angle: float
+    theoretical_thickness_modification: float
+    backlash_thickness_modification: float
+    pinion_thickness_modification: float
+    gear_thickness_modification: float
+    outer_transverse_backlash: float
+    mean_transverse_backlash: float
+    mean_normal_backlash: float
+
+    @property
+    def mean_normal_pressure_angle_deg(self) -> float:
+        return math.degrees(self.mean_normal_pressure_angle)
 
 
 @dataclass(frozen=True)
@@ -215,6 +255,7 @@ class HypoidSetGeometry:
     offset_angle: float
     pitch_plane_offset: float
     method1: HypoidMethod1Geometry
+    thickness: HypoidThicknessGeometry
     pinion: HypoidMemberGeometry
     gear: HypoidMemberGeometry
 
@@ -250,6 +291,18 @@ class HypoidSetGeometry:
     @property
     def whole_depth(self) -> float:
         return self.mean_whole_depth
+
+    @property
+    def outer_transverse_backlash(self) -> float:
+        return self.thickness.outer_transverse_backlash
+
+    @property
+    def mean_transverse_backlash(self) -> float:
+        return self.thickness.mean_transverse_backlash
+
+    @property
+    def mean_normal_backlash(self) -> float:
+        return self.thickness.mean_normal_backlash
 
     def member(self, which: str) -> HypoidMemberGeometry:
         if which == "pinion":
@@ -714,6 +767,51 @@ def _method1_depth(p: HypoidSetParams, mean_normal_module: float) -> _Method1Dep
     )
 
 
+def _method1_thickness(
+    p: HypoidSetParams,
+    mean_normal_module: float,
+    wheel_mean_cone_distance: float,
+    wheel_outer_cone_distance: float,
+    wheel_spiral_angle: float,
+) -> HypoidThicknessGeometry:
+    """Calculate ISO 23509 formulas 201 and 203-212.
+
+    The public backlash input is ``j_et2``: outer transverse backlash on the
+    wheel.  ISO converts it to the calculation point before applying the one
+    common thickness correction to both members.  The wheel spiral angle is
+    used for that conversion; each member's own spiral angle is then used by
+    formula 212 when its normal thickness is reported transversely.
+    """
+    alpha_n = p.alpha
+    cos_alpha_n = math.cos(alpha_n)
+    if mean_normal_module <= 0.0 or not math.isfinite(mean_normal_module):
+        raise ValueError("Method 1 mean normal module is not positive")
+    if wheel_mean_cone_distance <= 0.0 or wheel_outer_cone_distance <= 0.0:
+        raise ValueError("Method 1 wheel cone distances are not positive")
+    if abs(cos_alpha_n) < 1e-12:
+        raise ValueError("Method 1 tooth-thickness pressure angle is singular")
+
+    outer_transverse = p.outer_transverse_backlash
+    if not math.isfinite(outer_transverse) or outer_transverse < 0.0:
+        raise ValueError("outer transverse backlash must be finite and non-negative")
+    mean_transverse = outer_transverse * (
+        wheel_mean_cone_distance / wheel_outer_cone_distance
+    )
+    mean_normal = mean_transverse * abs(math.cos(wheel_spiral_angle))
+    backlash_x = mean_normal / (4.0 * mean_normal_module * cos_alpha_n)
+    theoretical_x = 0.5 * p.thickness_factor
+    return HypoidThicknessGeometry(
+        mean_normal_pressure_angle=alpha_n,
+        theoretical_thickness_modification=theoretical_x,
+        backlash_thickness_modification=backlash_x,
+        pinion_thickness_modification=theoretical_x - backlash_x,
+        gear_thickness_modification=-theoretical_x - backlash_x,
+        outer_transverse_backlash=outer_transverse,
+        mean_transverse_backlash=mean_transverse,
+        mean_normal_backlash=mean_normal,
+    )
+
+
 def _member(
     name,
     z,
@@ -738,6 +836,8 @@ def _member(
     mean_pitch_z,
     face_apex_z,
     root_apex_z,
+    profile_shift_coefficient,
+    thickness_modification_coefficient,
 ):
     """Build one member from the ISO Method 1 blank dimensions.
 
@@ -816,14 +916,20 @@ def _member(
     tip_r = virtual_tip * cos_delta
     root_r = virtual_root * cos_delta
 
-    # Method 1's thickness factor redistributes one normal circular pitch
-    # between the members; backlash is split once across the pair.  This is
-    # still the repository's approximate Tredgold tooth-section thickness,
-    # not a generated drive/coast flank calculation.
-    thickness_share = 0.5 * (
-        1.0 - p.thickness_factor if name == "gear" else 1.0 + p.thickness_factor
+    # ISO 23509 formulas 206 and 211.  The thickness modification coefficient
+    # already contains the one common backlash conversion; it is not a direct
+    # length subtracted independently from each member.
+    if name == "gear":
+        thickness_term = (
+            thickness_modification_coefficient - profile_shift_coefficient
+        )
+    else:
+        thickness_term = (
+            thickness_modification_coefficient + profile_shift_coefficient
+        )
+    normal_thickness = 0.5 * tooth_module * (
+        math.pi + 2.0 * thickness_term * math.tan(p.alpha)
     )
-    normal_thickness = math.pi * tooth_module * thickness_share - p.backlash / 2.0
     if normal_thickness <= 0.0:
         raise ValueError(f"{name} tooth thickness is not positive")
     spiral_cos = abs(math.cos(spiral))
@@ -883,8 +989,9 @@ def _member(
         virtual_base_r=virtual_base,
         virtual_tip_r=virtual_tip,
         virtual_root_r=virtual_root,
-        normal_tooth_thickness=normal_thickness,
-        transverse_tooth_thickness=transverse_thickness,
+        thickness_modification_coefficient=thickness_modification_coefficient,
+        mean_normal_tooth_thickness=normal_thickness,
+        mean_transverse_tooth_thickness=transverse_thickness,
         tip_r=tip_r,
         root_r=root_r,
         outside_dia=2.0 * outer_tip_radius,
@@ -925,6 +1032,9 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
     if Ri2 <= 0.0:
         raise ValueError("Method 1 wheel inner cone distance is not positive")
     cbe2 = be2 / p.face_width
+    thickness = _method1_thickness(
+        p, m_n, R2, Re2, beta2
+    )
 
     # ISO 23509 formulas 129-131 locate the calculation point and the two
     # pitch-cone apices relative to the crossing point.  The axial offset is
@@ -1083,6 +1193,10 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         mean_pitch_z=tzm1,
         face_apex_z=tzF1,
         root_apex_z=tzR1,
+        profile_shift_coefficient=depth.profile_shift_coefficient,
+        thickness_modification_coefficient=(
+            thickness.pinion_thickness_modification
+        ),
     )
     gear = _member(
         "gear", p.z2, d2, r2, R2, beta2, p, m_n,
@@ -1100,6 +1214,10 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         mean_pitch_z=tzm2,
         face_apex_z=tzF2,
         root_apex_z=tzR2,
+        profile_shift_coefficient=depth.profile_shift_coefficient,
+        thickness_modification_coefficient=(
+            thickness.gear_thickness_modification
+        ),
     )
     return HypoidSetGeometry(
         params=p,
@@ -1115,6 +1233,7 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         mean_whole_depth=depth.whole_depth,
         offset_angle=method1.pinion_offset_angle_pitch,
         pitch_plane_offset=method1.pitch_plane_offset, method1=method1,
+        thickness=thickness,
         pinion=pinion, gear=gear,
     )
 
@@ -1236,7 +1355,7 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     tip = m.virtual_tip_r * scale
     cap = tip + involute.CUT_OVERSHOOT_FACTOR * geo.params.module
     psi0 = (
-        m.transverse_tooth_thickness / max(2.0 * m.virtual_pitch_r, 1e-9)
+        m.mean_transverse_tooth_thickness / max(2.0 * m.virtual_pitch_r, 1e-9)
         + involute.inv(geo.params.alpha)
     )
     half = math.pi / m.virtual_teeth
