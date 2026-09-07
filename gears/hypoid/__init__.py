@@ -8,6 +8,7 @@ from .geometry import (
     HypoidThicknessGeometry,
     blank_outline,
     compute_set,
+    hypoid_tooth_space_loop,
     section_cone_distances,
     section_count,
     tooth_space_section,
@@ -19,5 +20,6 @@ __all__ = [
     "HypoidMemberGeometry", "HypoidMethod1Geometry", "HypoidSection", "HypoidSetGeometry",
     "HypoidThicknessGeometry",
     "HypoidSetParams", "blank_outline", "compute_set",
-    "section_cone_distances", "section_count", "tooth_space_section", "validate",
+    "hypoid_tooth_space_loop", "section_cone_distances", "section_count",
+    "tooth_space_section", "validate",
 ]

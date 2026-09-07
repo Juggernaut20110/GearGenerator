@@ -51,6 +51,8 @@ def print_report(geo) -> None:
     print(_row("ratio", f(p.ratio)))
     print(_row("mean normal module", f(geo.mean_normal_module), "", "mm"))
     print(_row("mean normal pressure angle", f(geo.thickness.mean_normal_pressure_angle_deg), "", "deg"))
+    print(_row("generated drive normal pressure angle", f(geo.method1.generated_drive_normal_pressure_angle_deg), "", "deg"))
+    print(_row("generated coast normal pressure angle", f(geo.method1.generated_coast_normal_pressure_angle_deg), "", "deg"))
     print(_row("mean transverse backlash", f(geo.mean_transverse_backlash), "", "mm"))
     print(_row("mean normal backlash", f(geo.mean_normal_backlash), "", "mm"))
     print(_row("pitch-plane offset", f(geo.pitch_plane_offset), "", "mm"))

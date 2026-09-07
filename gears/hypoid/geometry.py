@@ -14,7 +14,6 @@ from dataclasses import dataclass, replace
 
 from .. import involute
 from ..bevel.geometry import CrownTrace, to_cone_3d
-from ..involute import tooth_space_loop
 from .params import HypoidSetParams
 
 Point2 = tuple[float, float]
@@ -36,6 +35,8 @@ class HypoidMemberGeometry:
     cone_distance: float
     outer_cone_distance: float
     mean_spiral_angle: float
+    generated_drive_normal_pressure_angle: float
+    generated_coast_normal_pressure_angle: float
     addendum: float
     dedendum: float
     working_depth: float
@@ -95,6 +96,14 @@ class HypoidMemberGeometry:
     @property
     def mean_spiral_angle_deg(self) -> float:
         return math.degrees(self.mean_spiral_angle)
+
+    @property
+    def generated_drive_normal_pressure_angle_deg(self) -> float:
+        return math.degrees(self.generated_drive_normal_pressure_angle)
+
+    @property
+    def generated_coast_normal_pressure_angle_deg(self) -> float:
+        return math.degrees(self.generated_coast_normal_pressure_angle)
 
     @property
     def face_angle_deg(self) -> float:
@@ -185,6 +194,8 @@ class HypoidMethod1Geometry:
     wheel_mean_cone_distance: float
     pitch_plane_offset: float
     limit_pressure_angle: float
+    generated_drive_normal_pressure_angle: float
+    generated_coast_normal_pressure_angle: float
     limit_radius_of_curvature: float | None
     mean_tooth_curvature: float | None
     curvature_residual: float | None
@@ -209,6 +220,14 @@ class HypoidMethod1Geometry:
     pinion_face_plane_offset_angle: float | None = None
     pinion_face_width_auxiliary_angle: float | None = None
 
+    @property
+    def generated_drive_normal_pressure_angle_deg(self) -> float:
+        return math.degrees(self.generated_drive_normal_pressure_angle)
+
+    @property
+    def generated_coast_normal_pressure_angle_deg(self) -> float:
+        return math.degrees(self.generated_coast_normal_pressure_angle)
+
 
 @dataclass(frozen=True)
 class HypoidSection:
@@ -220,6 +239,8 @@ class HypoidSection:
     r_root: float
     r_tip: float
     r_cap: float
+    drive_flank: list[Point2]
+    coast_flank: list[Point2]
     segments: dict[str, list[Point2]]
     loop_2d: list[Point2]
 
@@ -369,6 +390,24 @@ def _checked_tangent_angle(tangent: float, label: str) -> float:
     if not math.isfinite(tangent):
         raise ValueError(f"hypoid Method 1 {label} is not finite")
     return _checked_external_angle(tangent, 1.0, label)
+
+
+def _generated_normal_pressure_angles(
+    p: HypoidSetParams, limit_pressure_angle: float
+) -> tuple[float, float]:
+    """Return the Method 1 generated drive and coast normal angles.
+
+    ISO's generated pressure-angle pair is obtained by applying the signed
+    limit pressure angle to the nominal drive/coast design angle.  The anchor
+    has a negative limit angle, hence its drive flank is the smaller angle.
+    """
+    drive = p.alpha + limit_pressure_angle
+    coast = p.alpha - limit_pressure_angle
+    if not 0.0 < drive < math.pi / 2.0:
+        raise ValueError("Method 1 generated drive pressure angle is invalid")
+    if not 0.0 < coast < math.pi / 2.0:
+        raise ValueError("Method 1 generated coast pressure angle is invalid")
+    return drive, coast
 
 
 @dataclass(frozen=True)
@@ -546,6 +585,7 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
         r2 = R2 * math.sin(d2)
         r1 = r2 / ratio
         beta = sign * desired_beta if p.psi1 >= 0.0 else -desired_beta
+        generated_drive, generated_coast = _generated_normal_pressure_angles(p, 0.0)
         return HypoidMethod1Geometry(
             gear_ratio=ratio,
             desired_pinion_spiral_angle=p.psi1,
@@ -574,6 +614,8 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
             wheel_mean_cone_distance=R2,
             pitch_plane_offset=0.0,
             limit_pressure_angle=0.0,
+            generated_drive_normal_pressure_angle=generated_drive,
+            generated_coast_normal_pressure_angle=generated_coast,
             limit_radius_of_curvature=None,
             mean_tooth_curvature=None,
             curvature_residual=None,
@@ -666,6 +708,9 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
     assert trial is not None
     if abs(trial.limit_radius_of_curvature - p.cutter_radius) > METHOD1_CURVATURE_TOLERANCE:
         raise ValueError("hypoid Method 1 curvature closure did not converge")
+    generated_drive, generated_coast = _generated_normal_pressure_angles(
+        p, trial.limit_pressure_angle
+    )
     signed = lambda value: sign * value
     return HypoidMethod1Geometry(
         gear_ratio=ratio,
@@ -702,6 +747,8 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
             * math.sin(trial.pinion_offset_angle_pitch)
         ),
         limit_pressure_angle=trial.limit_pressure_angle,
+        generated_drive_normal_pressure_angle=generated_drive,
+        generated_coast_normal_pressure_angle=generated_coast,
         limit_radius_of_curvature=trial.limit_radius_of_curvature,
         mean_tooth_curvature=p.cutter_radius,
         curvature_residual=trial.limit_radius_of_curvature - p.cutter_radius,
@@ -838,6 +885,8 @@ def _member(
     root_apex_z,
     profile_shift_coefficient,
     thickness_modification_coefficient,
+    generated_drive_normal_pressure_angle,
+    generated_coast_normal_pressure_angle,
 ):
     """Build one member from the ISO Method 1 blank dimensions.
 
@@ -945,6 +994,12 @@ def _member(
         cone_distance=cone_distance,
         outer_cone_distance=outer_cone_distance,
         mean_spiral_angle=spiral,
+        generated_drive_normal_pressure_angle=(
+            generated_drive_normal_pressure_angle
+        ),
+        generated_coast_normal_pressure_angle=(
+            generated_coast_normal_pressure_angle
+        ),
         addendum=addendum,
         dedendum=dedendum,
         working_depth=working_depth,
@@ -1197,6 +1252,12 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         thickness_modification_coefficient=(
             thickness.pinion_thickness_modification
         ),
+        generated_drive_normal_pressure_angle=(
+            method1.generated_drive_normal_pressure_angle
+        ),
+        generated_coast_normal_pressure_angle=(
+            method1.generated_coast_normal_pressure_angle
+        ),
     )
     gear = _member(
         "gear", p.z2, d2, r2, R2, beta2, p, m_n,
@@ -1217,6 +1278,12 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         profile_shift_coefficient=depth.profile_shift_coefficient,
         thickness_modification_coefficient=(
             thickness.gear_thickness_modification
+        ),
+        generated_drive_normal_pressure_angle=(
+            method1.generated_drive_normal_pressure_angle
+        ),
+        generated_coast_normal_pressure_angle=(
+            method1.generated_coast_normal_pressure_angle
         ),
     )
     return HypoidSetGeometry(
@@ -1344,25 +1411,212 @@ def _phase(member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometr
     return mate_sign * phase_curve
 
 
+def _reflect_flank(points: list[Point2]) -> list[Point2]:
+    return [(x, -y) for x, y in points]
+
+
+def _hypoid_root_fillet(
+    flank: list[Point2], r_root: float, rho: float, *, negative: bool
+) -> tuple[list[Point2], list[Point2]]:
+    """Fit the shared circular root fillet without sharing a flank curve."""
+    if not negative:
+        result = involute.root_fillet(flank, r_root, rho)
+    else:
+        # ``root_fillet`` is deliberately shared with the external involute
+        # code and expects its working flank on the positive-y side.  Reflect
+        # only this independently generated coast/drive curve for the fit;
+        # the resulting geometry is reflected back immediately.
+        result = involute.root_fillet(_reflect_flank(flank), r_root, rho)
+    if result is None:
+        return flank, []
+    trimmed, arc = result
+    if negative:
+        return _reflect_flank(trimmed), _reflect_flank(arc)
+    return trimmed, arc
+
+
+def hypoid_tooth_space_loop(
+    left_flank: list[Point2],
+    right_flank: list[Point2],
+    r_root: float,
+    r_cap: float,
+    fillet_rho: float,
+    *,
+    split_cap: bool = False,
+) -> tuple[
+    dict[str, list[Point2]], list[Point2], bool, list[Point2], list[Point2]
+]:
+    """Assemble a closed hypoid space from independent left/right flanks.
+
+    Both input curves run from the root toward the tip.  They are not assumed
+    to be reflections of one another.  This is still a Tredgold/back-cone
+    approximation: independently parameterized involutes do not constitute a
+    generated cutter envelope or a fully conjugate hypoid surface.
+    """
+    if len(left_flank) < 2 or len(right_flank) < 2:
+        raise ValueError("hypoid flank curves need at least two points")
+    if r_root <= 0.0 or r_cap <= 0.0 or r_cap <= r_root:
+        raise ValueError("hypoid tooth-space root and cap radii are invalid")
+    points = [*left_flank, *right_flank]
+    if any(
+        not math.isfinite(value)
+        for point in points
+        for value in point
+    ):
+        raise ValueError("hypoid flank curve contains a non-finite point")
+
+    left_flank, left_arc = _hypoid_root_fillet(
+        left_flank, r_root, fillet_rho, negative=True
+    )
+    right_flank, right_arc = _hypoid_root_fillet(
+        right_flank, r_root, fillet_rho, negative=False
+    )
+    left_root = math.atan2(
+        (left_arc[0] if left_arc else left_flank[0])[1],
+        (left_arc[0] if left_arc else left_flank[0])[0],
+    )
+    right_root = math.atan2(
+        (right_arc[0] if right_arc else right_flank[0])[1],
+        (right_arc[0] if right_arc else right_flank[0])[0],
+    )
+    left_tip = math.atan2(left_flank[-1][1], left_flank[-1][0])
+    right_tip = math.atan2(right_flank[-1][1], right_flank[-1][0])
+    if not left_root < 0.0 < right_root:
+        raise ValueError("hypoid root flanks do not bound the space centreline")
+    if not left_tip < 0.0 < right_tip:
+        raise ValueError("hypoid tip flanks do not bound the space centreline")
+
+    # Include an actual centreline vertex.  Unlike the mirrored involute
+    # builder, the two tip angles need not be equal, so the midpoint of a
+    # uniformly sampled cap is not generally the centreline.
+    cap_angles = [left_tip, 0.5 * left_tip, 0.0, 0.5 * right_tip, right_tip]
+    cap = [involute.polar(r_cap, angle) for angle in cap_angles]
+    root = [
+        involute.polar(
+            r_root, right_root + (left_root - right_root) * i / 8.0
+        )
+        for i in range(9)
+    ]
+    segments = {
+        "fillet_neg": left_arc,
+        "flank_neg": left_flank,
+        "riser_neg": [left_flank[-1], cap[0]],
+        "cap": cap,
+        "riser_pos": [cap[-1], right_flank[-1]],
+        "flank_pos": right_flank[::-1],
+        "fillet_pos": right_arc[::-1],
+        "root": root,
+    }
+    order = [
+        "fillet_neg", "flank_neg", "riser_neg", "cap",
+        "riser_pos", "flank_pos", "fillet_pos", "root",
+    ]
+    if split_cap:
+        mid = len(cap) // 2
+        segments["cap_neg"] = cap[: mid + 1]
+        segments["cap_pos"] = cap[mid:]
+        del segments["cap"]
+        order[order.index("cap")] = "cap_neg"
+        order.insert(order.index("cap_neg") + 1, "cap_pos")
+
+    loop: list[Point2] = []
+    for name in order:
+        for point in segments[name]:
+            if not loop or math.dist(loop[-1], point) > 1e-9:
+                loop.append(point)
+    if loop and math.dist(loop[0], loop[-1]) < 1e-9:
+        loop.pop()
+    return (
+        segments,
+        loop,
+        bool(left_arc or right_arc),
+        left_flank,
+        right_flank,
+    )
+
+
+def _hypoid_flank_points(
+    member: HypoidMemberGeometry,
+    cone_dist: float,
+    pressure_angle: float,
+    n_flank: int,
+) -> list[Point2]:
+    """Build one Tredgold involute using one generated normal angle."""
+    scale = cone_dist / max(member.cone_distance, 1e-9)
+    pitch = member.virtual_pitch_r * scale
+    base = pitch * math.cos(pressure_angle)
+    root = member.virtual_root_r * scale
+    tip = member.virtual_tip_r * scale
+    half_pitch = math.pi / member.virtual_teeth
+    tooth_half_angle = (
+        member.mean_transverse_tooth_thickness
+        / (2.0 * max(member.virtual_pitch_r, 1e-9))
+    )
+    space_half_angle = half_pitch - tooth_half_angle
+    if base <= 0.0 or tip <= base:
+        raise ValueError(
+            f"{member.name} generated {math.degrees(pressure_angle):.3f} degree "
+            "flank does not reach the involute tip"
+        )
+    if not 0.0 < space_half_angle < half_pitch:
+        raise ValueError(f"{member.name} generated tooth space is not positive")
+    # ``flank_points`` represents the boundary of the tooth *space*.  Its
+    # phase is therefore the tooth half-angle at the pitch circle plus the
+    # involute function, not the complementary space half-angle.  Keeping
+    # this relation explicit is important when the drive and coast angles
+    # have different involute functions.
+    psi0 = tooth_half_angle + involute.inv(pressure_angle)
+    return involute.flank_points(
+        base, root, tip, psi0, half_pitch, n_flank
+    )
+
+
 def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | None = None,
-                        split_cap: bool = False) -> HypoidSection:
+                        split_cap: bool = False,
+                        n_flank: int = involute.FLANK_POINTS) -> HypoidSection:
+    """Build an independently generated Method 1 Tredgold tooth space.
+
+    The drive and coast normal pressure angles are distinct Method 1
+    quantities.  The resulting pair of involutes is a better section model,
+    but it remains an approximation rather than a true cutter-envelope
+    hypoid surface.
+    """
     m = geo.member(member)
     if cone_dist is None:
         cone_dist = m.cone_distance
     scale = cone_dist / max(m.cone_distance, 1e-9)
-    base = m.virtual_base_r * scale
     root = m.virtual_root_r * scale
     tip = m.virtual_tip_r * scale
     cap = tip + involute.CUT_OVERSHOOT_FACTOR * geo.params.module
-    psi0 = (
-        m.mean_transverse_tooth_thickness / max(2.0 * m.virtual_pitch_r, 1e-9)
-        + involute.inv(geo.params.alpha)
+    positive_drive = geo.params.hand == "right"
+    positive_angle = (
+        m.generated_drive_normal_pressure_angle
+        if positive_drive
+        else m.generated_coast_normal_pressure_angle
     )
-    half = math.pi / m.virtual_teeth
-    segments, loop, _ = tooth_space_loop(
-        base, root, tip, cap, psi0, half,
+    negative_angle = (
+        m.generated_coast_normal_pressure_angle
+        if positive_drive
+        else m.generated_drive_normal_pressure_angle
+    )
+    positive_flank = _hypoid_flank_points(
+        m, cone_dist, positive_angle, n_flank
+    )
+    negative_flank = _reflect_flank(
+        _hypoid_flank_points(m, cone_dist, negative_angle, n_flank)
+    )
+    segments, loop, _, left_flank, right_flank = hypoid_tooth_space_loop(
+        negative_flank,
+        positive_flank,
+        root,
+        cap,
         max(0.0, geo.params.min_root_thickness * 0.4),
         split_cap=split_cap,
+    )
+    drive_flank, coast_flank = (
+        (right_flank, left_flank)
+        if positive_drive
+        else (left_flank, right_flank)
     )
     phase = _phase(m, cone_dist, geo)
     return HypoidSection(
@@ -1373,7 +1627,9 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
         # SOLIDWORKS loft had no material to cut.
         pitch_angle=m.pitch_angle,
         cone_apex_z=cone_dist / max(math.cos(m.pitch_angle), 1e-9),
-        r_root=root, r_tip=tip, r_cap=cap, segments=segments, loop_2d=loop,
+        r_root=root, r_tip=tip, r_cap=cap,
+        drive_flank=drive_flank, coast_flank=coast_flank,
+        segments=segments, loop_2d=loop,
     )
 
 

@@ -48,6 +48,29 @@ def test_method_1_anchor_converges_to_published_macro_geometry():
     ) == pytest.approx(math.pi * geo.mean_normal_module - ANCHOR.backlash)
 
 
+def test_method_1_anchor_exposes_distinct_generated_normal_flank_angles():
+    geo = compute_set(ANCHOR)
+    assert geo.method1.generated_drive_normal_pressure_angle == pytest.approx(
+        ANCHOR.alpha + geo.method1.limit_pressure_angle, abs=1e-12
+    )
+    assert geo.method1.generated_coast_normal_pressure_angle == pytest.approx(
+        ANCHOR.alpha - geo.method1.limit_pressure_angle, abs=1e-12
+    )
+    assert math.degrees(
+        geo.method1.generated_drive_normal_pressure_angle
+    ) == pytest.approx(17.746, abs=0.01)
+    assert math.degrees(
+        geo.method1.generated_coast_normal_pressure_angle
+    ) == pytest.approx(22.254, abs=0.01)
+    for member in (geo.pinion, geo.gear):
+        assert member.generated_drive_normal_pressure_angle == pytest.approx(
+            geo.method1.generated_drive_normal_pressure_angle, abs=1e-12
+        )
+        assert member.generated_coast_normal_pressure_angle == pytest.approx(
+            geo.method1.generated_coast_normal_pressure_angle, abs=1e-12
+        )
+
+
 def test_method_1_anchor_depths_and_angles_use_independent_equations():
     geo = compute_set(ANCHOR)
     x_hm1 = ANCHOR.depth_factor * (0.5 - ANCHOR.gear_mean_addendum_factor)
@@ -366,6 +389,95 @@ def test_sections_are_closed_and_cover_both_face_ends():
         assert min(z for _, _, z in outer.loop_3d()) > outline[i_back][1]
 
 
+def test_anchor_drive_and_coast_flanks_are_independently_generated():
+    geo = compute_set(ANCHOR)
+    section = tooth_space_section(geo, "pinion", geo.pinion.cone_distance)
+    assert section.drive_flank
+    assert section.coast_flank
+    # A mirrored copy of the drive curve would have the same positive-y
+    # magnitude at every corresponding point.  The generated normal angles
+    # deliberately make the two involutes different.
+    assert section.drive_flank[-1][1] != pytest.approx(
+        -section.coast_flank[-1][1], abs=1e-6
+    )
+
+
+def test_independent_hypoid_flanks_preserve_mean_tooth_space_position():
+    geo = compute_set(ANCHOR)
+    member = geo.pinion
+    section = tooth_space_section(
+        geo, "pinion", member.cone_distance, n_flank=1001
+    )
+    half_pitch = math.pi / member.virtual_teeth
+    tooth_half_angle = (
+        member.mean_transverse_tooth_thickness / (2.0 * member.virtual_pitch_r)
+    )
+    expected_space_angle = half_pitch - tooth_half_angle
+
+    for flank, pressure_angle in (
+        (section.drive_flank, member.generated_drive_normal_pressure_angle),
+        (section.coast_flank, member.generated_coast_normal_pressure_angle),
+    ):
+        pitch_point = min(
+            flank,
+            key=lambda point: abs(math.hypot(*point) - member.virtual_pitch_r),
+        )
+        actual_angle = math.atan2(pitch_point[1], pitch_point[0])
+        assert abs(actual_angle) == pytest.approx(expected_space_angle, abs=2e-4)
+        assert 0.0 < pressure_angle < math.pi / 2.0
+
+
+def test_hypoid_hand_mirrors_the_drive_and_coast_flanks():
+    right = compute_set(ANCHOR)
+    left = compute_set(HypoidSetParams(**{**ANCHOR.__dict__, "hand": "left"}))
+    right_section = tooth_space_section(right, "pinion")
+    left_section = tooth_space_section(left, "pinion")
+
+    for right_flank, left_flank in (
+        (right_section.drive_flank, left_section.drive_flank),
+        (right_section.coast_flank, left_section.coast_flank),
+    ):
+        assert len(right_flank) == len(left_flank)
+        for right_point, left_point in zip(right_flank, left_flank):
+            assert left_point[0] == pytest.approx(right_point[0], abs=1e-12)
+            assert left_point[1] == pytest.approx(-right_point[1], abs=1e-12)
+
+
+def test_independent_hypoid_flanks_keep_root_and_top_land_constraints():
+    geo = compute_set(ANCHOR)
+    section = tooth_space_section(geo, "gear", split_cap=True)
+    m = geo.gear
+
+    assert math.dist(section.loop_2d[0], section.segments["root"][-1]) < 1e-9
+    for name in ("cap_neg", "cap_pos"):
+        assert all(
+            math.hypot(x, y) == pytest.approx(section.r_cap, abs=1e-9)
+            for x, y in section.segments[name]
+        )
+    assert math.dist(
+        section.segments["cap_neg"][-1], section.segments["cap_pos"][0]
+    ) < 1e-12
+    assert math.hypot(*section.segments["root"][0]) == pytest.approx(
+        section.r_root, abs=1e-9
+    )
+    assert math.hypot(*section.segments["root"][-1]) == pytest.approx(
+        section.r_root, abs=1e-9
+    )
+    for flank in (section.drive_flank, section.coast_flank):
+        assert all(
+            section.r_root - 1e-9
+            <= math.hypot(x, y)
+            <= section.r_tip + 1e-9
+            for x, y in flank
+        )
+    left_tip = math.atan2(*section.segments["cap_neg"][0][::-1])
+    right_tip = math.atan2(*section.segments["cap_pos"][-1][::-1])
+    assert left_tip < 0.0 < right_tip
+    assert m.generated_drive_normal_pressure_angle != pytest.approx(
+        m.generated_coast_normal_pressure_angle
+    )
+
+
 def test_blank_edges_follow_the_face_and_back_cone_angles():
     geo = compute_set(ANCHOR)
     for member in ("pinion", "gear"):
@@ -595,3 +707,5 @@ def test_hypoid_is_selectable_from_the_cli(capsys):
     assert "pitch cone angle" in output
     assert "outer transverse backlash" in output
     assert "mean normal backlash" in output
+    assert "generated drive normal pressure angle" in output
+    assert "generated coast normal pressure angle" in output

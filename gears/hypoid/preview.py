@@ -94,6 +94,8 @@ def derived_rows(geo: HypoidSetGeometry) -> list[Row]:
         Row("pitch-plane offset", f"{geo.pitch_plane_offset:.4f}", unit="mm"),
         Row("offset angle", f"{geo.offset_angle_deg:.4f}", unit="deg"),
         Row("mean normal module", f"{geo.mean_normal_module:.4f}", unit="mm"),
+        Row("generated drive normal pressure angle", f"{geo.method1.generated_drive_normal_pressure_angle_deg:.4f}", unit="deg"),
+        Row("generated coast normal pressure angle", f"{geo.method1.generated_coast_normal_pressure_angle_deg:.4f}", unit="deg"),
         Row("outer transverse backlash", f"{geo.outer_transverse_backlash:.4f}", unit="mm"),
         Row("backlash convention", "outer transverse at wheel outer cone"),
         Row("mean transverse backlash", f"{geo.mean_transverse_backlash:.4f}", unit="mm"),
