@@ -23,7 +23,9 @@ Every one produces:
 
 * a fully dimensioned blank sketch, revolved, with every dimension driven by a
   named global variable you can edit in SOLIDWORKS afterwards
-* true involute teeth, lofted between 3D-sketch sections and circular patterned
+* true involute teeth for spur/bevel/internal types; the hypoid builder uses
+  approximate Tredgold/back-cone tooth surfaces, lofted between 3D-sketch
+  sections and circular patterned
 * every member plus an assembly correctly clocked and meshing, mated so it
   articulates: gear mates couple the members, and dragging one turns the rest
   in the right ratio
@@ -57,7 +59,7 @@ The interpreter is the venv one. Always. There is no global install.
 .venv\Scripts\python.exe -m gears --type spur --module 2 --z1 18 --z2 60 --internal
 .venv\Scripts\python.exe -m gears --type planetary --module 2 --z1 24 --z2 18
 .venv\Scripts\python.exe -m gears --type hypoid --module 4.047619 --z1 13 --z2 42 --offset 15 --face-width 30 --spiral 50 --cutter-radius 63.5
-.venv\Scripts\python.exe -m pytest -q                # 944 tests, no SOLIDWORKS
+.venv\Scripts\python.exe -m pytest -q                # 1001 collected, no SOLIDWORKS
 ```
 
 `--type` defaults to `bevel`, which is what the tool generated before there was
@@ -85,7 +87,7 @@ will start it):
 .venv\Scripts\python.exe tools\build_spur_set.py --z1 17 --z2 43
 .venv\Scripts\python.exe tools\build_spur_set.py --z1 18 --z2 60 --internal
 .venv\Scripts\python.exe tools\build_planetary.py --z-sun 24 --z-planet 18
-.venv\Scripts\python.exe tools\build_hypoid_set.py --offset 15 --face-width 30 --spiral 50 --cutter-radius 63.5
+.venv\Scripts\python.exe tools\build_hypoid_set.py --module 4.047619 --z1 13 --z2 42 --offset 15 --face-width 30 --spiral 50 --cutter-radius 63.5
 ```
 
 `--help` on any of those lists the parameter flags. Output lands in `out/`,
@@ -213,7 +215,7 @@ dot-separated numbers and nothing else, so `v0.1.0-rc1` has nowhere to go.
 them on `windows-latest`:
 
 ```
-test                 944 tests                                    ~1 min
+test                 1001 collected (943 passed, 58 skipped in this environment) ~1 min
 compiled-geometry    the probe above, --compare                   ~2 min cached
 build                package.py, exe uploaded as an artifact      ~2 min cached
 release              on a v* tag, attaches the exe to the release
@@ -486,25 +488,29 @@ The input module is the wheel's outer transverse module, so the published
 50 degree pinion spiral and 63.5 mm cutter.
 
 The solver iterates the two pitch-cone angles and the hypoid offset angle at the
-mean contact point. The anchor returns 21.284 / 68.329 degree pitch angles,
-11.370 degree offset angle and 15.075 mm pitch-plane offset. The pinion and
-wheel spiral angles differ: 50.000 / 38.630 degrees. The tooth sections then
-reuse the shared involute/Tredgold profile core, while `hypoid.mesh` places the
-parts on skew axes rather than a common apex.
+mean contact point. The anchor returns 21.288 / 68.324 degree pitch angles,
+11.390 degree offset angle and 15.075 mm pitch-plane offset. The pinion and
+wheel spiral angles differ: 50.000 / 38.609 degrees. The implementation uses
+**ISO/Gleason Method 1 macro geometry with approximate Tredgold/back-cone tooth
+surfaces**. The shared involute core supplies the two independent drive/coast
+section flanks, while `hypoid.mesh` places the parts on skew axes rather than a
+common apex. No true cutter-envelope or fully conjugate hypoid surface is
+implemented.
 
 The two lofts wind in opposite local phase senses. Their mean trace tangents
 are resolved in the same skew-axis contact plane instead of copying the bevel
-common-apex phase rule. The blank and loft sections span the full face about
-the mean cone distance; the outer diameter is therefore evaluated at the heel,
-not incorrectly at the mean section. Assembly placement leaves the solved mean
-pitch points coincident at zero backlash.
+common-apex phase rule. Method 1 calculates distinct pinion and wheel physical
+tooth-face boundaries and blank dimensions; separate terminal sections may
+extend beyond those boundaries solely so a SOLIDWORKS loft cut clears the
+blank. Assembly placement leaves the solved mean pitch points coincident at
+zero backlash.
 
 Tooth thickness is balanced across the pair in the normal plane. The Method 1
 thickness factor transfers thickness from the wheel to the pinion instead of
 being added to both members; the two normal thicknesses sum to one normal pitch
-minus backlash. Each is then converted by its own spiral angle for the
-transverse Tredgold section. Consequently zero backlash closes at the pitch
-point instead of leaving a spiral-angle-sized visible gap.
+minus the derived mean-normal backlash. Each is then converted by its own
+spiral angle for the transverse Tredgold section. Consequently zero backlash
+closes at the pitch point instead of leaving a spiral-angle-sized visible gap.
 
 The Method 1 solver is deliberately bounded and reports non-convergence as a
 validation error. This keeps an impossible offset from reaching the loft or the
@@ -677,9 +683,12 @@ carrier held: ring / sun     -2.5000
 
 ## Backlash
 
-One input, shared by all four types, because there is only one thing it means:
-`--backlash 0.1` is a **circular backlash in millimetres, measured at the pitch
-circle**, and it does the same arithmetic in every geometry module.
+For spur, bevel and internal gears, `--backlash 0.1` is a circular backlash in
+millimetres at the applicable pitch circle. For hypoids it has a deliberately
+different, explicit convention: `--backlash 0.2` is the ISO outer transverse
+backlash `j_et2`, measured at the wheel outer pitch cone. The hypoid solver
+converts that one pair-level input to mean transverse and mean normal backlash
+using the two members' own spiral angles.
 
 **Taken off the tooth, not added to the centre distance.** Both are real ways to
 build backlash into a pair and only one of them leaves the rest of the model
@@ -995,7 +1004,8 @@ builder.
 
 ## Testing
 
-944 tests, all pure Python, all fast. They are closed-form checks on the
+The current run collects 1001 tests (943 passed and 58 skipped), all pure Python
+and all fast. They are closed-form checks on the
 geometry — cone distances agreeing between members, tooth tips landing on the
 mate's back cone, centre distance solved two independent ways, loft sections
 clearing the blank, the guide curve touching a vertex that exists in every
@@ -1031,7 +1041,8 @@ by building the anchor set in SOLIDWORKS and looking at it. **Carl does that
 verification, and his hands-on result outranks any API probe.** If you change
 `sw/`, say plainly that you have not run it.
 
-The Method 1 hypoid anchor was built live on SOLIDWORKS 2026. Both parts are
+The Method 1 hypoid anchor was built live on SOLIDWORKS 2026 using the
+approximate Tredgold/back-cone tooth surfaces described above. Both parts are
 single solids (13-tooth pinion: 59 faces; 42-tooth gear: 175 faces), the saved
 assembly measures 90.0000 degrees between its shafts and 15.0000 mm axis offset
 with zero reported placement error, and its 13:42 gear mate leaves both members

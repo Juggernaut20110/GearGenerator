@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..hypoid.geometry import (
     HypoidSetGeometry,
+    section_cone_bounds,
     section_cone_distances,
     tooth_space_section,
 )
@@ -35,9 +36,16 @@ def _blank(app, model, geo: HypoidSetGeometry, member: str):
     return close_and_revolve_blank(model, mgr, dims, variables)
 
 
-def _section(model, geo: HypoidSetGeometry, member: str, cone_dist: float):
+def _section(model, geo: HypoidSetGeometry, member: str, cone_dist: float, bounds=None):
     section = tooth_space_section(geo, member, cone_dist, split_cap=True)
-    return draw_curves_3d(model, _section_curves(section), f"hypoid section A={cone_dist:.4f}")
+    if bounds is None:
+        bounds = section_cone_bounds(geo, member)
+    kind = "loft-only extension" if bounds.is_loft_extension(cone_dist) else "physical tooth face"
+    return draw_curves_3d(
+        model,
+        _section_curves(section),
+        f"hypoid Tredgold section A={cone_dist:.4f} ({kind})",
+    )
 
 
 def _guide_points(geo: HypoidSetGeometry, member: str, distances: list[float]):
@@ -77,8 +85,12 @@ def build_hypoid_gear(session, geo: HypoidSetGeometry, member: str,
     model = session.new_part()
     axis = create_axis(model)
     _blank(session.app, model, geo, member)
+    bounds = section_cone_bounds(geo, member)
     distances = section_cone_distances(geo, member)
-    sections = [_section(model, geo, member, distance) for distance in distances]
+    sections = [
+        _section(model, geo, member, distance, bounds)
+        for distance in distances
+    ]
     guide = draw_curves_3d(
         model,
         [("hypoid cap guide", _guide_points(geo, member, distances))],

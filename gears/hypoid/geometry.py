@@ -19,15 +19,26 @@ from .params import HypoidSetParams
 Point2 = tuple[float, float]
 Point3 = tuple[float, float, float]
 
-MAX_ITERATIONS = 80
-# ISO 23509 Method 1 formula 11 uses this factor only for the preliminary
-# wheel-angle estimate; the final result is set by the curvature closure.
-METHOD1_INITIAL_FACTOR = 1.2
-METHOD1_CURVATURE_TOLERANCE = 1e-9
+METHOD1_MAX_ITERATIONS = 80
+# ISO 23509 formula 11 uses this factor only for the preliminary wheel-angle
+# estimate.  It is not a calibration constant; the final pitch solution is
+# determined by the Method 1 curvature closure below.
+METHOD1_PRELIMINARY_WHEEL_FACTOR = 1.2
+METHOD1_CURVATURE_TOLERANCE_MM = 1e-9
+METHOD1_DERIVATIVE_STEP_RAD = 1e-6
 
 
 @dataclass(frozen=True)
 class HypoidMemberGeometry:
+    """Calculated geometry for one hypoid member.
+
+    All distances and radii are in millimetres.  Angles are stored in radians
+    and exposed in degrees by the ``*_deg`` properties.  ``outer_*`` and
+    ``inner_*`` fields describe the physical Method 1 blank/tooth boundaries.
+    ``tredgold_*`` fields describe only the developed back-cone involute
+    approximation used by the current tooth-section builder.
+    """
+
     name: str
     z: int
     pitch_angle: float
@@ -78,6 +89,7 @@ class HypoidMemberGeometry:
     inner_tip_radius: float
     outer_tip_radius: float
     inner_root_radius: float
+    outer_root_radius: float
     outer_root_diameter: float
     inner_root_diameter: float
     virtual_teeth: float
@@ -88,11 +100,24 @@ class HypoidMemberGeometry:
     thickness_modification_coefficient: float
     mean_normal_tooth_thickness: float
     mean_transverse_tooth_thickness: float
-    tip_r: float
-    root_r: float
-    outside_dia: float
-    outer_root_radius: float
+    tredgold_tip_radius: float
+    tredgold_mean_root_radius: float
     tredgold_outer_root_radius: float
+
+    @property
+    def tip_r(self) -> float:
+        """Compatibility alias for the Tredgold developed tip radius (mm)."""
+        return self.tredgold_tip_radius
+
+    @property
+    def root_r(self) -> float:
+        """Compatibility alias for the Tredgold developed mean root radius."""
+        return self.tredgold_mean_root_radius
+
+    @property
+    def outside_dia(self) -> float:
+        """Compatibility alias for the physical outer tip diameter (mm)."""
+        return self.outer_tip_diameter
 
     @property
     def pitch_angle_deg(self) -> float:
@@ -145,7 +170,9 @@ class HypoidThicknessGeometry:
     ``outer_transverse_backlash`` is the public input convention.  The two
     mean backlash values are derived at the calculation point; they are not
     additional clearances applied to the members.  ``backlash_thickness_...``
-    is the one common correction used to obtain x_sm1 and x_sm2.
+    is the one common correction used to obtain x_sm1 and x_sm2.  Lengths are
+    millimetres; the pressure angle is radians; thickness modification values
+    are dimensionless.
     """
 
     mean_normal_pressure_angle: float
@@ -169,17 +196,20 @@ class HypoidMethod1Geometry:
     The ISO equations use positive magnitudes for the offset geometry.  The
     public result restores the sign of the requested offset to the offset
     angles and pitch-plane offset, while the pitch angles and curvature
-    quantities remain invariant under an offset sign reversal.
+    quantities remain invariant under an offset sign reversal.  Distances and
+    curvature radii are millimetres; angles are radians; factors and ratios
+    are dimensionless.  ``preliminary_*`` fields are the formula-11 seed
+    values only and must not be mistaken for the converged result fields.
     """
 
     gear_ratio: float
     desired_pinion_spiral_angle: float
     shaft_angle_departure: float
-    approximate_wheel_pitch_angle: float
-    approximate_wheel_mean_radius: float
-    approximate_pinion_offset_angle: float
-    approximate_dimension_factor: float
-    approximate_pinion_mean_radius: float
+    preliminary_wheel_pitch_angle: float
+    preliminary_wheel_mean_radius: float
+    preliminary_pinion_offset_angle: float
+    preliminary_dimension_factor: float
+    preliminary_pinion_mean_radius: float
     wheel_offset_angle_axial: float
     intermediate_pinion_offset_angle_axial: float
     intermediate_pinion_pitch_angle: float
@@ -242,6 +272,14 @@ class HypoidMethod1Geometry:
 
 @dataclass(frozen=True)
 class HypoidSection:
+    """One sampled approximate Tredgold tooth-space section.
+
+    ``cone_dist`` and all radii are millimetres.  ``phase``, ``pitch_angle``
+    and ``cone_apex_z`` use radians/mm respectively.  The drive and coast
+    flanks are independent curves, but this section is not a generated cutter
+    envelope or a fully conjugate hypoid surface.
+    """
+
     member: str
     cone_dist: float
     phase: float
@@ -278,7 +316,8 @@ class HypoidSectionBounds:
     ``tooth_face_*`` are physical pitch-cone boundaries.  ``loft_*`` are
     artificial terminal sections used only to let a SOLIDWORKS cut pass clear
     of the revolved blank.  The calculation point is retained explicitly; it
-    is not inferred as the midpoint of either interval.
+    is not inferred as the midpoint of either interval.  Every distance and
+    overshoot is in millimetres.
     """
 
     calculation_point: float
@@ -308,6 +347,16 @@ class HypoidSectionBounds:
 
 @dataclass(frozen=True)
 class HypoidSetGeometry:
+    """Complete calculated hypoid geometry and its approximation metadata.
+
+    The Method 1 pitch, depth, thickness and blank values are stored
+    separately from the Tredgold section quantities on each member.  All
+    lengths are millimetres, angles are radians unless a property says ``deg``,
+    and dimensionless factors are explicitly named as coefficients/factors.
+    ``section_cone_bounds`` is the source of the physical face limits and the
+    separate SOLIDWORKS-only loft overshoots.
+    """
+
     params: HypoidSetParams
     outer_cone_dist: float
     mean_cone_dist: float
@@ -315,7 +364,7 @@ class HypoidSetGeometry:
     mean_normal_module: float
     basic_addendum_factor: float
     basic_dedendum_factor: float
-    profile_shift_coefficient: float
+    method1_profile_shift_coefficient: float
     mean_working_depth: float
     mean_clearance: float
     mean_whole_depth: float
@@ -329,6 +378,11 @@ class HypoidSetGeometry:
     @property
     def offset(self) -> float:
         return self.params.offset
+
+    @property
+    def profile_shift_coefficient(self) -> float:
+        """Compatibility alias for the Method 1 type-I ``x_hm1`` value."""
+        return self.method1_profile_shift_coefficient
 
     @property
     def shaft_angle_deg(self) -> float:
@@ -458,6 +512,13 @@ def _generated_normal_pressure_angles(
 
 @dataclass(frozen=True)
 class _Method1Trial:
+    """One Method 1 curvature-closure trial.
+
+    Angles are radians, cone distances and radii are millimetres, and the
+    dimension/radius increments are millimetres or dimensionless exactly as
+    indicated by their names.
+    """
+
     wheel_offset_angle_axial: float
     intermediate_pinion_offset_angle_axial: float
     intermediate_pinion_pitch_angle: float
@@ -485,8 +546,8 @@ def _method1_trial(
     offset: float,
     delta_sigma: float,
     desired_beta: float,
-    approximate_dimension_factor: float,
-    approximate_pinion_radius: float,
+    preliminary_dimension_factor: float,
+    preliminary_pinion_radius: float,
     wheel_mean_radius: float,
     eta: float,
 ) -> _Method1Trial:
@@ -494,7 +555,7 @@ def _method1_trial(
     ratio = p.ratio
 
     intermediate_offset = _checked_asin(
-        (offset - approximate_pinion_radius * math.sin(eta)) / wheel_mean_radius,
+        (offset - preliminary_pinion_radius * math.sin(eta)) / wheel_mean_radius,
         "intermediate pinion axial offset angle",
     )
     intermediate_pitch = _checked_tangent_angle(
@@ -509,7 +570,7 @@ def _method1_trial(
         "intermediate pinion pitch-plane offset angle",
     )
     intermediate_beta = math.atan2(
-        approximate_dimension_factor - math.cos(intermediate_pitch_offset),
+        preliminary_dimension_factor - math.cos(intermediate_pitch_offset),
         math.sin(intermediate_pitch_offset),
     )
     dimension_increment = math.sin(intermediate_pitch_offset) * (
@@ -533,7 +594,7 @@ def _method1_trial(
         "pinion pitch-plane offset angle",
     )
     pinion_beta = math.atan2(
-        approximate_dimension_factor + dimension_increment
+        preliminary_dimension_factor + dimension_increment
         - math.cos(pinion_pitch_offset),
         math.sin(pinion_pitch_offset),
     )
@@ -544,7 +605,7 @@ def _method1_trial(
         + math.cos(pinion_offset) * math.tan(delta_sigma),
         "wheel pitch angle",
     )
-    pinion_radius = approximate_pinion_radius + radius_increment
+    pinion_radius = preliminary_pinion_radius + radius_increment
     if pinion_radius <= 0.0:
         raise ValueError("hypoid Method 1 pinion mean pitch radius is not positive")
     pinion_cone = pinion_radius / math.sin(pinion_pitch)
@@ -636,11 +697,11 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
             gear_ratio=ratio,
             desired_pinion_spiral_angle=p.psi1,
             shaft_angle_departure=delta_sigma,
-            approximate_wheel_pitch_angle=d2,
-            approximate_wheel_mean_radius=r2,
-            approximate_pinion_offset_angle=0.0,
-            approximate_dimension_factor=1.0,
-            approximate_pinion_mean_radius=r1,
+            preliminary_wheel_pitch_angle=d2,
+            preliminary_wheel_mean_radius=r2,
+            preliminary_pinion_offset_angle=0.0,
+            preliminary_dimension_factor=1.0,
+            preliminary_pinion_mean_radius=r1,
             wheel_offset_angle_axial=0.0,
             intermediate_pinion_offset_angle_axial=0.0,
             intermediate_pinion_pitch_angle=d1,
@@ -674,64 +735,67 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
         raise ValueError("cutter radius must be greater than zero")
 
     offset = abs(p.offset)
-    approximate_wheel_angle = _checked_external_angle(
+    preliminary_wheel_angle = _checked_external_angle(
         ratio * math.cos(delta_sigma),
-        METHOD1_INITIAL_FACTOR * (1.0 - ratio * math.sin(delta_sigma)),
-        "approximate wheel pitch angle",
+        METHOD1_PRELIMINARY_WHEEL_FACTOR
+        * (1.0 - ratio * math.sin(delta_sigma)),
+        "preliminary wheel pitch angle",
     )
-    approximate_wheel_radius = (
+    preliminary_wheel_radius = (
         p.wheel_outer_diameter
-        - p.face_width * math.sin(approximate_wheel_angle)
+        - p.face_width * math.sin(preliminary_wheel_angle)
     ) / 2.0
-    if approximate_wheel_radius <= 0.0:
-        raise ValueError("approximate wheel mean pitch radius is not positive")
-    approximate_offset = _checked_asin(
-        offset * math.sin(approximate_wheel_angle) / approximate_wheel_radius,
-        "approximate pitch-plane offset angle",
+    if preliminary_wheel_radius <= 0.0:
+        raise ValueError("preliminary wheel mean pitch radius is not positive")
+    preliminary_offset = _checked_asin(
+        offset * math.sin(preliminary_wheel_angle) / preliminary_wheel_radius,
+        "preliminary pitch-plane offset angle",
     )
-    approximate_dimension = (
-        math.tan(desired_beta) * math.sin(approximate_offset)
-        + math.cos(approximate_offset)
+    preliminary_dimension = (
+        math.tan(desired_beta) * math.sin(preliminary_offset)
+        + math.cos(preliminary_offset)
     )
-    approximate_pinion_radius = approximate_wheel_radius * approximate_dimension / ratio
-    if approximate_pinion_radius <= 0.0:
-        raise ValueError("approximate pinion mean pitch radius is not positive")
+    preliminary_pinion_radius = (
+        preliminary_wheel_radius * preliminary_dimension / ratio
+    )
+    if preliminary_pinion_radius <= 0.0:
+        raise ValueError("preliminary pinion mean pitch radius is not positive")
     eta = _checked_external_angle(
         offset,
-        approximate_wheel_radius
+        preliminary_wheel_radius
         * (
-            math.tan(approximate_wheel_angle) * math.cos(delta_sigma)
+            math.tan(preliminary_wheel_angle) * math.cos(delta_sigma)
             - math.sin(delta_sigma)
         )
-        + approximate_pinion_radius,
+        + preliminary_pinion_radius,
         "initial wheel axial offset angle",
     )
 
     trial = None
-    for iteration in range(1, MAX_ITERATIONS + 1):
+    for iteration in range(1, METHOD1_MAX_ITERATIONS + 1):
         trial = _method1_trial(
             p,
             offset=offset,
             delta_sigma=delta_sigma,
             desired_beta=desired_beta,
-            approximate_dimension_factor=approximate_dimension,
-            approximate_pinion_radius=approximate_pinion_radius,
-            wheel_mean_radius=approximate_wheel_radius,
+            preliminary_dimension_factor=preliminary_dimension,
+            preliminary_pinion_radius=preliminary_pinion_radius,
+            wheel_mean_radius=preliminary_wheel_radius,
             eta=eta,
         )
         residual = trial.limit_radius_of_curvature - p.cutter_radius
-        if abs(residual) <= METHOD1_CURVATURE_TOLERANCE:
+        if abs(residual) <= METHOD1_CURVATURE_TOLERANCE_MM:
             break
-        h = 1e-6
+        h = METHOD1_DERIVATIVE_STEP_RAD
         try:
             trial_h = _method1_trial(
                 p,
                 offset=offset,
                 delta_sigma=delta_sigma,
                 desired_beta=desired_beta,
-                approximate_dimension_factor=approximate_dimension,
-                approximate_pinion_radius=approximate_pinion_radius,
-                wheel_mean_radius=approximate_wheel_radius,
+                preliminary_dimension_factor=preliminary_dimension,
+                preliminary_pinion_radius=preliminary_pinion_radius,
+                wheel_mean_radius=preliminary_wheel_radius,
                 eta=eta + h,
             )
         except ValueError as exc:
@@ -743,17 +807,32 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
             - trial.limit_radius_of_curvature
         ) / h
         if not math.isfinite(derivative) or abs(derivative) < 1e-12:
-            raise ValueError("hypoid Method 1 curvature iteration became singular")
+            raise ValueError(
+                "hypoid Method 1 curvature closure became singular: "
+                f"dR/deta={derivative:.3e} mm/rad"
+            )
         next_eta = eta - residual / derivative
         if not 0.0 < next_eta < math.pi / 2.0:
-            raise ValueError("hypoid Method 1 curvature iteration did not converge")
+            raise ValueError(
+                "hypoid Method 1 curvature closure left the valid axial-offset "
+                f"range: eta_next={math.degrees(next_eta):.6g} deg"
+            )
         eta = next_eta
     else:
-        raise ValueError("hypoid Method 1 curvature iteration did not converge")
+        raise ValueError(
+            "hypoid Method 1 curvature closure did not converge after "
+            f"{METHOD1_MAX_ITERATIONS} iterations: residual="
+            f"{residual:.3e} mm, target cutter radius={p.cutter_radius:.6g} mm"
+        )
 
     assert trial is not None
-    if abs(trial.limit_radius_of_curvature - p.cutter_radius) > METHOD1_CURVATURE_TOLERANCE:
-        raise ValueError("hypoid Method 1 curvature closure did not converge")
+    final_residual = trial.limit_radius_of_curvature - p.cutter_radius
+    if abs(final_residual) > METHOD1_CURVATURE_TOLERANCE_MM:
+        raise ValueError(
+            "hypoid Method 1 curvature closure did not meet tolerance: "
+            f"residual={final_residual:.3e} mm, tolerance="
+            f"{METHOD1_CURVATURE_TOLERANCE_MM:.3e} mm"
+        )
     generated_drive, generated_coast = _generated_normal_pressure_angles(
         p, trial.limit_pressure_angle
     )
@@ -762,11 +841,11 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
         gear_ratio=ratio,
         desired_pinion_spiral_angle=p.psi1,
         shaft_angle_departure=delta_sigma,
-        approximate_wheel_pitch_angle=approximate_wheel_angle,
-        approximate_wheel_mean_radius=approximate_wheel_radius,
-        approximate_pinion_offset_angle=signed(approximate_offset),
-        approximate_dimension_factor=approximate_dimension,
-        approximate_pinion_mean_radius=approximate_pinion_radius,
+        preliminary_wheel_pitch_angle=preliminary_wheel_angle,
+        preliminary_wheel_mean_radius=preliminary_wheel_radius,
+        preliminary_pinion_offset_angle=signed(preliminary_offset),
+        preliminary_dimension_factor=preliminary_dimension,
+        preliminary_pinion_mean_radius=preliminary_pinion_radius,
         wheel_offset_angle_axial=signed(trial.wheel_offset_angle_axial),
         intermediate_pinion_offset_angle_axial=signed(
             trial.intermediate_pinion_offset_angle_axial
@@ -797,14 +876,17 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
         generated_coast_normal_pressure_angle=generated_coast,
         limit_radius_of_curvature=trial.limit_radius_of_curvature,
         mean_tooth_curvature=p.cutter_radius,
-        curvature_residual=trial.limit_radius_of_curvature - p.cutter_radius,
+        curvature_residual=final_residual,
         iterations=iteration,
     )
 
 
 @dataclass(frozen=True)
 class _Method1Depth:
-    """Method 1 tooth-depth factors and dimensions at the calculation point."""
+    """Method 1 tooth-depth factors and dimensions at the calculation point.
+
+    Factors are dimensionless; all depth and clearance values are millimetres.
+    """
 
     basic_addendum_factor: float
     basic_dedendum_factor: float
@@ -938,10 +1020,11 @@ def _member(
 ):
     """Build one member from the ISO Method 1 blank dimensions.
 
-    ``tip_r`` and ``root_r`` deliberately remain the Tredgold back-cone
-    section radii used by the involute approximation.  The physical Method 1
-    blank radii are the explicit ``*_tip_radius`` and ``*_root_radius``
-    fields below; they are not forced to agree with the developed section.
+    ``tredgold_tip_radius`` and ``tredgold_mean_root_radius`` deliberately
+    remain the Tredgold back-cone section radii used by the involute
+    approximation.  The physical Method 1 blank radii are the explicit
+    ``*_tip_radius`` and ``*_root_radius`` fields below; they are not forced
+    to agree with the developed section.
     """
     cos_delta = math.cos(delta)
     sin_delta = math.sin(delta)
@@ -1010,8 +1093,8 @@ def _member(
     virtual_root = virtual_pitch - dedendum
     if virtual_root <= 0.0:
         raise ValueError(f"{name} Method 1 Tredgold root radius is not positive")
-    tip_r = virtual_tip * cos_delta
-    root_r = virtual_root * cos_delta
+    tredgold_tip_radius = virtual_tip * cos_delta
+    tredgold_mean_root_radius = virtual_root * cos_delta
 
     # ISO 23509 formulas 206 and 211.  The thickness modification coefficient
     # already contains the one common backlash conversion; it is not a direct
@@ -1100,9 +1183,8 @@ def _member(
         thickness_modification_coefficient=thickness_modification_coefficient,
         mean_normal_tooth_thickness=normal_thickness,
         mean_transverse_tooth_thickness=transverse_thickness,
-        tip_r=tip_r,
-        root_r=root_r,
-        outside_dia=2.0 * outer_tip_radius,
+        tredgold_tip_radius=tredgold_tip_radius,
+        tredgold_mean_root_radius=tredgold_mean_root_radius,
         tredgold_outer_root_radius=(
             virtual_root * outer_cone_distance / cone_distance * cos_delta
         ),
@@ -1111,6 +1193,8 @@ def _member(
 
 @dataclass(frozen=True)
 class _Method1BoundarySpirals:
+    """Method 1 boundary cone distances (mm) and spiral angles (radians)."""
+
     pinion_boundary_wheel_outer: float
     pinion_boundary_wheel_inner: float
     pinion_inner: float
@@ -1459,7 +1543,7 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         mean_normal_module=m_n,
         basic_addendum_factor=depth.basic_addendum_factor,
         basic_dedendum_factor=depth.basic_dedendum_factor,
-        profile_shift_coefficient=depth.profile_shift_coefficient,
+        method1_profile_shift_coefficient=depth.profile_shift_coefficient,
         mean_working_depth=depth.working_depth,
         mean_clearance=depth.clearance,
         mean_whole_depth=depth.whole_depth,
@@ -1968,12 +2052,18 @@ def blank_outline(geo: HypoidSetGeometry, member: str) -> list[tuple[float, floa
 
 def section_count(geo: HypoidSetGeometry, member: str) -> int:
     m = geo.member(member)
-    sag = max(0.01, 0.02 * geo.params.module)
+    # This is a SOLIDWORKS loft-station tolerance, not a Method 1 dimension.
+    max_sagitta = max(0.01, 0.02 * geo.params.module)
     bounds = section_cone_bounds(geo, member)
     inner = bounds.loft_inner
     outer = bounds.loft_outer
     twist = abs(_phase(m, outer, geo) - _phase(m, inner, geo))
-    step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - sag / max(m.tip_r, 1e-9))))
+    step = 2.0 * math.acos(
+        max(
+            -1.0,
+            min(1.0, 1.0 - max_sagitta / max(m.tredgold_tip_radius, 1e-9)),
+        )
+    )
     minimum = max(2, math.ceil(twist / max(step, 1e-9)) + 1)
     # The mandatory physical face limits and Method 1 calculation point may
     # add profiles to the uniform extension sweep.  Report the count that the

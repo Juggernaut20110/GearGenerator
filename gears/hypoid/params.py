@@ -20,7 +20,11 @@ class HypoidSetParams(JsonParams):
 
     The advanced factors are the Method 1 data-type-II inputs used by the
     published anchor.  They remain fields so a saved preset can retain a
-    cutter/design choice without changing the basic GUI surface.
+    cutter/design choice without changing the basic GUI surface.  Lengths are
+    millimetres, tooth counts are dimensionless integers, and all public
+    angles are degrees.  ``backlash`` is specifically ISO outer transverse
+    backlash ``j_et2`` at the wheel outer pitch cone; it is not mean-normal
+    backlash.
     """
 
     module: float                 # outer transverse module of the wheel

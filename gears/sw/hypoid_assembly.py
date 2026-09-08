@@ -205,10 +205,7 @@ def build_hypoid_set(session, geo: HypoidSetGeometry, out_dir: str | Path,
         if mate else ((), None, None)
     )
     model.EditRebuild3()
-    try:
-        model.ViewZoomtofit2()
-    except Exception:
-        pass
+    model.ViewZoomtofit2()
     pinion_axis = measure_axis(pinion_comp)
     gear_axis = measure_axis(gear_comp)
     pinion_origin = measure_origin(pinion_comp)

@@ -13,7 +13,7 @@ from ..validate import (
 from .geometry import _cutter_trace, compute_set, tooth_space_section
 from .params import HypoidSetParams
 
-MAX_OFFSET_FRACTION = 0.25
+MAX_METHOD1_OFFSET_FRACTION = 0.25
 MAX_SPIRAL_ANGLE = 60.0
 
 
@@ -52,14 +52,18 @@ def validate(p: HypoidSetParams) -> ValidationResult:
             "cutter_radius",
             "is required for non-zero-offset Method 1 curvature closure",
         )
-    if abs(p.offset) > MAX_OFFSET_FRACTION * p.wheel_outer_diameter:
-        result.error("offset", f"must not exceed {MAX_OFFSET_FRACTION:.0%} of the wheel outer diameter")
+    if abs(p.offset) > MAX_METHOD1_OFFSET_FRACTION * p.wheel_outer_diameter:
+        result.error(
+            "offset",
+            "Method 1 offset magnitude must not exceed "
+            f"{MAX_METHOD1_OFFSET_FRACTION:.0%} of the wheel outer diameter",
+        )
     if result.errors:
         return result
 
     try:
         geo = compute_set(p)
-    except Exception as exc:
+    except (ValueError, ArithmeticError) as exc:
         message = str(exc)
         if p.cutter_radius is not None and "Method 1 curvature" in message:
             field = "cutter_radius"
@@ -67,7 +71,7 @@ def validate(p: HypoidSetParams) -> ValidationResult:
             field = "backlash"
         else:
             field = "geometry"
-        result.error(field, str(exc))
+        result.error(field, f"Method 1 geometry failed: {exc}")
         return result
 
     for member in (geo.pinion, geo.gear):
@@ -84,21 +88,25 @@ def validate(p: HypoidSetParams) -> ValidationResult:
             )
         try:
             tooth_space_section(geo, member.name)
-        except Exception as exc:
-            result.error(member.name, f"tooth space could not be generated: {exc}")
+        except ValueError as exc:
+            result.error(
+                member.name,
+                "Tredgold tooth-space approximation failed: " + str(exc),
+            )
 
     if p.cutter_radius is not None:
         for member in (geo.pinion, geo.gear):
             trace = _cutter_trace(member, geo)
-            inner = member.inner_cone_distance
-            outer = member.outer_cone_distance
+            inner = member.tooth_face_inner_cone_distance
+            outer = member.tooth_face_outer_cone_distance
             if not trace.reaches(inner, outer):
                 lo = abs(trace.centre_distance - trace.cutter_radius)
                 hi = trace.centre_distance + trace.cutter_radius
                 result.error(
                     "cutter_radius",
                     f"a {trace.cutter_radius:.2f} mm cutter does not cover "
-                    f"the {member.name} face from {inner:.2f} to {outer:.2f} mm; "
+                    f"the {member.name} Method 1 tooth face from "
+                    f"{inner:.2f} to {outer:.2f} mm; "
                     f"its arc spans {lo:.2f} to {hi:.2f} mm",
                 )
 
@@ -108,8 +116,12 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.warn("offset", "offset exceeds the usual 15% design range")
     if abs(p.spiral_angle) > 45:
         result.warn("spiral_angle", "high spiral angle increases axial thrust")
-    if p.bore / 2.0 + p.module >= geo.pinion.root_r:
-        result.error("bore", "pinion bore leaves insufficient material below the roots")
+    if p.bore / 2.0 + p.module >= geo.pinion.inner_root_radius:
+        result.error(
+            "bore",
+            "pinion bore leaves insufficient material below the Method 1 "
+            f"inner root radius ({geo.pinion.inner_root_radius:.3f} mm)",
+        )
     return result
 
 

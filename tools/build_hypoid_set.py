@@ -17,16 +17,19 @@ from gears.sw.hypoid_assembly import build_hypoid_set  # noqa: E402
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--module", type=float, default=170.0 / 42.0)
-    ap.add_argument("--z1", type=int, default=13)
-    ap.add_argument("--z2", type=int, default=42)
+    ap.add_argument("--module", type=float, required=True)
+    ap.add_argument("--z1", type=int, required=True)
+    ap.add_argument("--z2", type=int, required=True)
     ap.add_argument("--alpha", type=float, default=20.0)
     ap.add_argument("--sigma", type=float, default=90.0)
-    ap.add_argument("--offset", type=float, default=15.0)
-    ap.add_argument("--spiral", type=float, default=50.0)
-    ap.add_argument("--cutter-radius", type=float, default=63.5)
+    ap.add_argument("--offset", type=float, default=0.0)
+    ap.add_argument("--spiral", type=float, default=35.0)
+    ap.add_argument(
+        "--cutter-radius", type=float,
+        help="face-milling cutter radius in mm (default: derived nominal cutter)",
+    )
     ap.add_argument("--hand", choices=("right", "left"), default="right")
-    ap.add_argument("--face-width", type=float, default=30.0)
+    ap.add_argument("--face-width", type=float)
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
     ap.add_argument(
@@ -42,9 +45,12 @@ def main(argv=None) -> int:
     overrides = {
         "pressure_angle": args.alpha, "shaft_angle": args.sigma,
         "offset": args.offset, "spiral_angle": args.spiral,
-        "cutter_radius": args.cutter_radius, "hand": args.hand,
-        "face_width": args.face_width, "backlash": args.backlash,
+        "hand": args.hand, "backlash": args.backlash,
     }
+    if args.cutter_radius is not None:
+        overrides["cutter_radius"] = args.cutter_radius
+    if args.face_width is not None:
+        overrides["face_width"] = args.face_width
     if args.bore is not None:
         overrides["bore"] = args.bore
     if args.hub is not None:
