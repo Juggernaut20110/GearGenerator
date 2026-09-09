@@ -1829,6 +1829,11 @@ def _phase_trace_and_distance(
     if trace is not None:
         lo = abs(trace.centre_distance - trace.cutter_radius)
         hi = trace.centre_distance + trace.cutter_radius
+        if not math.isfinite(lo) or not math.isfinite(hi) or lo > hi:
+            raise ValueError(
+                f"hypoid {member.name} phase has a non-finite or invalid "
+                "cutter-trace domain"
+            )
         tolerance = 1e-10 * max(1.0, hi)
         if trace_dist < lo - tolerance or trace_dist > hi + tolerance:
             raise ValueError(
@@ -1955,6 +1960,10 @@ def _integrate_phase_tangent(
         raise ValueError("hypoid phase integration tolerance is invalid")
 
     def recurse(a, b, fa, fb, fc, whole, depth, local_tolerance) -> float:
+        if not math.isfinite(local_tolerance) or local_tolerance <= 0.0:
+            raise ValueError(
+                "hypoid phase integration received an invalid local error budget"
+            )
         mid = 0.5 * (a + b)
         left_mid = 0.5 * (a + mid)
         right_mid = 0.5 * (mid + b)
@@ -1963,11 +1972,18 @@ def _integrate_phase_tangent(
         left = simpson(a, mid, fa, fc, f_left_mid)
         right = simpson(mid, b, fc, fb, f_right_mid)
         refined = left + right
+        if not math.isfinite(refined):
+            raise ValueError("hypoid phase refined Simpson estimate is non-finite")
         estimated_error = abs(refined - whole) / 15.0
         if not math.isfinite(estimated_error):
             raise ValueError("hypoid phase integration error estimate is non-finite")
         if estimated_error <= local_tolerance:
-            return refined + (refined - whole) / 15.0
+            corrected = refined + (refined - whole) / 15.0
+            if not math.isfinite(corrected):
+                raise ValueError(
+                    "hypoid phase corrected Simpson estimate is non-finite"
+                )
+            return corrected
         if depth <= 0:
             raise ValueError(
                 "hypoid phase integration did not converge within the "
@@ -2058,6 +2074,11 @@ def _phase(
             boundary_phase = _phase(member, boundary, geo)
             boundary_beta = _method1_spiral_angle_at(member, boundary, geo)
             slope = math.tan(boundary_beta) / (boundary * sin_delta)
+            if not math.isfinite(slope):
+                raise ValueError(
+                    "hypoid construction-only phase tangent extrapolation "
+                    "is non-finite at the physical face boundary"
+                )
             member_sense = 1.0 if member.name == "pinion" else -1.0
             extrapolated = boundary_phase + member_sense * slope * (
                 cone_dist - boundary
@@ -2095,7 +2116,12 @@ def _phase(
     # the existing opposite local phase senses of the hypoid pair: the pinion
     # receives the curve directly and the wheel receives its negative.
     member_sense = 1.0 if member.name == "pinion" else -1.0
-    return member_sense * phase_curve
+    phase = member_sense * phase_curve
+    if not math.isfinite(phase):
+        raise ValueError(
+            f"hypoid {member.name} phase calculation returned a non-finite result"
+        )
+    return phase
 
 
 def _reflect_flank(points: list[Point2]) -> list[Point2]:
@@ -2610,7 +2636,10 @@ def section_count(geo: HypoidSetGeometry, member: str) -> int:
     bounds = section_cone_bounds(geo, member)
     inner = bounds.loft_inner
     outer = bounds.loft_outer
-    twist = abs(_phase(m, outer, geo) - _phase(m, inner, geo))
+    twist = abs(
+        _phase(m, outer, geo, construction_only=True)
+        - _phase(m, inner, geo, construction_only=True)
+    )
     step = 2.0 * math.acos(
         max(
             -1.0,

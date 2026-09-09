@@ -26,6 +26,7 @@ from gears.hypoid.geometry import (
     compute_set,
     normal_to_transverse_pressure_angle,
     PHASE_INTEGRATION_TOLERANCE_RAD,
+    section_count,
     section_cone_bounds,
     section_cone_distances,
     tooth_space_section,
@@ -1218,6 +1219,15 @@ def test_out_of_domain_loft_extension_uses_documented_construction_tangent():
             section = tooth_space_section(geo, "pinion", distance)
             assert math.isfinite(section.phase)
     assert saw_out_of_domain
+
+
+def test_section_count_accepts_out_of_domain_construction_extension():
+    # The same valid design as above reaches beyond the circular wheel trace
+    # only at a terminal SOLIDWORKS clearance section.  Section sizing is a
+    # construction concern too, so it must use the same explicit tangent
+    # extension as the actual loft section builder.
+    geo = compute_set(replace(ANCHOR, offset=5.0, cutter_radius=40.0))
+    assert section_count(geo, "pinion") >= 2
 
 
 def test_out_of_domain_phase_is_rejected_instead_of_clamped():
