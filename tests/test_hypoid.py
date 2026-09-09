@@ -274,6 +274,128 @@ def test_face_overlap_ratio_is_hand_invariant():
     )
 
 
+def _assert_hand_mirror_fields(right, left, signed_fields):
+    """Check scalar equality and explicit sign reversal for a dataclass."""
+    for name, right_value in vars(right).items():
+        left_value = getattr(left, name)
+        if name in signed_fields:
+            assert left_value == pytest.approx(-right_value, abs=1e-12), name
+        elif isinstance(right_value, float):
+            assert left_value == pytest.approx(right_value, abs=1e-12), name
+        else:
+            assert left_value == right_value, name
+
+
+@pytest.mark.parametrize("spiral_angle", [0.0, 35.0])
+def test_hand_is_the_sole_hypoid_spiral_orientation_control(spiral_angle):
+    right_params = replace(ANCHOR, spiral_angle=spiral_angle, hand="right")
+    left_params = replace(ANCHOR, spiral_angle=spiral_angle, hand="left")
+    assert right_params.spiral_sign == 1.0
+    assert left_params.spiral_sign == -1.0
+    assert right_params.psi1 == pytest.approx(math.radians(spiral_angle))
+    assert left_params.psi1 == pytest.approx(-math.radians(spiral_angle))
+    assert right_params.beta == right_params.psi1
+    assert left_params.beta == left_params.psi1
+
+    right = compute_set(right_params)
+    left = compute_set(left_params)
+    _assert_hand_mirror_fields(
+        right.method1,
+        left.method1,
+        {
+            "desired_pinion_spiral_angle",
+            "pinion_inner_spiral_angle",
+            "pinion_outer_spiral_angle",
+            "wheel_inner_spiral_angle",
+            "wheel_outer_spiral_angle",
+        },
+    )
+    for name in ("pinion", "gear"):
+        _assert_hand_mirror_fields(
+            right.member(name),
+            left.member(name),
+            {"mean_spiral_angle", "inner_spiral_angle", "outer_spiral_angle"},
+        )
+        member_right = right.member(name)
+        for distance in (
+            member_right.tooth_face_inner_cone_distance,
+            member_right.cone_distance,
+            member_right.tooth_face_outer_cone_distance,
+        ):
+            section_right = tooth_space_section(right, name, distance)
+            section_left = tooth_space_section(left, name, distance)
+            assert _method1_spiral_angle_at(
+                left.member(name), distance, left
+            ) == pytest.approx(
+                -_method1_spiral_angle_at(right.member(name), distance, right),
+                abs=1e-12,
+            )
+            assert section_left.phase == pytest.approx(-section_right.phase, abs=1e-12)
+            assert section_left.spiral_angle == pytest.approx(
+                -section_right.spiral_angle, abs=1e-12
+            )
+            for right_flank, left_flank in (
+                (section_right.drive_flank, section_left.drive_flank),
+                (section_right.coast_flank, section_left.coast_flank),
+            ):
+                assert len(right_flank) == len(left_flank)
+                for right_point, left_point in zip(right_flank, left_flank):
+                    assert left_point[0] == pytest.approx(right_point[0], abs=1e-12)
+                    assert left_point[1] == pytest.approx(-right_point[1], abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "legacy_angle,legacy_hand,expected_hand",
+    [(-35.0, "right", "left"), (-35.0, "left", "right")],
+)
+def test_legacy_signed_hypoid_spiral_json_is_migrated_at_load_boundary(
+    tmp_path, legacy_angle, legacy_hand, expected_hand
+):
+    import json
+
+    old = dict(ANCHOR.__dict__)
+    old.update(spiral_angle=legacy_angle, hand=legacy_hand)
+    path = tmp_path / f"legacy-{legacy_hand}.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    restored = HypoidSetParams.from_json(path)
+    old_psi1 = math.copysign(
+        math.radians(abs(legacy_angle)),
+        1.0 if legacy_hand == "left" else -1.0,
+    )
+    assert restored.spiral_angle == pytest.approx(abs(legacy_angle))
+    assert restored.hand == expected_hand
+    assert restored.psi1 == pytest.approx(old_psi1, abs=1e-12)
+    assert validate(restored).ok
+
+
+def test_hypoid_json_round_trip_writes_canonical_spiral_magnitude(tmp_path):
+    import json
+
+    params = replace(ANCHOR, spiral_angle=35.0, hand="left")
+    path = tmp_path / "canonical-hypoid.json"
+    params.to_json(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    restored = HypoidSetParams.from_json(path)
+
+    assert raw["spiral_angle"] == 35.0
+    assert raw["hand"] == "left"
+    assert restored == params
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_negative_hypoid_spiral_magnitude_is_rejected_for_direct_input(hand):
+    params = replace(ANCHOR, spiral_angle=-35.0, hand=hand)
+    result = validate(params)
+    assert not result.ok
+    assert any(
+        issue.field == "spiral_angle" and "non-negative magnitude" in issue.message
+        for issue in result.errors
+    )
+    with pytest.raises(ValueError, match="non-negative magnitude"):
+        _ = params.psi1
+
+
 def test_face_overlap_ratio_grows_with_facewidth_and_spiral_magnitude():
     base = HypoidSetParams.with_defaults(
         2.0, 17, 43, offset=0.0, face_width=8.0,
@@ -1895,3 +2017,16 @@ def test_hypoid_is_selectable_from_the_cli(capsys):
     assert "generated coast normal pressure angle" in output
     assert "spiral-bevel face overlap estimate epsilon_beta" in output
     assert "face overlap ratio estimate epsilon_beta" not in output
+
+
+def test_negative_hypoid_spiral_cli_input_is_rejected(capsys):
+    status = main([
+        "--type", "hypoid", "--module", str(170.0 / 42.0),
+        "--z1", "13", "--z2", "42", "--offset", "15",
+        "--face-width", "30", "--spiral", "-35", "--cutter-radius", "63.5",
+    ])
+    assert status == 1
+    assert (
+        "spiral_angle: must be a finite non-negative magnitude"
+        in capsys.readouterr().err
+    )

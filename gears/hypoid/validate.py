@@ -11,10 +11,9 @@ from ..validate import (
     ValidationResult,
 )
 from .geometry import compute_set, tooth_space_section
-from .params import HypoidSetParams
+from .params import MAX_SPIRAL_ANGLE, HypoidSetParams
 
 MAX_METHOD1_OFFSET_FRACTION = 0.25
-MAX_SPIRAL_ANGLE = 60.0
 
 
 def validate(p: HypoidSetParams) -> ValidationResult:
@@ -50,8 +49,14 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.error("thickness_factor", "must be between -0.95 and 0.95")
     if p.hand not in ("right", "left"):
         result.error("hand", "must be 'right' or 'left'")
-    if not -MAX_SPIRAL_ANGLE <= p.spiral_angle <= MAX_SPIRAL_ANGLE:
-        result.error("spiral_angle", f"must be between -{MAX_SPIRAL_ANGLE} and {MAX_SPIRAL_ANGLE} degrees")
+    if not math.isfinite(p.spiral_angle) or not (
+        0.0 <= p.spiral_angle <= MAX_SPIRAL_ANGLE
+    ):
+        result.error(
+            "spiral_angle",
+            "must be a finite non-negative magnitude between "
+            f"0 and {MAX_SPIRAL_ANGLE} degrees",
+        )
     if p.cutter_radius is not None and p.cutter_radius <= 0:
         result.error("cutter_radius", "must be greater than zero")
     if abs(p.offset) > 0.0 and p.cutter_radius is None:
@@ -139,7 +144,7 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.warn("cutter_radius", "a very small cutter produces a sharply varying spiral")
     if abs(p.offset) > 0.15 * p.wheel_outer_diameter:
         result.warn("offset", "offset exceeds the usual 15% design range")
-    if abs(p.spiral_angle) > 45:
+    if p.spiral_angle > 45:
         result.warn("spiral_angle", "high spiral angle increases axial thrust")
     if p.bore / 2.0 + p.module >= geo.pinion.inner_root_radius:
         result.error(

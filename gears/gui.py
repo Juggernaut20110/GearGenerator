@@ -179,7 +179,7 @@ HYPOID_FIELDS: tuple[Field, ...] = (
     Field("pressure_angle", "Pressure angle", float, "deg"),
     Field("shaft_angle", "Shaft angle", float, "deg"),
     Field("offset", "Hypoid offset", float, "mm"),
-    Field("spiral_angle", "Pinion spiral angle", float, "deg"),
+    Field("spiral_angle", "Pinion spiral-angle magnitude", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
     Field("cutter_radius", "Cutter radius", float, "mm", optional=True),
     Field("backlash", "Outer transverse backlash (j_et2)", float, "mm"),

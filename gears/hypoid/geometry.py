@@ -897,7 +897,7 @@ def _pitch_solution(p: HypoidSetParams) -> HypoidMethod1Geometry:
             raise ValueError("zero-offset mean cone distance is not positive")
         r2 = R2 * math.sin(d2)
         r1 = r2 / ratio
-        beta = sign * desired_beta if p.psi1 >= 0.0 else -desired_beta
+        beta = p.psi1
         generated_drive, generated_coast = _generated_normal_pressure_angles(p, 0.0)
         return HypoidMethod1Geometry(
             gear_ratio=ratio,
@@ -1454,7 +1454,7 @@ def _method1_boundary_spirals(
     if Re21 <= 0.0 or Ri21 <= 0.0:
         raise ValueError("Method 1 pinion boundary cone distance is not positive")
 
-    hand_sign = 1.0 if p.hand == "right" else -1.0
+    hand_sign = p.spiral_sign
 
     def trace_angle(
         mean_radius: float,
@@ -1517,7 +1517,7 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
     method1 = _pitch_solution(p)
     d1 = method1.pinion_pitch_angle
     d2 = method1.wheel_pitch_angle
-    spiral_sign = 1.0 if p.psi1 >= 0.0 else -1.0
+    spiral_sign = p.spiral_sign
     beta1 = spiral_sign * method1.pinion_spiral_angle
     beta2 = spiral_sign * method1.wheel_spiral_angle
     r1 = method1.pinion_mean_radius
@@ -1819,7 +1819,7 @@ def _cutter_trace(
         abs(member.mean_spiral_angle),
         radius,
         member.cone_distance,
-        sign=1.0 if geo.params.hand == "right" else -1.0,
+        sign=geo.params.spiral_sign,
     )
 
 
@@ -1936,8 +1936,7 @@ def _method1_spiral_angle_at(
     offset_ratio = abs(geo.pitch_plane_offset) / wheel_dist
     if offset_ratio >= 1.0:
         raise ValueError("hypoid Method 1 pinion trace offset is singular")
-    hand = 1.0 if geo.params.hand == "right" else -1.0
-    return wheel_angle + hand * math.asin(offset_ratio)
+    return wheel_angle + geo.params.spiral_sign * math.asin(offset_ratio)
 
 
 def _integrate_phase_tangent(
@@ -2470,6 +2469,8 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     #          = s_t,m * scale.
     transverse_tooth_thickness = m.mean_transverse_tooth_thickness * scale
     normal_tooth_thickness = transverse_tooth_thickness * local_spiral_cos
+    # Hand chooses which generated normal flank is the positive local side;
+    # signed spiral orientation itself comes from params.spiral_sign above.
     positive_drive = geo.params.hand == "right"
     positive_normal_angle = (
         m.generated_drive_normal_pressure_angle

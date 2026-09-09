@@ -20,7 +20,13 @@ class JsonParams:
         Path(path).write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
 
     @classmethod
+    def _migrate_json_data(cls, data: dict):
+        """Give a parameter type one explicit hook for old-file migrations."""
+        return data
+
+    @classmethod
     def from_json(cls, path: str | Path):
         data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = cls._migrate_json_data(data)
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in data.items() if k in known})

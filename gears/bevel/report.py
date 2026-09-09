@@ -46,7 +46,7 @@ def add_arguments(ap) -> None:
         "--spiral",
         type=float,
         default=0.0,
-        help="mean spiral angle, deg (0 = straight bevel)",
+        help="spiral angle, deg; hypoid uses a non-negative magnitude (0 = straight bevel)",
     )
     ap.add_argument(
         "--zerol",

@@ -18,6 +18,16 @@ from ..params_io import JsonParams
 # cutter-head radius and cannot represent a cutter blade edge without the
 # missing machine/cutter data.
 HYPOID_DEFAULT_ROOT_FILLET_FACTOR = 0.1
+MAX_SPIRAL_ANGLE = 60.0
+
+
+def _hand_sign(hand: str) -> float:
+    """Return the sole public orientation sign for a hypoid spiral."""
+    if hand == "right":
+        return 1.0
+    if hand == "left":
+        return -1.0
+    raise ValueError("hand must be 'right' or 'left'")
 
 
 @dataclass(frozen=True)
@@ -30,7 +40,10 @@ class HypoidSetParams(JsonParams):
     millimetres, tooth counts are dimensionless integers, and all public
     angles are degrees.  ``backlash`` is specifically ISO outer transverse
     backlash ``j_et2`` at the wheel outer pitch cone; it is not mean-normal
-    backlash.
+    backlash.  ``spiral_angle`` is a non-negative pinion mean spiral-angle
+    magnitude from 0 through 60 degrees.  ``hand`` is its sole orientation
+    control; right hand is positive in signed ``psi1`` and left hand is
+    negative.
     """
 
     module: float                 # outer transverse module of the wheel
@@ -43,7 +56,7 @@ class HypoidSetParams(JsonParams):
     pressure_angle: float = 20.0  # nominal normal pressure angle, degrees
     shaft_angle: float = 90.0
     offset: float = 0.0           # signed common-normal axis offset, mm
-    spiral_angle: float = 35.0    # pinion mean spiral angle, degrees
+    spiral_angle: float = 35.0    # pinion mean spiral-angle magnitude, degrees
     hand: str = "right"
     cutter_radius: float | None = None
     # Compatibility name retained for the CLI/GUI and saved JSON schema.
@@ -79,14 +92,55 @@ class HypoidSetParams(JsonParams):
         return math.radians(self.shaft_angle)
 
     @property
+    def spiral_sign(self) -> float:
+        """Signed orientation selected by ``hand`` (right positive)."""
+        return _hand_sign(self.hand)
+
+    @property
+    def spiral_angle_radians(self) -> float:
+        """Non-negative public spiral magnitude converted to radians."""
+        if not math.isfinite(self.spiral_angle) or not (
+            0.0 <= self.spiral_angle <= MAX_SPIRAL_ANGLE
+        ):
+            raise ValueError(
+                "spiral_angle must be a finite non-negative magnitude between "
+                f"0 and {MAX_SPIRAL_ANGLE} degrees"
+            )
+        return math.radians(self.spiral_angle)
+
+    @property
     def psi1(self) -> float:
-        value = math.radians(self.spiral_angle)
-        return value if self.hand == "right" else -value
+        """Signed pinion mean spiral angle; ``hand`` supplies its sign."""
+        return self.spiral_sign * self.spiral_angle_radians
 
     @property
     def beta(self) -> float:
         """Signed pinion spiral angle in radians."""
         return self.psi1
+
+    @classmethod
+    def _migrate_json_data(cls, data: dict):
+        """Canonicalize the historical signed hypoid spiral field.
+
+        Before the public convention was made explicit, a negative
+        ``spiral_angle`` was accepted and its sign participated in ``psi1``.
+        At this JSON boundary only, preserve that old signed orientation by
+        taking the magnitude and reversing the stored hand.  New direct/API
+        construction is not migrated and is rejected by validation/the
+        radians property.
+        """
+        migrated = dict(data)
+        angle = migrated.get("spiral_angle")
+        hand = migrated.get("hand", "right")
+        if (
+            isinstance(angle, (int, float))
+            and math.isfinite(angle)
+            and angle < 0.0
+            and hand in ("right", "left")
+        ):
+            migrated["spiral_angle"] = abs(angle)
+            migrated["hand"] = "left" if hand == "right" else "right"
+        return migrated
 
     @property
     def hypoid_offset(self) -> float:

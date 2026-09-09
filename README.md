@@ -16,7 +16,7 @@ Four gear types, sharing everything they can:
   normal module, sun and planet tooth counts, how many planets, backlash
 * **hypoid**, Gleason/ISO Method 1 — a skew-axis external pair: outer transverse
   module, tooth counts, shaft angle, signed axis offset, face width, pinion
-  spiral angle, cutter radius, pressure angle, hand, bore, hub, root rim and
+  spiral-angle magnitude, cutter radius, pressure angle, hand, bore, hub, root rim and
   backlash
 
 Every one produces:
@@ -485,7 +485,15 @@ pair, the two shaft axes do not intersect: `--offset` is the signed distance
 between them along their common normal, positive on the assembly `+Y` side.
 The input module is the wheel's outer transverse module, so the published
 13/42 anchor is entered as `170/42`, with a 15 mm offset, 30 mm face width,
-50 degree pinion spiral and 63.5 mm cutter.
+50 degree pinion spiral-angle magnitude and 63.5 mm cutter.
+
+For hypoid inputs, `spiral_angle` is a non-negative pinion mean spiral-angle
+magnitude from 0 through 60 degrees. `hand` is the sole left/right orientation
+control: right hand gives a positive signed `psi1`, and left hand gives a
+negative one. Negative magnitudes are rejected for direct/API and CLI input.
+When loading a legacy JSON preset, a negative saved angle is migrated only at
+that deserialization boundary to its absolute value while reversing `hand`,
+preserving the old signed `psi1`; newly written JSON is canonical.
 
 The solver iterates the two pitch-cone angles and the hypoid offset angle at the
 mean contact point. The anchor returns 21.288 / 68.324 degree pitch angles,

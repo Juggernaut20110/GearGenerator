@@ -99,6 +99,8 @@ def derived_rows(geo: HypoidSetGeometry) -> list[Row]:
         Row("INPUT", header=True),
         Row("shaft angle", f"{p.shaft_angle:.4f}", unit="deg"),
         Row("hypoid offset", f"{p.offset:.4f}", unit="mm"),
+        Row("pinion spiral-angle magnitude", f"{p.spiral_angle:.4f}", unit="deg"),
+        Row("pinion hand", p.hand),
         Row("outer transverse backlash (j_et2)", f"{p.backlash:.4f}", unit="mm"),
         Row("backlash convention", "wheel outer transverse cone"),
         Row("METHOD 1 CALCULATED", header=True),

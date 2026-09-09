@@ -778,6 +778,17 @@ def test_a_hypoid_set_computes_and_draws(app):
     assert app.build_button.instate(["!disabled"])
 
 
+def test_a_negative_hypoid_spiral_magnitude_is_rejected_in_the_gui(app):
+    app.kind_key.set("hypoid")
+    app.on_kind_change()
+    set_input(app, "spiral_angle", "-35")
+
+    assert app._geo is None
+    assert "Pinion spiral-angle magnitude" in app.messages.get("1.0", "end")
+    assert "non-negative magnitude" in app.messages.get("1.0", "end")
+    assert app.build_button.instate(["disabled"])
+
+
 def test_a_failed_assembly_condition_blocks_the_build_button(app):
     app.kind_key.set("planetary")
     app.on_kind_change()
