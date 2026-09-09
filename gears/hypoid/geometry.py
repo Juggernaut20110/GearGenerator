@@ -110,6 +110,9 @@ class HypoidMemberGeometry:
     inner_root_diameter: float
     virtual_teeth: float
     virtual_pitch_r: float
+    # Nominal mean-section transverse-equivalent base radius.  The generated
+    # drive and coast flanks have independent bases; HypoidSection records those
+    # local values explicitly.
     virtual_base_r: float
     virtual_tip_r: float
     virtual_root_r: float
@@ -155,6 +158,30 @@ class HypoidMemberGeometry:
     @property
     def generated_coast_normal_pressure_angle_deg(self) -> float:
         return math.degrees(self.generated_coast_normal_pressure_angle)
+
+    @property
+    def generated_drive_transverse_pressure_angle(self) -> float:
+        """Mean-section transverse equivalent of the generated drive angle."""
+        return normal_to_transverse_pressure_angle(
+            self.generated_drive_normal_pressure_angle,
+            self.mean_spiral_angle,
+        )
+
+    @property
+    def generated_coast_transverse_pressure_angle(self) -> float:
+        """Mean-section transverse equivalent of the generated coast angle."""
+        return normal_to_transverse_pressure_angle(
+            self.generated_coast_normal_pressure_angle,
+            self.mean_spiral_angle,
+        )
+
+    @property
+    def generated_drive_transverse_pressure_angle_deg(self) -> float:
+        return math.degrees(self.generated_drive_transverse_pressure_angle)
+
+    @property
+    def generated_coast_transverse_pressure_angle_deg(self) -> float:
+        return math.degrees(self.generated_coast_transverse_pressure_angle)
 
     @property
     def face_angle_deg(self) -> float:
@@ -302,8 +329,11 @@ class HypoidSection:
 
     ``cone_dist`` and all radii are millimetres.  ``phase``, ``pitch_angle``
     and ``cone_apex_z`` use radians/mm respectively.  The drive and coast
-    flanks are independent curves, but this section is not a generated cutter
-    envelope or a fully conjugate hypoid surface.
+    flanks are independent curves.  ``loop_2d`` is the developed back-cone
+    (transverse-equivalent) plane; its local pressure angles and tooth thickness
+    are converted from the Method 1 normal values using the local spiral angle.
+    This section is not a generated cutter envelope or a fully conjugate hypoid
+    surface.
     """
 
     member: str
@@ -314,6 +344,13 @@ class HypoidSection:
     r_root: float
     r_tip: float
     r_cap: float
+    spiral_angle: float
+    normal_tooth_thickness: float
+    transverse_tooth_thickness: float
+    drive_transverse_pressure_angle: float
+    coast_transverse_pressure_angle: float
+    drive_base_radius: float
+    coast_base_radius: float
     drive_flank: list[Point2]
     coast_flank: list[Point2]
     segments: dict[str, list[Point2]]
@@ -554,6 +591,32 @@ def _generated_normal_pressure_angles(
     if not 0.0 < coast < math.pi / 2.0:
         raise ValueError("Method 1 generated coast pressure angle is invalid")
     return drive, coast
+
+
+def normal_to_transverse_pressure_angle(
+    normal_pressure_angle: float, spiral_angle: float
+) -> float:
+    """Convert a normal pressure angle to its transverse equivalent.
+
+    Method 1 supplies pressure angles in the normal section, perpendicular to
+    the local tooth trace.  The involute built in the developed back-cone
+    section is transverse-equivalent, so its pressure angle is
+
+        tan(alpha_t) = tan(alpha_n) / abs(cos(beta)).
+
+    ``beta`` is signed by hand, but the conversion depends only on its
+    magnitude.  The signed normal angle is retained in the return value so the
+    helper remains useful for diagnostic calculations; generated hypoid angles
+    are positive magnitudes.
+    """
+    if not math.isfinite(normal_pressure_angle) or not (
+        -math.pi / 2.0 < normal_pressure_angle < math.pi / 2.0
+    ):
+        raise ValueError("normal pressure angle must lie between -90 and 90 degrees")
+    cosine = abs(math.cos(spiral_angle))
+    if not math.isfinite(cosine) or cosine < 1e-12:
+        raise ValueError("transverse pressure angle is singular at a 90 degree spiral")
+    return math.atan2(math.tan(normal_pressure_angle), cosine)
 
 
 @dataclass(frozen=True)
@@ -1144,7 +1207,12 @@ def _member(
     )
 
     virtual_pitch = radius / cos_delta
-    virtual_base = virtual_pitch * math.cos(p.alpha)
+    # This is a nominal mean-section reference circle.  The actual generated
+    # drive and coast bases use their distinct Method 1 normal angles after
+    # conversion to the local transverse-equivalent section.
+    virtual_base = virtual_pitch * math.cos(
+        normal_to_transverse_pressure_angle(p.alpha, spiral)
+    )
     virtual_tip = virtual_pitch + addendum
     virtual_root = virtual_pitch - dedendum
     if virtual_root <= 0.0:
@@ -1979,24 +2047,34 @@ def hypoid_tooth_space_loop(
 def _hypoid_flank_points(
     member: HypoidMemberGeometry,
     cone_dist: float,
-    pressure_angle: float,
+    normal_pressure_angle: float,
+    spiral_angle: float,
+    normal_tooth_thickness: float,
     n_flank: int,
 ) -> list[Point2]:
-    """Build one Tredgold involute using one Method 1 generated angle."""
+    """Build one transverse-equivalent Tredgold involute.
+
+    The Method 1 angle is normal to the local spiral tooth trace, while this
+    involute lives in the developed back-cone plane.  Convert the angle and the
+    local normal tooth thickness before constructing the planar profile.
+    """
     scale = cone_dist / max(member.cone_distance, 1e-9)
     pitch = member.virtual_pitch_r * scale
-    base = pitch * math.cos(pressure_angle)
+    transverse_pressure_angle = normal_to_transverse_pressure_angle(
+        normal_pressure_angle, spiral_angle
+    )
+    transverse_tooth_thickness = normal_tooth_thickness / max(
+        abs(math.cos(spiral_angle)), 1e-12
+    )
+    base = pitch * math.cos(transverse_pressure_angle)
     root = member.virtual_root_r * scale
     tip = member.virtual_tip_r * scale
     half_pitch = math.pi / member.virtual_teeth
-    tooth_half_angle = (
-        member.mean_transverse_tooth_thickness
-        / (2.0 * max(member.virtual_pitch_r, 1e-9))
-    )
+    tooth_half_angle = transverse_tooth_thickness / (2.0 * max(pitch, 1e-9))
     space_half_angle = half_pitch - tooth_half_angle
     if base <= 0.0 or tip <= base:
         raise ValueError(
-            f"{member.name} generated {math.degrees(pressure_angle):.3f} degree "
+            f"{member.name} generated {math.degrees(transverse_pressure_angle):.3f} degree "
             "flank does not reach the involute tip"
         )
     if not 0.0 < space_half_angle < half_pitch:
@@ -2006,9 +2084,33 @@ def _hypoid_flank_points(
     # involute function, not the complementary space half-angle.  Keeping
     # this relation explicit is important when the drive and coast angles
     # have different involute functions.
-    psi0 = tooth_half_angle + involute.inv(pressure_angle)
-    return involute.flank_points(
+    psi0 = tooth_half_angle + involute.inv(transverse_pressure_angle)
+    points = involute.flank_points(
         base, root, tip, psi0, half_pitch, n_flank
+    )
+    if points[0][1] >= 0.0:
+        return points
+
+    # At unusually large local transverse angles the standard radial
+    # below-base simplification can extrapolate through the section centreline
+    # even though the involute above the base circle returns to the requested
+    # positive side.  Retain the involute and replace only that below-base
+    # transition with a tiny positive root lead; the true trochoid is already
+    # outside this Tredgold approximation.  This keeps loft-only and physical
+    # sections constructible without changing the pitch-circle involute.
+    for index in range(1, len(points)):
+        previous, current = points[index - 1], points[index]
+        if current[1] >= 0.0:
+            fraction = -previous[1] / (current[1] - previous[1])
+            crossing = (
+                previous[0] + fraction * (current[0] - previous[0]),
+                0.0,
+            )
+            root_lead = involute.polar(root, 1e-9)
+            return [root_lead, crossing, *points[index + 1:]]
+    raise ValueError(
+        f"{member.name} generated transverse involute does not reach its "
+        "requested flank side"
     )
 
 
@@ -2018,8 +2120,11 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     """Build an independently constructed Method 1 Tredgold tooth space.
 
     The drive and coast normal pressure angles are distinct Method 1
-    quantities.  The resulting pair of involutes is a better section model,
-    but it remains an approximation rather than a true cutter-envelope
+    quantities.  Each is converted to the local transverse-equivalent angle
+    with the authoritative Method 1 spiral evaluator before its independent
+    involute is built.  The normal tooth thickness is scaled with cone distance
+    and converted to local transverse thickness in the same section.  The
+    resulting pair remains an approximation rather than a true cutter-envelope
     hypoid surface.
     """
     m = geo.member(member)
@@ -2029,22 +2134,69 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     root = m.virtual_root_r * scale
     tip = m.virtual_tip_r * scale
     cap = tip + involute.CUT_OVERSHOOT_FACTOR * geo.params.module
+    # Method 1 defines beta(A) over the physical tooth face.  Loft-only
+    # clearance stations can lie beyond that interval, where extending the
+    # cutter trace would eventually drive cos(beta) through zero and make a
+    # transverse section meaningless.  Hold the profile conversion at the
+    # nearest physical-face value for those construction stations; the phase
+    # still uses the true requested cone distance below.
+    profile_cone_dist = min(
+        max(cone_dist, m.tooth_face_inner_cone_distance),
+        m.tooth_face_outer_cone_distance,
+    )
+    spiral_angle = _method1_spiral_angle_at(m, profile_cone_dist, geo)
+    mean_spiral_cos = abs(math.cos(m.mean_spiral_angle))
+    local_spiral_cos = abs(math.cos(spiral_angle))
+    if mean_spiral_cos < 1e-12 or local_spiral_cos < 1e-12:
+        raise ValueError("hypoid section tooth thickness is singular at a 90 degree spiral")
+    # The developed section has a transverse pitch that scales with cone
+    # distance.  Its corresponding normal pitch therefore also carries the
+    # local cos(beta) factor.  Converting that local normal tooth thickness back
+    # to transverse gives the mean transverse thickness scaled through the
+    # section, which is the Tredgold angular-thickness construction:
+    #
+    #   s_n(A) = s_n,m * scale * cos(beta(A)) / cos(beta_m)
+    #   s_t(A) = s_n(A) / cos(beta(A))
+    #          = s_t,m * scale.
+    transverse_tooth_thickness = m.mean_transverse_tooth_thickness * scale
+    normal_tooth_thickness = transverse_tooth_thickness * local_spiral_cos
     positive_drive = geo.params.hand == "right"
-    positive_angle = (
+    positive_normal_angle = (
         m.generated_drive_normal_pressure_angle
         if positive_drive
         else m.generated_coast_normal_pressure_angle
     )
-    negative_angle = (
+    negative_normal_angle = (
         m.generated_coast_normal_pressure_angle
         if positive_drive
         else m.generated_drive_normal_pressure_angle
     )
+    positive_transverse_angle = normal_to_transverse_pressure_angle(
+        positive_normal_angle, spiral_angle
+    )
+    negative_transverse_angle = normal_to_transverse_pressure_angle(
+        negative_normal_angle, spiral_angle
+    )
+    pitch = m.virtual_pitch_r * scale
+    positive_base = pitch * math.cos(positive_transverse_angle)
+    negative_base = pitch * math.cos(negative_transverse_angle)
     positive_flank = _hypoid_flank_points(
-        m, cone_dist, positive_angle, n_flank
+        m,
+        cone_dist,
+        positive_normal_angle,
+        spiral_angle,
+        normal_tooth_thickness,
+        n_flank,
     )
     negative_flank = _reflect_flank(
-        _hypoid_flank_points(m, cone_dist, negative_angle, n_flank)
+        _hypoid_flank_points(
+            m,
+            cone_dist,
+            negative_normal_angle,
+            spiral_angle,
+            normal_tooth_thickness,
+            n_flank,
+        )
     )
     segments, loop, _, left_flank, right_flank = hypoid_tooth_space_loop(
         negative_flank,
@@ -2069,6 +2221,17 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
         pitch_angle=m.pitch_angle,
         cone_apex_z=cone_dist / max(math.cos(m.pitch_angle), 1e-9),
         r_root=root, r_tip=tip, r_cap=cap,
+        spiral_angle=spiral_angle,
+        normal_tooth_thickness=normal_tooth_thickness,
+        transverse_tooth_thickness=transverse_tooth_thickness,
+        drive_transverse_pressure_angle=(
+            positive_transverse_angle if positive_drive else negative_transverse_angle
+        ),
+        coast_transverse_pressure_angle=(
+            negative_transverse_angle if positive_drive else positive_transverse_angle
+        ),
+        drive_base_radius=positive_base if positive_drive else negative_base,
+        coast_base_radius=negative_base if positive_drive else positive_base,
         drive_flank=drive_flank, coast_flank=coast_flank,
         segments=segments, loop_2d=loop,
     )

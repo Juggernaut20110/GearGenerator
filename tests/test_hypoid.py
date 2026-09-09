@@ -16,8 +16,11 @@ from gears.__main__ import main
 from gears.hypoid import preview
 from gears.hypoid.geometry import (
     _cutter_trace,
+    _hypoid_flank_points,
+    _method1_spiral_angle_at,
     blank_outline,
     compute_set,
+    normal_to_transverse_pressure_angle,
     section_cone_bounds,
     section_cone_distances,
     tooth_space_section,
@@ -80,6 +83,110 @@ def test_method_1_anchor_exposes_distinct_generated_normal_flank_angles():
         assert member.generated_coast_normal_pressure_angle == pytest.approx(
             geo.method1.generated_coast_normal_pressure_angle, abs=1e-12
         )
+
+
+NON_ANCHOR_SECTION = HypoidSetParams.with_defaults(
+    2.0, 17, 43, offset=6.0, face_width=8.0,
+    spiral_angle=35.0, cutter_radius=30.0,
+)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [ANCHOR, NON_ANCHOR_SECTION],
+    ids=["anchor", "non_anchor"],
+)
+def test_mean_tredgold_section_converts_both_members_and_flanks_to_transverse(
+    params,
+):
+    geo = compute_set(params)
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        section = tooth_space_section(geo, name, member.cone_distance)
+        assert section.spiral_angle == pytest.approx(member.mean_spiral_angle, abs=1e-12)
+        for _, normal_angle, transverse_angle, base_radius in (
+            (
+                "drive",
+                member.generated_drive_normal_pressure_angle,
+                member.generated_drive_transverse_pressure_angle,
+                section.drive_base_radius,
+            ),
+            (
+                "coast",
+                member.generated_coast_normal_pressure_angle,
+                member.generated_coast_transverse_pressure_angle,
+                section.coast_base_radius,
+            ),
+        ):
+            expected_angle = normal_to_transverse_pressure_angle(
+                normal_angle, member.mean_spiral_angle
+            )
+            assert transverse_angle == pytest.approx(expected_angle, abs=1e-12)
+            assert base_radius == pytest.approx(
+                member.virtual_pitch_r * math.cos(expected_angle), abs=1e-12
+            )
+            flank = _hypoid_flank_points(
+                member,
+                member.cone_distance,
+                normal_angle,
+                member.mean_spiral_angle,
+                member.mean_normal_tooth_thickness,
+                1001,
+            )
+            tooth_half_angle = (
+                member.mean_transverse_tooth_thickness
+                / (2.0 * member.virtual_pitch_r)
+            )
+            half_pitch = math.pi / member.virtual_teeth
+            for x, y in flank[::100]:
+                radius = math.hypot(x, y)
+                if radius < base_radius - 1e-12:
+                    continue  # below-base radial approximation
+                roll_angle = math.acos(min(1.0, base_radius / radius))
+                expected_space_angle = (
+                    half_pitch - tooth_half_angle
+                    - (math.tan(expected_angle) - expected_angle)
+                    + (math.tan(roll_angle) - roll_angle)
+                )
+                assert math.atan2(y, x) == pytest.approx(
+                    expected_space_angle, abs=1e-12
+                )
+
+
+@pytest.mark.parametrize("normal_angle", [math.radians(17.5), math.radians(22.5)])
+def test_normal_to_transverse_pressure_angle_has_zero_and_monotone_spiral_limits(
+    normal_angle,
+):
+    assert normal_to_transverse_pressure_angle(normal_angle, 0.0) == pytest.approx(
+        normal_angle, abs=1e-12
+    )
+    straight = normal_to_transverse_pressure_angle(normal_angle, math.radians(20.0))
+    spiral = normal_to_transverse_pressure_angle(normal_angle, math.radians(50.0))
+    assert abs(spiral) > abs(straight) > abs(normal_angle)
+
+
+def test_zero_spiral_hypoid_sections_use_the_generated_normal_angles_directly():
+    geo = compute_set(replace(ANCHOR, offset=0.0, spiral_angle=0.0))
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        section = tooth_space_section(geo, name, member.cone_distance)
+        assert section.spiral_angle == pytest.approx(0.0, abs=1e-12)
+        assert section.drive_transverse_pressure_angle == pytest.approx(
+            member.generated_drive_normal_pressure_angle, abs=1e-12
+        )
+        assert section.coast_transverse_pressure_angle == pytest.approx(
+            member.generated_coast_normal_pressure_angle, abs=1e-12
+        )
+
+
+def test_developed_back_cone_angular_pitch_maps_to_the_physical_tooth_spacing():
+    geo = compute_set(ANCHOR)
+    for member in (geo.pinion, geo.gear):
+        developed_half_pitch = math.pi / member.virtual_teeth
+        physical_spacing = 2.0 * developed_half_pitch / math.cos(
+            member.pitch_angle
+        )
+        assert physical_spacing == pytest.approx(2.0 * math.pi / member.z, abs=1e-12)
 
 
 def test_method_1_anchor_depths_and_angles_recompute_method1_equations():
@@ -621,8 +728,8 @@ def test_independent_hypoid_flanks_preserve_mean_tooth_space_position():
     expected_space_angle = half_pitch - tooth_half_angle
 
     for flank, pressure_angle in (
-        (section.drive_flank, member.generated_drive_normal_pressure_angle),
-        (section.coast_flank, member.generated_coast_normal_pressure_angle),
+        (section.drive_flank, section.drive_transverse_pressure_angle),
+        (section.coast_flank, section.coast_transverse_pressure_angle),
     ):
         pitch_point = min(
             flank,
@@ -633,11 +740,83 @@ def test_independent_hypoid_flanks_preserve_mean_tooth_space_position():
         assert 0.0 < pressure_angle < math.pi / 2.0
 
 
+@pytest.mark.parametrize(
+    "params",
+    [ANCHOR, NON_ANCHOR_SECTION],
+    ids=["anchor", "non_anchor"],
+)
+def test_face_boundary_sections_use_local_method1_beta_for_angle_and_thickness(
+    params,
+):
+    geo = compute_set(params)
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        for cone_dist in (
+            member.tooth_face_inner_cone_distance,
+            member.tooth_face_outer_cone_distance,
+        ):
+            section = tooth_space_section(geo, name, cone_dist, n_flank=1001)
+            beta = _method1_spiral_angle_at(member, cone_dist, geo)
+            scale = cone_dist / member.cone_distance
+            expected_transverse_thickness = (
+                member.mean_transverse_tooth_thickness * scale
+            )
+            assert section.spiral_angle == pytest.approx(beta, abs=1e-12)
+            assert section.transverse_tooth_thickness == pytest.approx(
+                expected_transverse_thickness, abs=1e-12
+            )
+            assert section.normal_tooth_thickness == pytest.approx(
+                expected_transverse_thickness * abs(math.cos(beta)), abs=1e-12
+            )
+            assert section.drive_transverse_pressure_angle == pytest.approx(
+                normal_to_transverse_pressure_angle(
+                    member.generated_drive_normal_pressure_angle, beta
+                ),
+                abs=1e-12,
+            )
+            assert section.coast_transverse_pressure_angle == pytest.approx(
+                normal_to_transverse_pressure_angle(
+                    member.generated_coast_normal_pressure_angle, beta
+                ),
+                abs=1e-12,
+            )
+
+            pitch = member.virtual_pitch_r * scale
+            expected_space_angle = math.pi / member.virtual_teeth - (
+                section.transverse_tooth_thickness / (2.0 * pitch)
+            )
+            for flank in (section.drive_flank, section.coast_flank):
+                pitch_point = min(
+                    flank, key=lambda point: abs(math.hypot(*point) - pitch)
+                )
+                assert abs(math.atan2(pitch_point[1], pitch_point[0])) == pytest.approx(
+                    expected_space_angle, abs=2e-4
+                )
+
+
 def test_hypoid_hand_mirrors_the_drive_and_coast_flanks():
     right = compute_set(ANCHOR)
     left = compute_set(HypoidSetParams(**{**ANCHOR.__dict__, "hand": "left"}))
     right_section = tooth_space_section(right, "pinion")
     left_section = tooth_space_section(left, "pinion")
+    assert left_section.spiral_angle == pytest.approx(
+        -right_section.spiral_angle, abs=1e-12
+    )
+    assert left_section.transverse_tooth_thickness == pytest.approx(
+        right_section.transverse_tooth_thickness, abs=1e-12
+    )
+    assert left_section.drive_transverse_pressure_angle == pytest.approx(
+        right_section.drive_transverse_pressure_angle, abs=1e-12
+    )
+    assert left_section.coast_transverse_pressure_angle == pytest.approx(
+        right_section.coast_transverse_pressure_angle, abs=1e-12
+    )
+    assert left_section.drive_base_radius == pytest.approx(
+        right_section.drive_base_radius, abs=1e-12
+    )
+    assert left_section.coast_base_radius == pytest.approx(
+        right_section.coast_base_radius, abs=1e-12
+    )
 
     for right_flank, left_flank in (
         (right_section.drive_flank, left_section.drive_flank),

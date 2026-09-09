@@ -122,6 +122,8 @@ def derived_rows(geo: HypoidSetGeometry) -> list[Row]:
         Row("teeth", str(a.z), str(b.z)),
         Row("pitch cone angle", f"{a.pitch_angle_deg:.4f}", f"{b.pitch_angle_deg:.4f}", "deg"),
         Row("mean spiral angle", f"{a.mean_spiral_angle_deg:.4f}", f"{b.mean_spiral_angle_deg:.4f}", "deg"),
+        Row("mean transverse drive pressure angle", f"{a.generated_drive_transverse_pressure_angle_deg:.4f}", f"{b.generated_drive_transverse_pressure_angle_deg:.4f}", "deg"),
+        Row("mean transverse coast pressure angle", f"{a.generated_coast_transverse_pressure_angle_deg:.4f}", f"{b.generated_coast_transverse_pressure_angle_deg:.4f}", "deg"),
         Row("inner spiral angle", f"{math.degrees(a.inner_spiral_angle):.4f}", f"{math.degrees(b.inner_spiral_angle):.4f}", "deg"),
         Row("outer spiral angle", f"{math.degrees(a.outer_spiral_angle):.4f}", f"{math.degrees(b.outer_spiral_angle):.4f}", "deg"),
         Row("mean pitch radius", f"{a.pitch_radius:.4f}", f"{b.pitch_radius:.4f}", "mm"),

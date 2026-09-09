@@ -79,6 +79,8 @@ def print_report(geo) -> None:
         ("teeth", a.z, b.z, ""),
         ("pitch cone angle", f(a.pitch_angle_deg), f(b.pitch_angle_deg), "deg"),
         ("mean spiral angle", f(a.mean_spiral_angle_deg), f(b.mean_spiral_angle_deg), "deg"),
+        ("mean transverse drive pressure angle", f(a.generated_drive_transverse_pressure_angle_deg), f(b.generated_drive_transverse_pressure_angle_deg), "deg"),
+        ("mean transverse coast pressure angle", f(a.generated_coast_transverse_pressure_angle_deg), f(b.generated_coast_transverse_pressure_angle_deg), "deg"),
         ("inner spiral angle", f(math.degrees(a.inner_spiral_angle)), f(math.degrees(b.inner_spiral_angle)), "deg"),
         ("outer spiral angle", f(math.degrees(a.outer_spiral_angle)), f(math.degrees(b.outer_spiral_angle)), "deg"),
         ("mean pitch radius", f(a.pitch_radius), f(b.pitch_radius), "mm"),
