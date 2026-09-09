@@ -164,23 +164,35 @@ def _assert_simple_loop(points, tolerance):
             )
 
 
-def _assert_physical_section_topology(section, module):
-    tolerance = max(1e-8, 1e-6 * module)
+def _assert_physical_section_topology(section, member):
+    local_pitch = member.virtual_pitch_r * section.r_root / max(
+        member.virtual_root_r, 1e-12
+    )
+    centreline_tolerance = max(1e-8, 1e-6 * local_pitch)
+    topology_tolerance = max(1e-9, 1e-8 * local_pitch)
     negative_root = section.segments["fillet_neg"] or section.segments["flank_neg"]
     positive_root = section.segments["fillet_pos"] or section.segments["flank_pos"]
     left_root_angle = math.atan2(negative_root[0][1], negative_root[0][0])
     right_root_angle = math.atan2(positive_root[-1][1], positive_root[-1][0])
-    angle_tolerance = tolerance / max(section.r_root, 1e-12)
+    angle_tolerance = math.asin(
+        min(1.0, centreline_tolerance / max(section.r_root, 1e-12))
+    )
     assert left_root_angle < -angle_tolerance
     assert right_root_angle > angle_tolerance
-    assert all(point[1] < -tolerance for point in section.segments["flank_neg"])
-    assert all(point[1] > tolerance for point in section.segments["flank_pos"])
     assert all(
-        math.dist(first, second) > tolerance
+        point[1] < -centreline_tolerance
+        for point in section.segments["flank_neg"]
+    )
+    assert all(
+        point[1] > centreline_tolerance
+        for point in section.segments["flank_pos"]
+    )
+    assert all(
+        math.dist(first, second) > topology_tolerance
         for segment in section.segments.values()
         for first, second in zip(segment, segment[1:])
     )
-    _assert_simple_loop(section.loop_2d, tolerance)
+    _assert_simple_loop(section.loop_2d, topology_tolerance)
 
 
 def _iso23509_b7_b8_wheel_formula(geo):
@@ -659,6 +671,44 @@ def test_physical_tredgold_undercut_is_rejected_for_low_count_generated_flanks(
 
 
 @pytest.mark.parametrize("hand", ["right", "left"])
+@pytest.mark.parametrize("offset", [5.76, -5.76])
+def test_low_count_undercut_sweep_checks_all_physical_stations(hand, offset):
+    geo = compute_set(replace(LOW_COUNT_UNDERCUT, hand=hand, offset=offset))
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        stations = (
+            ("inner", member.tooth_face_inner_cone_distance),
+            ("mean", member.cone_distance),
+            ("outer", member.tooth_face_outer_cone_distance),
+        )
+        for station, distance in stations:
+            if name == "pinion" and station == "outer":
+                with pytest.raises(
+                    HypoidTredgoldUndercutError,
+                    match="physical tooth face.*undercut/trochoid",
+                ):
+                    tooth_space_section(geo, name, distance)
+                continue
+
+            section = tooth_space_section(geo, name, distance)
+            _assert_physical_section_topology(section, member)
+            assert section.drive_transverse_pressure_angle == pytest.approx(
+                normal_to_transverse_pressure_angle(
+                    member.generated_drive_normal_pressure_angle,
+                    section.spiral_angle,
+                ),
+                abs=1e-12,
+            )
+            assert section.coast_transverse_pressure_angle == pytest.approx(
+                normal_to_transverse_pressure_angle(
+                    member.generated_coast_normal_pressure_angle,
+                    section.spiral_angle,
+                ),
+                abs=1e-12,
+            )
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
 def test_legacy_synthetic_root_lead_case_is_rejected_as_physical_undercut(hand):
     params = replace(ANCHOR, hand=hand, offset=5.0, cutter_radius=40.0)
     geo = compute_set(params)
@@ -697,7 +747,7 @@ def test_physical_tredgold_sections_have_clear_simple_root_topology(
             member.tooth_face_outer_cone_distance,
         ):
             section = tooth_space_section(geo, name, distance)
-            _assert_physical_section_topology(section, params.module)
+            _assert_physical_section_topology(section, member)
             assert section.drive_flank
             assert section.coast_flank
             assert math.isfinite(section.drive_transverse_pressure_angle)
@@ -1490,7 +1540,7 @@ def test_construction_only_undercut_reuses_a_physical_profile(monkeypatch):
     assert extension.segments == physical.segments
     assert extension.phase != pytest.approx(physical.phase)
     assert extension.cone_apex_z != pytest.approx(physical.cone_apex_z)
-    _assert_physical_section_topology(extension, ANCHOR.module)
+    _assert_physical_section_topology(extension, geo.pinion)
 
 
 def test_out_of_domain_phase_is_rejected_instead_of_clamped():

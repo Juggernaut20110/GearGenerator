@@ -515,6 +515,20 @@ documented first-order tangent from the nearest physical tooth-face boundary;
 the clamped inverse-trigonometric trace is never used there, and the physical
 Method 1 face limits are unchanged.
 
+The transverse Tredgold flank is a virtual external-spur involute. Below its
+base circle the ordinary radial line is retained only while that root-side
+boundary has a real clearance from the tooth-space centreline. If either
+generated drive or coast flank reaches or crosses that line at a physical
+inner, mean, or outer face station, the section is rejected with an explicit
+`undercut/trochoid geometry not represented by the approximation` condition.
+That condition means the virtual-spur approximation cannot supply the root; it
+does not change the Method 1 macro geometry or prove that a cutter-generated
+hypoid is impossible. A real root would require cutter and machine-setting
+data that this repository does not calculate. Construction-only loft stations
+reuse the nearest valid physical profile when necessary, so an unsupported
+extension never creates a zero-width root slot or invalidates a valid physical
+face.
+
 Tooth thickness is balanced across the pair in the normal plane. The Method 1
 thickness factor transfers thickness from the wheel to the pinion instead of
 being added to both members; the two normal thicknesses sum to one normal pitch

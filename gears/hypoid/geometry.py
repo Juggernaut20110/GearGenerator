@@ -43,7 +43,9 @@ class HypoidTredgoldUndercutError(ValueError):
     Below the base circle this model has only the ordinary radial
     approximation.  Once that approximation reaches the tooth-space
     centreline, a real flank would need cutter-dependent trochoidal/undercut
-    geometry that the hypoid model deliberately does not calculate.
+    geometry that the hypoid model deliberately does not calculate.  This is
+    a limitation of the transverse virtual-spur profile, not a claim that the
+    Method 1 macro dimensions are impossible to manufacture.
     """
 
 
@@ -2373,20 +2375,18 @@ def _hypoid_flank_points(
             f"{member.name} generated {flank_name} flank contains a non-finite point"
         )
     # Below the base circle `flank_points` is intentionally only a radial
-    # approximation.  Its root-side angle is valid only while it remains on
-    # the requested positive side of this half-space.  If it reaches the
-    # centreline, the missing geometry is an undercut/trochoid, not a harmless
-    # short lead that can be invented for a CAD loop.
-    root_clearance = max(
+    # approximation.  The signed y coordinate is the geometric distance from
+    # the space centreline in this developed section.  The external-space
+    # angle increases with involute roll, so its minimum is the root-side
+    # endpoint; checking all sampled points also keeps this invariant explicit
+    # if the sampling implementation changes later.  A root-side point at or
+    # across the centreline means the virtual spur needs cutter-dependent
+    # undercut/trochoid geometry, not a fabricated CAD lead.
+    centreline_clearance = max(
         1e-8,
         TREDGOLD_CENTERLINE_CLEARANCE_FACTOR * pitch,
     )
-    root_angle = math.atan2(points[0][1], points[0][0])
-    root_angle_tolerance = root_clearance / max(root, 1e-12)
-    if (
-        any(point[1] <= root_clearance for point in points)
-        or root_angle <= root_angle_tolerance
-    ):
+    if min(point[1] for point in points) <= centreline_clearance:
         location = (
             "construction-only loft extension"
             if construction_only
