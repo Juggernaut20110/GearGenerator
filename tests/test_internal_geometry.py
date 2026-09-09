@@ -22,6 +22,7 @@ from gears.involute import (
     internal_tooth_width,
     inv,
     min_internal_tip_radius,
+    top_land,
 )
 from gears.placement import angular_velocity_ratio
 from gears.spur import mesh
@@ -47,6 +48,195 @@ def internal():
 @pytest.fixture
 def external():
     return compute_set(ANCHOR_EXTERNAL)
+
+
+def _independent_inv(angle: float) -> float:
+    """Independent involute copy for the internal shifted fixtures."""
+    return math.tan(angle) - angle
+
+
+def _inverse_independent_inv(value: float) -> float:
+    """Independent bounded inverse used only to form expected test values."""
+    lo, hi = 0.0, math.nextafter(math.pi / 2.0, 0.0)
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        if _independent_inv(mid) < value:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _independent_internal_member(
+    normal_module, teeth, shift, alpha_n, beta, internal
+):
+    """Expected positive-radius internal geometry without production helpers."""
+    transverse_module = normal_module / math.cos(beta)
+    alpha_t = math.atan2(math.tan(alpha_n), math.cos(beta))
+    reference_r = transverse_module * teeth / 2.0
+    base_r = reference_r * math.cos(alpha_t)
+    normal_thickness = normal_module * (
+        math.pi / 2.0 + 2.0 * shift * math.tan(alpha_n)
+    )
+    tooth_thickness = normal_thickness / math.cos(beta)
+    if internal:
+        addendum = normal_module * (1.0 - shift)
+        dedendum = normal_module * (1.25 + shift)
+        tip_r = reference_r - addendum
+        root_r = reference_r + dedendum
+        space_width = math.pi * transverse_module - tooth_thickness
+        psi0 = space_width / (2.0 * reference_r) + _independent_inv(alpha_t)
+    else:
+        addendum = normal_module * (1.0 + shift)
+        dedendum = normal_module * (1.25 - shift)
+        tip_r = reference_r + addendum
+        root_r = reference_r - dedendum
+        space_width = None
+        psi0 = tooth_thickness / (2.0 * reference_r) + _independent_inv(alpha_t)
+    return {
+        "reference_r": reference_r,
+        "base_r": base_r,
+        "tip_r": tip_r,
+        "root_r": root_r,
+        "tooth_thickness": tooth_thickness,
+        "space_width": space_width,
+        "psi0": psi0,
+    }
+
+
+INTERNAL_SHIFT_CASES = (
+    ("zero", 0.0, 0.0),
+    ("positive_pinion", 0.3, 0.0),
+    ("balanced_negative_ring", 0.3, -0.3),
+    ("positive_ring", 0.0, 0.3),
+)
+
+
+@pytest.mark.parametrize("beta_deg", [0.0, 15.0])
+@pytest.mark.parametrize("case,shift_1,shift_2", INTERNAL_SHIFT_CASES)
+def test_internal_profile_shift_geometry_matches_independent_equations(
+    beta_deg, case, shift_1, shift_2
+):
+    """Check internal signs, dimensions, ring space, and operating contact."""
+    normal_module = 2.0
+    z1, z2 = 18, 60
+    alpha_n = math.radians(20.0)
+    beta = math.radians(beta_deg)
+    p = SpurSetParams.with_defaults(
+        normal_module,
+        z1,
+        z2,
+        internal=True,
+        helix_angle=beta_deg,
+        profile_shift_1=shift_1,
+        profile_shift_2=shift_2,
+    )
+    geo = compute_set(p)
+    m_t = normal_module / math.cos(beta)
+    alpha_t = math.atan2(math.tan(alpha_n), math.cos(beta))
+    q = z2 - z1
+    expected_reference_distance = m_t * q / 2.0
+    expected_working_inv = _independent_inv(alpha_t) + (
+        2.0 * (shift_2 - shift_1) * math.tan(alpha_n) / q
+    )
+    expected_working_angle = _inverse_independent_inv(expected_working_inv)
+    expected_working_distance = (
+        expected_reference_distance
+        * math.cos(alpha_t)
+        / math.cos(expected_working_angle)
+    )
+    expected_members = (
+        _independent_internal_member(
+            normal_module, z1, shift_1, alpha_n, beta, internal=False
+        ),
+        _independent_internal_member(
+            normal_module, z2, shift_2, alpha_n, beta, internal=True
+        ),
+    )
+
+    assert geo.transverse_module == pytest.approx(m_t, abs=1e-12)
+    assert geo.reference_pressure_angle == pytest.approx(alpha_t, abs=1e-12)
+    assert geo.reference_centre_distance == pytest.approx(
+        expected_reference_distance, abs=1e-12
+    )
+    assert geo.working_pressure_angle == pytest.approx(
+        expected_working_angle, abs=1e-12
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        expected_working_distance, abs=1e-12
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        geo.gear.working_r - geo.pinion.working_r, abs=1e-12
+    )
+
+    expected_action = 0.0
+    for member, expected in zip((geo.pinion, geo.gear), expected_members):
+        assert member.reference_d == pytest.approx(2.0 * expected["reference_r"])
+        assert member.base_d == pytest.approx(2.0 * expected["base_r"])
+        assert member.tip_d == pytest.approx(2.0 * expected["tip_r"])
+        assert member.root_d == pytest.approx(2.0 * expected["root_r"])
+        assert member.reference_tooth_thickness == pytest.approx(
+            expected["tooth_thickness"], abs=1e-12
+        )
+        assert member.working_r == pytest.approx(
+            expected["base_r"] / math.cos(expected_working_angle), abs=1e-12
+        )
+        assert member.psi0 == pytest.approx(expected["psi0"], abs=1e-12)
+
+        if member.internal:
+            assert internal_space_width(
+                member.reference_r, member.base_r, member.psi0
+            ) == pytest.approx(expected["space_width"], abs=1e-12)
+            assert internal_tooth_width(
+                member.reference_r,
+                member.base_r,
+                member.psi0,
+                member.half_pitch,
+            ) == pytest.approx(expected["tooth_thickness"], abs=1e-12)
+        else:
+            assert top_land(member.reference_r, member.base_r, member.psi0) == pytest.approx(
+                expected["tooth_thickness"], abs=1e-12
+            )
+
+        expected_action += math.sqrt(
+            max(0.0, expected["tip_r"] ** 2 - expected["base_r"] ** 2)
+        ) * (-1.0 if member.internal else 1.0)
+
+    expected_action += expected_working_distance * math.sin(expected_working_angle)
+    expected_contact = expected_action / (math.pi * m_t * math.cos(alpha_t))
+    assert geo.transverse_contact_ratio == pytest.approx(expected_contact, abs=1e-12)
+    expected_overlap = p.face_width * abs(math.sin(beta)) / (math.pi * normal_module)
+    assert geo.axial_contact_ratio == pytest.approx(expected_overlap, abs=1e-12)
+
+
+def test_internal_profile_shift_uses_ring_minus_pinion_not_external_sum():
+    """The wrong but plausible external sign predicts the opposite distance."""
+    p = SpurSetParams.with_defaults(
+        2.0, 18, 60, internal=True, profile_shift_1=0.3, profile_shift_2=0.0
+    )
+    geo = compute_set(p)
+    alpha_n = math.radians(20.0)
+    alpha_t = math.atan2(math.tan(alpha_n), 1.0)
+    q = 60 - 18
+    wrong_inv = _independent_inv(alpha_t) + 2.0 * 0.3 * math.tan(alpha_n) / q
+    wrong_angle = _inverse_independent_inv(wrong_inv)
+    wrong_distance = 42.0 * math.cos(alpha_t) / math.cos(wrong_angle)
+
+    assert geo.working_pressure_angle < geo.reference_pressure_angle
+    assert geo.working_centre_distance < geo.reference_centre_distance
+    assert wrong_distance > geo.reference_centre_distance
+    assert geo.working_centre_distance != pytest.approx(wrong_distance, abs=1e-9)
+
+
+def test_positive_ring_shift_reduces_inward_addendum_and_increases_outer_root():
+    standard = compute_set(SpurSetParams.with_defaults(2.0, 18, 60, internal=True))
+    shifted = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 18, 60, internal=True, profile_shift_2=0.3
+        )
+    )
+    assert shifted.gear.tip_r > standard.gear.tip_r
+    assert shifted.gear.root_r > standard.gear.root_r
 
 
 # --- radii -----------------------------------------------------------------
@@ -136,6 +326,37 @@ def test_the_internal_mesh_sees_the_backlash_once_and_not_twice(backlash):
         g.circular_pitch / 2.0 + backlash / 2.0, rel=1e-12
     )
     assert pinion + ring_tooth == pytest.approx(g.circular_pitch - backlash, rel=1e-12)
+
+
+@pytest.mark.parametrize("shift_1,shift_2", [(0.3, 0.0), (0.3, -0.3)])
+def test_shifted_internal_mesh_applies_backlash_once_to_tooth_and_space(
+    shift_1, shift_2
+):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=True,
+        profile_shift_1=shift_1,
+        profile_shift_2=shift_2,
+        backlash=0.12,
+    )
+    g = compute_set(p)
+    pinion, ring = g.pinion, g.gear
+    ring_space = internal_space_width(ring.pitch_r, ring.base_r, ring.psi0)
+
+    assert pinion.geometric_tooth_thickness - pinion.reference_tooth_thickness == pytest.approx(
+        0.06, abs=1e-12
+    )
+    assert ring.geometric_tooth_thickness - ring.reference_tooth_thickness == pytest.approx(
+        0.06, abs=1e-12
+    )
+    assert top_land(pinion.pitch_r, pinion.base_r, pinion.psi0) == pytest.approx(
+        pinion.reference_tooth_thickness, abs=1e-12
+    )
+    assert ring_space == pytest.approx(
+        g.circular_pitch - ring.reference_tooth_thickness, abs=1e-12
+    )
 
 
 def test_the_rings_flank_is_a_true_involute_of_its_base_circle(internal):
@@ -271,6 +492,26 @@ def test_the_ring_is_placed_on_the_negative_x_side(internal, external):
     """Internally tangent circles touch on the far side of the small one."""
     assert mesh.gear_translation(internal)[0] == pytest.approx(-42.0)
     assert mesh.gear_translation(external)[0] == pytest.approx(+78.0)
+
+
+def test_a_shifted_internal_pair_is_placed_at_the_working_distance():
+    geo = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            18,
+            60,
+            internal=True,
+            profile_shift_1=0.3,
+            profile_shift_2=0.0,
+        )
+    )
+    assert geo.working_centre_distance < geo.reference_centre_distance
+    assert mesh.gear_translation(geo) == pytest.approx(
+        (-geo.working_centre_distance, 0.0, 0.0)
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        geo.gear.working_r - geo.pinion.working_r
+    )
 
 
 def test_the_contact_point_lands_on_both_pitch_circles(internal):

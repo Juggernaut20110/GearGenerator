@@ -21,7 +21,6 @@ from ..validate import (
 from ..involute import inv
 from .geometry import (
     compute_set,
-    min_internal_teeth,
     undercut_limit,
 )
 from .params import ROOT_GEOMETRY_MODES, SpurSetParams
@@ -36,19 +35,11 @@ MAX_HELIX_ANGLE = 45.0
 # noisy even though it still transmits.
 MIN_COMFORTABLE_CONTACT_RATIO = 1.1
 
-# Fewest teeth an internal pair can differ by before the pinion fouls the ring.
-#
-# Two distinct interferences set this, and the standard figure covers both at
-# standard proportions with a 20 degree pressure angle:
-#
-# * **involute (tip) interference** - the ring's tip reaches inside the point
-#   where the pinion's flank stops being an involute
-# * **trimming (fighting) interference** - the two tip circles collide while
-#   the pair is being assembled radially, even though the running mesh clears
-#
-# Below 10 a real design needs profile shift or a shorter ring addendum to make
-# it work, neither of which this parameter set has, so the honest answer is to
-# refuse rather than to draw something that cannot be cut.
+# Conservative fallback for unverified internal trimming (fighting)
+# interference. The shifted geometry checks the ring tip against its base
+# circle and the pinion tip against the ring root using the actual radii and
+# working distance; no verified closed-form x-dependent trimming criterion is
+# available in this model, so this guard remains intentionally conservative.
 MIN_INTERNAL_TOOTH_DIFFERENCE = 10
 
 
@@ -113,10 +104,7 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
     if p.root_geometry not in ROOT_GEOMETRY_MODES:
         choices = ", ".join(ROOT_GEOMETRY_MODES)
         r.error("root_geometry", f"must be one of {choices}")
-    if (
-        p.working_centre_distance is not None
-        and not p.internal
-    ):
+    if p.working_centre_distance is not None:
         if not math.isfinite(p.working_centre_distance):
             r.error("working_centre_distance", "must be finite")
         elif p.working_centre_distance <= 0:
@@ -140,10 +128,7 @@ def validate(p: SpurSetParams) -> ValidationResult:
     # of the same pair condition.  Keep them from silently disagreeing.  The
     # inverse-involute relation is intentionally written here rather than
     # copied into params.py, where it would be an unvalidated input property.
-    if (
-        p.working_centre_distance is not None
-        and not p.internal
-    ):
+    if p.working_centre_distance is not None:
         q = p.z2 - p.z1 if p.internal else p.z1 + p.z2
         implied_shift = q * (
             inv(geo.working_pressure_angle) - inv(geo.reference_pressure_angle)
@@ -313,7 +298,7 @@ def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> Non
     contact ratio.
     """
     pinion, ring = geo.pinion, geo.gear
-    a = geo.centre_distance
+    a = geo.working_centre_distance
 
     # --- radial clearance at the far side ----------------------------------
     #
@@ -322,13 +307,11 @@ def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> Non
     # `a + ra1` from the ring's axis, and the ring's root circle has to be
     # outside that.
     #
-    # For standard proportions this comes out at exactly the standard clearance
-    # and nothing else, which is a good sign the radii are right rather than a
-    # coincidence: a + ra1 = m(z2 + 2)/2 and rf2 = m(z2 + 2.5)/2, so the gap is
-    # 0.25*m however many teeth either member has. Measured at 0.5000 mm for
-    # both 18x60 and 24x60 at m=2, and 0.7500 at m=3. It only goes wrong once
-    # something non-standard is in play, which is exactly when it is worth
-    # having.
+    # This is an exact nominal-circle check for the far-side radial clearance.
+    # For standard proportions it comes out at the standard clearance and
+    # nothing else: a + ra1 = m(z2 + 2)/2 and rf2 = m(z2 + 2.5)/2, so the gap is
+    # 0.25*m. With profile shift, the actual shifted tip/root radii and the
+    # working centre distance are used instead.
     far_reach = a + pinion.tip_r
     if far_reach >= ring.root_r:
         result.error(
@@ -354,8 +337,7 @@ def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> Non
     # and a rule that is honest about being a rule beats a formula that might be
     # inverted. If this ever needs to be exact, the way to get it right is to
     # trace the ring's tip corner through a mesh cycle in the pinion's frame and
-    # measure - the same tactic `end_overshoot` uses on the bevel side - not to
-    # copy a criterion out of a table.
+    # measure - not to copy an unverified criterion out of a table.
 
 
 def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
@@ -367,7 +349,7 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
 
         if member.internal:
             _check_internal_tooth_form(
-                member, field, p, result, geo.transverse_pressure_angle
+                member, field, p, result
             )
             continue
 
@@ -402,7 +384,6 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
 
 def _check_internal_tooth_form(
     member, field: str, p: SpurSetParams, result: ValidationResult,
-    alpha_t: float = 0.0,
 ) -> None:
     """The same two questions about a ring gear, asked at the other end.
 
@@ -419,14 +400,11 @@ def _check_internal_tooth_form(
     # is a standard simplification; a ring gear whose tip is inside its base
     # circle has no involute flank at all and there is nothing honest to draw.
     if member.tip_r < member.base_r:
-        needed = math.ceil(min_internal_teeth(alpha_t))
         result.error(
             field,
             f"the ring's tip radius ({member.tip_r:.2f} mm) is inside its base "
             f"circle ({member.base_r:.2f} mm), so its flank has no involute at "
-            f"all; a ring needs at least {needed} teeth at "
-            f"{math.degrees(alpha_t):.1f} deg transverse pressure angle, or a "
-            "LARGER pressure angle - a smaller one needs more teeth, not fewer",
+            "all for the selected profile shift and rack addendum",
         )
         return
 

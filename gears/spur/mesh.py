@@ -23,8 +23,9 @@ Two consequences worth stating, because both are easy to get wrong:
 
 An internal pair
 ----------------
-Still a pure translation along X with no rotation, at `m_t (z2 - z1) / 2` rather
-than the sum, because the pinion runs *inside* the ring. Three things change,
+Still a pure translation along X with no rotation, at the working distance
+`a_w` (the reference value is `m_t (z2 - z1) / 2`) rather than the external
+sum, because the pinion runs *inside* the ring. Three things change,
 and the third is the one that bites.
 
 **The hands agree** rather than opposing. The rule has not been reversed; the

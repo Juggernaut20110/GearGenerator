@@ -13,6 +13,7 @@ from gears.spur.validate import MAX_HELIX_ANGLE, validate
 
 ANCHOR = SpurSetParams.with_defaults(2.0, 17, 43)
 ANCHOR_HELICAL = SpurSetParams.with_defaults(2.0, 17, 43, helix_angle=15.0)
+ANCHOR_INTERNAL = SpurSetParams.with_defaults(2.0, 18, 60, internal=True)
 
 
 def tweak(base=ANCHOR, **kw) -> SpurSetParams:
@@ -182,6 +183,45 @@ def test_explicit_helical_working_distance_is_checked_against_profile_shift():
         shifted, working_centre_distance=shifted.reference_centre_distance
     )
     assert "working_centre_distance" in fields_with_errors(conflicting)
+
+
+@pytest.mark.parametrize("shift_1,shift_2", [(0.3, 0.0), (0.3, -0.3), (0.0, 0.3)])
+def test_internal_profile_shift_sets_remain_valid(shift_1, shift_2):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=True,
+        profile_shift_1=shift_1,
+        profile_shift_2=shift_2,
+    )
+    result = validate(p)
+    assert result.ok
+    assert compute_set(p).transverse_contact_ratio > 1.0
+
+
+def test_explicit_internal_working_distance_is_checked_against_profile_shift():
+    shifted = dataclasses.replace(
+        ANCHOR_INTERNAL, profile_shift_1=0.3, profile_shift_2=0.0
+    )
+    expected_distance = compute_set(shifted).working_centre_distance
+    pinned = dataclasses.replace(shifted, working_centre_distance=expected_distance)
+    assert validate(pinned).ok
+
+    conflicting = dataclasses.replace(
+        shifted, working_centre_distance=shifted.reference_centre_distance
+    )
+    assert "working_centre_distance" in fields_with_errors(conflicting)
+
+
+def test_shifted_ring_tip_inside_base_circle_is_rejected_exactly():
+    p = SpurSetParams.with_defaults(
+        2.0, 18, 60, internal=True, profile_shift_2=-0.82
+    )
+    geo = compute_set(p)
+    assert geo.gear.tip_r < geo.gear.base_r
+    errors = validate(p).errors
+    assert any(issue.field == "z2" and "no involute" in issue.message for issue in errors)
 
 
 # --- helix overlap ---------------------------------------------------------

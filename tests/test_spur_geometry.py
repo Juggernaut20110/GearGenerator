@@ -559,7 +559,7 @@ def test_backlash_is_separate_from_shifted_geometric_tooth_thickness():
     )
 
 
-def test_internal_profile_shift_is_stored_but_not_yet_applied():
+def test_internal_profile_shift_is_applied_to_working_geometry():
     p = SpurSetParams.with_defaults(
         2.0,
         18,
@@ -572,8 +572,8 @@ def test_internal_profile_shift_is_stored_but_not_yet_applied():
     assert p.profile_shift_combination == pytest.approx(0.2)
     assert geo.pinion.profile_shift == p.profile_shift_1
     assert geo.gear.profile_shift == p.profile_shift_2
-    assert geo.working_pressure_angle == geo.reference_pressure_angle
-    assert geo.working_centre_distance == geo.reference_centre_distance
+    assert geo.working_pressure_angle > geo.reference_pressure_angle
+    assert geo.working_centre_distance > geo.reference_centre_distance
 
 
 def test_old_json_without_iso_fields_loads_with_legacy_defaults(tmp_path):

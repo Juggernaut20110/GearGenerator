@@ -29,7 +29,9 @@ dedendum 1.25 m_n in the default rack. For an external pair, profile shift
 changes those member-specific depths and the reference tooth thickness. In a
 helical pair the tooth thickness is first calculated in the normal plane and
 then projected into the transverse plane; the involute still consumes the
-transverse result.
+transverse result. An internal ring applies the same normal tooth-thickness
+equation to its tooth, then gives the complementary transverse space width to
+the internal involute generator.
 
 The twist, and why the gear is wound the other way
 --------------------------------------------------
@@ -267,29 +269,18 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     working_pressure_angle, working_centre_distance = _working_geometry(
         p, reference_centre_distance, alpha_t
     )
-    # Profile shift is supported for external straight and helical pairs.  The
-    # coefficients x_i are normal quantities; the transverse tooth thickness
-    # below is their projection into the plane in which the involute is built.
-    profile_shifted_external = not p.internal
-
-    rack_addendum = (
-        p.basic_rack_addendum_factor if profile_shifted_external else ADDENDUM_FACTOR
-    )
-    rack_dedendum = (
-        p.basic_rack_dedendum_factor if profile_shifted_external else DEDENDUM_FACTOR
-    )
+    # Profile shift is supported for both pair arrangements. The coefficients
+    # x_i are normal quantities; the transverse tooth thickness below is their
+    # projection into the plane in which the involute is built. Internal and
+    # external depth signs are handled explicitly in the member branch.
+    rack_addendum = p.basic_rack_addendum_factor
+    rack_dedendum = p.basic_rack_dedendum_factor
 
     # Circular tooth thickness at the pitch circle, measured in the transverse
     # plane. Backlash is taken off the tooth, which is the convention that keeps
     # the centre distance nominal.
     standard_geometric_thickness = math.pi * m_t / 2.0
     standard_tooth_thickness = standard_geometric_thickness - p.backlash / 2.0
-
-    # The space width at the pitch circle - what is left of the pitch once the
-    # tooth is taken out. An internal gear's space is generated from this the
-    # way an external gear's tooth is generated from its thickness; see
-    # `involute.internal_flank_points`.
-    space_width = math.pi * m_t - standard_tooth_thickness
 
     # The gear's hand. An external pair is cut with opposite hands and an
     # internal pair with the same one - see `SpurSetParams.hand`. Neither is a
@@ -315,30 +306,30 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         )
 
         member_shift = p.profile_shift_2 if name == "gear" else p.profile_shift_1
-        if profile_shifted_external:
-            # ISO reference tooth thickness for an external gear.  Profile
-            # shift x_i is defined in the normal system, so the normal form is
-            # s_n = m_n * (pi/2 + 2*x_i*tan(alpha_n)); the involute needs its
-            # transverse projection s_t = s_n / cos(beta).  Backlash is a
-            # separate deliberate reduction, split symmetrically as before.
-            if member_shift == 0.0:
-                geometric_thickness = standard_geometric_thickness
-            else:
-                geometric_thickness = m_t * (
-                    math.pi / 2.0 + 2.0 * member_shift * math.tan(p.alpha_n)
-                )
-            reference_tooth_thickness = geometric_thickness - p.backlash / 2.0
-            normal_geometric_thickness = geometric_thickness * math.cos(p.beta)
-            normal_tooth_thickness = reference_tooth_thickness * math.cos(p.beta)
+        # ISO reference tooth thickness for either member. Profile shift x_i is
+        # defined in the normal system, so the normal form is
+        # s_n = m_n * (pi/2 + 2*x_i*tan(alpha_n)); the involute needs its
+        # transverse projection s_t = s_n / cos(beta). Backlash is a separate
+        # deliberate reduction, split symmetrically as before.
+        if member_shift == 0.0:
+            geometric_thickness = standard_geometric_thickness
+        else:
+            geometric_thickness = m_t * (
+                math.pi / 2.0 + 2.0 * member_shift * math.tan(p.alpha_n)
+            )
+        reference_tooth_thickness = geometric_thickness - p.backlash / 2.0
+        normal_geometric_thickness = geometric_thickness * math.cos(p.beta)
+        normal_tooth_thickness = reference_tooth_thickness * math.cos(p.beta)
+
+        if internal:
+            # The ring uses the opposite physical depth signs from an
+            # external member: positive x2 removes material from its inward
+            # addendum and adds it to the outward dedendum.
+            addendum = m_n * (rack_addendum - member_shift)
+            dedendum = m_n * (rack_dedendum + member_shift)
+        else:
             addendum = m_n * (rack_addendum + member_shift)
             dedendum = m_n * (rack_dedendum - member_shift)
-        else:
-            geometric_thickness = standard_geometric_thickness
-            reference_tooth_thickness = standard_tooth_thickness
-            normal_geometric_thickness = geometric_thickness * math.cos(p.beta)
-            normal_tooth_thickness = reference_tooth_thickness * math.cos(p.beta)
-            addendum = rack_addendum * m_n
-            dedendum = rack_dedendum * m_n
 
         if internal:
             # The teeth point inward, so the addendum comes off the pitch radius
@@ -347,9 +338,11 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
             # the end of the tooth.
             tip_r = reference_r - addendum
             root_r = reference_r + dedendum
-            # The SPACE half-width extrapolated to the base circle, not the
-            # tooth's. That single substitution is what turns the external
-            # generator into the internal one.
+            # The ring involute generates a tooth SPACE, not a tooth. Its
+            # reference space width is the complement of this ring tooth's
+            # transverse thickness; that is the internal-specific angular
+            # quantity which must be carried back to the base circle.
+            space_width = math.pi * m_t - reference_tooth_thickness
             psi0 = space_width / (2.0 * reference_r) + inv(alpha_t)
         else:
             tip_r = reference_r + addendum
@@ -402,19 +395,13 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         circular_pitch=math.pi * m_t,
         axial_pitch=(math.pi * m_n / sin_beta) if sin_beta > 1e-12 else math.inf,
         whole_depth=(rack_addendum + rack_dedendum) * m_n,
-        transverse_contact_ratio=(
-            transverse_contact_ratio(
-                pinion,
-                gear,
-                working_centre_distance,
-                working_pressure_angle,
-                math.pi * m_t,
-                base_pitch_angle=alpha_t,
-            )
-            if profile_shifted_external
-            else transverse_contact_ratio(
-                pinion, gear, reference_centre_distance, alpha_t, math.pi * m_t
-            )
+        transverse_contact_ratio=transverse_contact_ratio(
+            pinion,
+            gear,
+            working_centre_distance,
+            working_pressure_angle,
+            math.pi * m_t,
+            base_pitch_angle=alpha_t,
         ),
         axial_contact_ratio=(
             p.face_width * sin_beta / (math.pi * m_n) if sin_beta > 1e-12 else 0.0
@@ -477,14 +464,10 @@ def _working_geometry(
         cosine = min(1.0, cosine)
         return math.acos(cosine), working_distance
 
-    # Internal pairs retain their pre-profile-shift working geometry until the
-    # internal sign convention and contact equations receive their own phase.
-    # External straight and helical pairs use the same ISO normal profile-shift
-    # combination; beta enters only through the reference transverse angle and
-    # module.
-    if p.internal:
-        return reference_pressure_angle, reference_centre_distance
-
+    # External pairs use X = x1 + x2. Internal pairs use X = x2 - x1 because
+    # the positive physical ring count is the negative signed ISO count. The
+    # branches are explicit here so the internal sign is not a mechanical
+    # mutation of the external equation.
     combination = p.profile_shift_combination
     if abs(combination) <= 1e-15:
         # Preserve the old zero-shift path exactly, including the reference
