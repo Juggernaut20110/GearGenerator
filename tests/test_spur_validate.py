@@ -9,6 +9,7 @@ import pytest
 
 from gears.spur.geometry import compute_set, undercut_limit
 from gears.spur.params import SpurSetParams
+from gears.validate import MIN_PRESSURE_ANGLE
 from gears.spur.validate import MAX_HELIX_ANGLE, validate
 
 ANCHOR = SpurSetParams.with_defaults(2.0, 17, 43)
@@ -60,6 +61,35 @@ def test_ordinary_sets_pass_without_complaint(z1, z2):
 # --- basics ----------------------------------------------------------------
 
 
+def test_basic_boundaries_are_inclusive_where_the_geometry_is_valid():
+    assert "module" not in fields_with_errors(tweak(module=1.0))
+    assert "module" in fields_with_errors(tweak(module=0.0))
+
+    assert "z1" not in fields_with_errors(tweak(z1=6))
+    assert "z1" in fields_with_errors(tweak(z1=5))
+
+    assert "pressure_angle" not in fields_with_errors(
+        tweak(pressure_angle=MIN_PRESSURE_ANGLE)
+    )
+    assert "pressure_angle" in fields_with_errors(
+        tweak(pressure_angle=MIN_PRESSURE_ANGLE - 1e-6)
+    )
+
+    near_limit = SpurSetParams.with_defaults(
+        2.0, 17, 43, helix_angle=MAX_HELIX_ANGLE - 1e-6
+    )
+    assert "helix_angle" not in fields_with_errors(near_limit)
+    assert "helix_angle" in fields_with_errors(
+        SpurSetParams.with_defaults(
+            2.0, 17, 43, helix_angle=MAX_HELIX_ANGLE
+        )
+    )
+
+
+def test_fractional_tooth_counts_are_not_rounded_into_a_different_gear():
+    assert "z1" in fields_with_errors(tweak(z1=17.5))
+
+
 @pytest.mark.parametrize(
     "kw,field",
     [
@@ -108,6 +138,49 @@ def test_undercut_warning_fires_exactly_at_the_limit():
     assert 17 < limit < 18
     assert "z1" in fields_with_warnings(tweak(z1=17))
     assert "z1" not in fields_with_warnings(tweak(z1=18, z2=43))
+
+
+def test_profile_shift_moves_the_external_undercut_boundary():
+    """The rack criterion uses x, not the old fixed x=0 tooth-count limit."""
+    alpha = math.radians(20.0)
+    z = 17
+    # Rearranged directly from z >= 2 * (h_aP* - x) / sin(alpha)^2.
+    x_boundary = 1.0 - z * math.sin(alpha) ** 2 / 2.0
+
+    just_inside = tweak(profile_shift_1=x_boundary + 1e-6)
+    just_outside = tweak(profile_shift_1=x_boundary - 1e-6)
+    assert "z1" not in fields_with_warnings(just_inside)
+    assert "z1" in fields_with_warnings(just_outside)
+
+
+def test_generated_root_undercut_warning_describes_the_selected_geometry():
+    p = tweak(root_geometry="rack_generated")
+    messages = [issue.message for issue in validate(p).warnings]
+    assert any("selected rack-generated root shows" in message for message in messages)
+    assert not any("does not show the generated undercut" in message for message in messages)
+
+
+def test_profile_shift_is_not_rejected_by_a_generic_minus_one_to_one_rail():
+    result = validate(tweak(profile_shift_1=0.8))
+    assert result.ok
+
+
+def test_internal_tip_base_boundary_is_checked_from_the_actual_radii():
+    normal_module = 2.0
+    z2 = 60
+    alpha_t = math.radians(20.0)
+    reference_r = normal_module * z2 / 2.0
+    base_r = reference_r * math.cos(alpha_t)
+    x_boundary = 1.0 - (reference_r - base_r) / normal_module
+
+    just_inside = dataclasses.replace(
+        ANCHOR_INTERNAL, profile_shift_2=x_boundary + 1e-6
+    )
+    just_outside = dataclasses.replace(
+        ANCHOR_INTERNAL, profile_shift_2=x_boundary - 1e-6
+    )
+    assert "z2" not in fields_with_errors(just_inside)
+    assert "z2" in fields_with_errors(just_outside)
 
 
 def test_undercut_warning_names_the_member_that_undercuts():
@@ -261,6 +334,23 @@ def test_a_thin_wall_under_the_teeth_only_warns():
     assert "bore" in fields_with_warnings(p)
 
 
+def test_bore_wall_warning_starts_just_below_the_minimum():
+    root_r = compute_set(ANCHOR).pinion.root_r
+    exact = tweak(bore=2.0 * (root_r - ANCHOR.module))
+    just_thin = tweak(bore=2.0 * (root_r - ANCHOR.module + 1e-6))
+    assert "bore" not in fields_with_warnings(exact)
+    assert "bore" in fields_with_warnings(just_thin)
+
+
+def test_ring_rim_warning_starts_just_below_the_minimum():
+    exact = dataclasses.replace(ANCHOR_INTERNAL, rim_thickness=ANCHOR_INTERNAL.module)
+    just_thin = dataclasses.replace(
+        ANCHOR_INTERNAL, rim_thickness=ANCHOR_INTERNAL.module - 1e-6
+    )
+    assert "rim_thickness" not in fields_with_warnings(exact)
+    assert "rim_thickness" in fields_with_warnings(just_thin)
+
+
 def test_a_hub_thinner_than_the_teeth_warns():
     assert "hub_thickness" in fields_with_warnings(tweak(hub_thickness=1.0))
 
@@ -312,6 +402,16 @@ def test_a_large_backlash_warns_on_its_own_field_before_it_points_anything():
     assert result.ok
     assert "backlash" in {w.field for w in result.warnings}
     assert "backlash" not in fields_with_warnings(tweak(backlash=0.05))
+
+
+def test_actual_tooth_space_is_checked_for_a_valid_legacy_and_generated_case():
+    for root_geometry in ("legacy", "rack_generated"):
+        p = SpurSetParams.with_defaults(
+            2.0, 12, 43, root_geometry=root_geometry
+        )
+        assert not any(
+            "self-intersects" in issue.message for issue in validate(p).errors
+        )
 
 
 def test_validation_never_raises_whatever_it_is_given():

@@ -618,13 +618,25 @@ def min_internal_teeth(alpha_t: float, addendum_factor: float = ADDENDUM_FACTOR)
     return 2.0 * addendum_factor / denominator
 
 
-def undercut_limit(alpha_t: float, beta: float) -> float:
-    """Fewest teeth a standard rack cutter can cut without undercutting.
+def undercut_limit(
+    alpha_t: float,
+    beta: float,
+    profile_shift: float = 0.0,
+    addendum_factor: float = ADDENDUM_FACTOR,
+) -> float:
+    """Fewest teeth before a rack-generated external flank is undercut.
 
-    `2 * cos(beta) / sin(alpha_t)^2` - 17.1 at 20 degrees and straight, which is
-    why a 17-tooth pinion sits right on the line. A helix raises the transverse
-    pressure angle, so a helical gear can carry fewer teeth before undercutting
-    than a straight one of the same normal pressure angle.
+    The no-undercut condition for a rack-generated external gear, written in
+    this repository's normal-module/profile-shift convention, is
+
+        z >= 2 * cos(beta) * (h_aP* - x) / sin(alpha_t)^2.
+
+    Thus ``profile_shift`` is part of the limit: positive shift moves the rack
+    away from the root and reduces undercut, while negative shift increases it.
+    With the default ``x=0`` and ``h_aP*=1`` this is the historic
+    ``2*cos(beta)/sin(alpha_t)^2`` result - 17.1 teeth at 20 degrees on a
+    straight gear.  This is a warning criterion for the selected external
+    rack form, not an exact internal interference calculation.
 
     This remains a conservative design warning. ``root_geometry="legacy"``
     uses a radial below-base approximation and does not show the generated
@@ -632,7 +644,12 @@ def undercut_limit(alpha_t: float, beta: float) -> float:
     cutter-limited root form. The limit itself is still reported rather than
     used to silently alter the selected tooth geometry.
     """
-    return 2.0 * math.cos(beta) / math.sin(alpha_t) ** 2
+    return (
+        2.0
+        * math.cos(beta)
+        * (addendum_factor - profile_shift)
+        / math.sin(alpha_t) ** 2
+    )
 
 
 # ---------------------------------------------------------------------------

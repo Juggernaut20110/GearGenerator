@@ -21,6 +21,7 @@ from ..validate import (
 from ..involute import inv
 from .geometry import (
     compute_set,
+    tooth_space_section,
     undercut_limit,
 )
 from .params import ROOT_GEOMETRY_MODES, SpurSetParams
@@ -42,21 +43,38 @@ MIN_COMFORTABLE_CONTACT_RATIO = 1.1
 # available in this model, so this guard remains intentionally conservative.
 MIN_INTERNAL_TOOTH_DIFFERENCE = 10
 
+# The geometry is in millimetres.  This is below the tolerances used by the
+# CAD consumers and is only used to distinguish a collapsed ordering from a
+# valid, very small clearance.
+GEOMETRY_TOLERANCE = 1e-9
+
 
 def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
     """Checks that must pass before the geometry can even be computed."""
-    if p.module <= 0:
+    if not _is_finite(p.module):
+        r.error("module", "must be finite")
+    elif p.module <= 0:
         r.error("module", "must be greater than zero")
-    if p.z1 < MIN_TEETH:
-        r.error("z1", f"pinion needs at least {MIN_TEETH} teeth")
-    if p.z2 < MIN_TEETH:
-        r.error("z2", f"gear needs at least {MIN_TEETH} teeth")
-    if not (MIN_PRESSURE_ANGLE <= p.pressure_angle <= MAX_PRESSURE_ANGLE):
+
+    for field, value, label in (
+        ("z1", p.z1, "pinion"),
+        ("z2", p.z2, "gear"),
+    ):
+        if not _is_integer_tooth_count(value):
+            r.error(field, f"{label} tooth count must be an integer")
+        elif value < MIN_TEETH:
+            r.error(field, f"{label} needs at least {MIN_TEETH} teeth")
+
+    if not _is_finite(p.pressure_angle):
+        r.error("pressure_angle", "must be finite")
+    elif not (MIN_PRESSURE_ANGLE <= p.pressure_angle <= MAX_PRESSURE_ANGLE):
         r.error(
             "pressure_angle",
             f"must be between {MIN_PRESSURE_ANGLE} and {MAX_PRESSURE_ANGLE} degrees",
         )
-    if not (-MAX_HELIX_ANGLE < p.helix_angle < MAX_HELIX_ANGLE):
+    if not _is_finite(p.helix_angle):
+        r.error("helix_angle", "must be finite")
+    elif not (-MAX_HELIX_ANGLE < p.helix_angle < MAX_HELIX_ANGLE):
         r.error(
             "helix_angle",
             f"must be between -{MAX_HELIX_ANGLE} and {MAX_HELIX_ANGLE} degrees "
@@ -64,9 +82,32 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
         )
     if p.hand not in ("right", "left"):
         r.error("hand", "must be 'right' or 'left'")
-    if p.face_width <= 0:
+    for field, value in (
+        ("face_width", p.face_width),
+        ("bore", p.bore),
+        ("hub_thickness", p.hub_thickness),
+        ("backlash", p.backlash),
+        ("fillet_factor", p.fillet_factor),
+        ("rim_thickness", p.rim_thickness),
+    ):
+        if not _is_finite(value):
+            r.error(field, "must be finite")
+    if _is_finite(p.face_width) and p.face_width <= 0:
         r.error("face_width", "must be greater than zero")
-    if p.internal and p.z2 - p.z1 < MIN_INTERNAL_TOOTH_DIFFERENCE:
+
+    if (
+        _is_integer_tooth_count(p.z1)
+        and _is_integer_tooth_count(p.z2)
+        and p.internal
+        and p.z2 <= p.z1
+    ):
+        r.error("z2", "an internal ring must have more teeth than the pinion")
+    if (
+        _is_integer_tooth_count(p.z1)
+        and _is_integer_tooth_count(p.z2)
+        and p.internal
+        and p.z2 - p.z1 < MIN_INTERNAL_TOOTH_DIFFERENCE
+    ):
         # Checked here rather than below because everything downstream divides
         # by the centre distance, which goes to zero as the counts converge.
         r.error(
@@ -75,29 +116,35 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
             f"{MIN_INTERNAL_TOOTH_DIFFERENCE} more teeth than the pinion; "
             f"{p.z2} - {p.z1} = {p.z2 - p.z1}",
         )
-    if p.internal and p.rim_thickness < 0:
+    if _is_finite(p.rim_thickness) and p.internal and p.rim_thickness < 0:
         r.error("rim_thickness", "cannot be negative")
-    if p.bore < 0:
+    if _is_finite(p.bore) and p.bore < 0:
         r.error("bore", "cannot be negative")
-    if p.hub_thickness < 0:
+    if _is_finite(p.hub_thickness) and p.hub_thickness < 0:
         r.error("hub_thickness", "cannot be negative")
-    if p.backlash < 0:
+    if _is_finite(p.backlash) and p.backlash < 0:
         r.error("backlash", "cannot be negative")
-    if p.fillet_factor < 0:
+    if _is_finite(p.fillet_factor) and p.fillet_factor < 0:
         r.error("fillet_factor", "cannot be negative")
-    if not math.isfinite(p.profile_shift_1):
+    if not _is_finite(p.profile_shift_1):
         r.error("profile_shift_1", "must be finite")
-    if not math.isfinite(p.profile_shift_2):
+    if not _is_finite(p.profile_shift_2):
         r.error("profile_shift_2", "must be finite")
-    if not math.isfinite(p.basic_rack_addendum_factor):
+    if not _is_finite(p.basic_rack_addendum_factor):
         r.error("basic_rack_addendum_factor", "must be finite")
     elif p.basic_rack_addendum_factor <= 0:
         r.error("basic_rack_addendum_factor", "must be greater than zero")
-    if not math.isfinite(p.basic_rack_clearance_factor):
+    if not _is_finite(p.basic_rack_clearance_factor):
         r.error("basic_rack_clearance_factor", "must be finite")
     elif p.basic_rack_clearance_factor < 0:
         r.error("basic_rack_clearance_factor", "cannot be negative")
-    if not math.isfinite(p.basic_rack_root_radius_factor):
+    if (
+        _is_finite(p.basic_rack_addendum_factor)
+        and _is_finite(p.basic_rack_clearance_factor)
+        and not _is_finite(p.basic_rack_dedendum_factor)
+    ):
+        r.error("basic_rack_clearance_factor", "gives a non-finite dedendum")
+    if not _is_finite(p.basic_rack_root_radius_factor):
         r.error("basic_rack_root_radius_factor", "must be finite")
     elif p.basic_rack_root_radius_factor < 0:
         r.error("basic_rack_root_radius_factor", "cannot be negative")
@@ -105,10 +152,101 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
         choices = ", ".join(ROOT_GEOMETRY_MODES)
         r.error("root_geometry", f"must be one of {choices}")
     if p.working_centre_distance is not None:
-        if not math.isfinite(p.working_centre_distance):
+        if not _is_finite(p.working_centre_distance):
             r.error("working_centre_distance", "must be finite")
         elif p.working_centre_distance <= 0:
             r.error("working_centre_distance", "must be greater than zero")
+
+
+def _is_finite(value) -> bool:
+    """Return whether ``value`` is a finite real number without raising."""
+    try:
+        return math.isfinite(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_integer_tooth_count(value) -> bool:
+    """Tooth counts are discrete; bools and fractional counts are invalid."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_operating_geometry(geo, result: ValidationResult) -> None:
+    """Check the reference/working pair relationships used by the mesh.
+
+    These are model invariants, not additional design limits.  In particular,
+    the assembly must use ``a_w`` and ``alpha_wt`` while the reference circles
+    remain fixed by ``m_t`` and tooth count.
+    """
+    if not _is_finite(geo.reference_centre_distance) or geo.reference_centre_distance <= 0.0:
+        result.error(
+            "reference_centre_distance",
+            "must be a positive finite distance",
+        )
+
+    alpha_w = geo.working_pressure_angle
+    if not _is_finite(alpha_w) or not (0.0 < alpha_w < math.pi / 2.0):
+        result.error(
+            "working_pressure_angle",
+            "must be finite and strictly between 0 and 90 degrees",
+        )
+
+    working_distance = geo.working_centre_distance
+    if not _is_finite(working_distance) or working_distance <= 0.0:
+        result.error(
+            "working_centre_distance",
+            "must be a positive finite distance",
+        )
+
+    pinion, gear = geo.pinion, geo.gear
+    reference_distance = (
+        gear.reference_r - pinion.reference_r
+        if gear.internal
+        else gear.reference_r + pinion.reference_r
+    )
+    if not math.isclose(
+        geo.reference_centre_distance,
+        reference_distance,
+        rel_tol=0.0,
+        abs_tol=GEOMETRY_TOLERANCE,
+    ):
+        result.error(
+            "reference_centre_distance",
+            "does not match the two reference radii",
+        )
+
+    if _is_finite(working_distance):
+        expected_working_distance = (
+            gear.working_r - pinion.working_r
+            if gear.internal
+            else gear.working_r + pinion.working_r
+        )
+        if not math.isclose(
+            working_distance,
+            expected_working_distance,
+            rel_tol=0.0,
+            abs_tol=GEOMETRY_TOLERANCE,
+        ):
+            result.error(
+                "working_centre_distance",
+                "does not match the two working pitch radii",
+            )
+
+    if _is_finite(alpha_w) and 0.0 < alpha_w < math.pi / 2.0:
+        for member in (pinion, gear):
+            expected_working_r = member.base_r / math.cos(alpha_w)
+            if not math.isclose(
+                member.working_r,
+                expected_working_r,
+                rel_tol=0.0,
+                abs_tol=GEOMETRY_TOLERANCE,
+            ):
+                field = "z1" if member.name == "pinion" else "z2"
+                result.error(
+                    field,
+                    f"{member.name}'s working radius does not match its base "
+                    "radius and working pressure angle",
+                )
 
 
 def validate(p: SpurSetParams) -> ValidationResult:
@@ -120,9 +258,11 @@ def validate(p: SpurSetParams) -> ValidationResult:
 
     try:
         geo = compute_set(p)
-    except ValueError as exc:
+    except (ValueError, OverflowError, ZeroDivisionError) as exc:
         result.error("working_centre_distance", str(exc))
         return result
+
+    _check_operating_geometry(geo, result)
 
     # An explicit working distance and the two x_i values are two descriptions
     # of the same pair condition.  Keep them from silently disagreeing.  The
@@ -176,25 +316,45 @@ def validate(p: SpurSetParams) -> ValidationResult:
     # convex flank as it rolls past, and a ring gear's flank is concave. It is
     # cut by a shaper rather than a hob, and what limits it is the tip and
     # trimming interference checked further down instead.
-    z_min = undercut_limit(geo.transverse_pressure_angle, p.beta)
+    if p.root_geometry == "rack_generated" and (
+        p.internal or abs(p.beta) > GEOMETRY_TOLERANCE
+    ):
+        result.warn(
+            "root_geometry",
+            "rack-generated root geometry is currently verified only for "
+            "external straight gears; the affected member uses the legacy "
+            "root approximation",
+        )
+
     for member in (geo.pinion, geo.gear):
-        if not member.internal and member.z < z_min:
+        if member.internal:
+            continue
+        z_min = undercut_limit(
+            geo.transverse_pressure_angle,
+            member.beta,
+            member.profile_shift,
+            p.basic_rack_addendum_factor,
+        )
+        if member.z < z_min:
             form_note = (
                 "the selected rack-generated root shows that form limit"
                 if member.generated_root_r is not None
-                else "the legacy root approximation does not show the generated undercut"
+                else "the selected root approximation does not show the generated undercut"
             )
             result.warn(
                 "z1" if member.name == "pinion" else "z2",
                 f"{member.name} has {member.z} teeth, below the undercut limit of "
                 f"{z_min:.1f} for a {math.degrees(geo.transverse_pressure_angle):.1f} "
-                f"degree transverse pressure angle; a real cutter would undercut "
+                f"degree transverse pressure angle at x={member.profile_shift:.3g}; "
+                f"a real cutter would undercut "
                 f"the flank near the root, and {form_note}",
             )
 
     # --- contact ratio -----------------------------------------------------
     eps_a = geo.transverse_contact_ratio
-    if eps_a < 1.0:
+    if not _is_finite(eps_a) or eps_a < 0.0:
+        result.error("z1", f"transverse contact ratio is invalid: {eps_a!r}")
+    elif eps_a < 1.0:
         result.error(
             "z1",
             f"transverse contact ratio is {eps_a:.2f}; below 1.0 the pair loses "
@@ -207,13 +367,26 @@ def validate(p: SpurSetParams) -> ValidationResult:
             "carries the load for most of the mesh",
         )
 
+    eps_b = geo.overlap_ratio
+    if not _is_finite(eps_b) or eps_b < 0.0:
+        result.error("face_width", f"overlap ratio is invalid: {eps_b!r}")
+
+    eps_g = geo.total_contact_ratio
+    if not _is_finite(eps_g) or eps_g < 0.0:
+        result.error("z1", f"total contact ratio is invalid: {eps_g!r}")
+    elif eps_g < 1.0:
+        result.error(
+            "z1",
+            f"total contact ratio is {eps_g:.2f}; below 1.0 the pair has no "
+            "continuous line/area of contact",
+        )
+
     # --- helix overlap -----------------------------------------------------
     #
     # The point of a helix is that the axial overlap hands the load from one
     # tooth to the next gradually instead of all at once. Below one axial pitch
     # of face width there is no full handover, so the pair takes on the thrust
     # load a helix causes without collecting what it is for.
-    eps_b = geo.axial_contact_ratio
     if 0.0 < eps_b < 1.0:
         result.warn(
             "face_width",
@@ -347,15 +520,45 @@ def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> Non
 
 
 def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
-    """Whether the space closes at the root and the tooth stays blunt at the tip."""
+    """Validate radii, thickness, and the actual tooth-space boundary."""
     from ..involute import inv, internal_tooth_width, top_land
 
     for member in (geo.pinion, geo.gear):
         field = "z1" if member.name == "pinion" else "z2"
 
+        if not _check_member_radii(member, field, result):
+            continue
+
+        if member.reference_tooth_thickness <= GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"{member.name}'s reference tooth thickness is "
+                f"{member.reference_tooth_thickness:.6g} mm; it must be positive",
+            )
+
+        # These are warnings, not arbitrary x limits.  A profile shift that
+        # makes a nominal addendum or dedendum non-positive can still leave an
+        # ordered, drawable involute; the geometric checks below decide whether
+        # the resulting tooth actually fails.
+        shift_field = (
+            "profile_shift_1" if member.name == "pinion" else "profile_shift_2"
+        )
+        if member.addendum <= GEOMETRY_TOLERANCE:
+            result.warn(
+                shift_field,
+                f"{member.name}'s nominal addendum is {member.addendum:.6g} mm; "
+                "the selected profile shift gives no positive addendum",
+            )
+        if member.dedendum <= GEOMETRY_TOLERANCE:
+            result.warn(
+                shift_field,
+                f"{member.name}'s nominal dedendum is {member.dedendum:.6g} mm; "
+                "the selected profile shift gives no positive dedendum",
+            )
+
         if member.internal:
             _check_internal_tooth_form(
-                member, field, p, result
+                geo, member, field, p, result
             )
             continue
 
@@ -377,7 +580,8 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
         if land <= 0.0:
             result.error(
                 field,
-                f"{member.name}'s teeth come to a point before the tip radius; "
+                f"{member.name}'s top land is {land:.6g} mm; the teeth come to "
+                f"a point before the tip radius; "
                 f"{member.z} teeth is too few at this pressure angle",
             )
         elif land < 0.2 * p.module:
@@ -387,9 +591,68 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
                 f"({land / p.module:.2f} * module); the tips are nearly pointed",
             )
 
+        _check_tooth_space_loop(geo, member.name, field, result)
+
+
+def _check_member_radii(member, field: str, result: ValidationResult) -> bool:
+    """Check radius positivity and the directional root/tip ordering."""
+    names = (
+        ("reference radius", member.reference_r),
+        ("base radius", member.base_r),
+        ("tip radius", member.tip_r),
+        ("root radius", member.root_r),
+    )
+    valid = True
+    for name, radius in names:
+        if not _is_finite(radius) or radius <= GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"{member.name}'s {name} must be a positive finite radius; "
+                f"got {radius!r}",
+            )
+            valid = False
+    if not valid:
+        return False
+
+    if member.internal:
+        if member.tip_r >= member.root_r - GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"the ring's tip radius ({member.tip_r:.6g} mm) must be smaller "
+                f"than its root radius ({member.root_r:.6g} mm)",
+            )
+    elif member.root_r >= member.tip_r - GEOMETRY_TOLERANCE:
+        result.error(
+            field,
+            f"{member.name}'s root radius ({member.root_r:.6g} mm) must be "
+            f"smaller than its tip radius ({member.tip_r:.6g} mm)",
+        )
+
+    # An external gear may use a radial below-base segment, but its tip still
+    # has to reach beyond the base circle.  An internal ring has no honest
+    # radial fallback: its whole generated space must contain an involute.
+    if member.tip_r <= member.base_r + GEOMETRY_TOLERANCE:
+        result.error(
+            field,
+            f"{member.name}'s tip radius ({member.tip_r:.6g} mm) does not clear "
+            f"its base circle ({member.base_r:.6g} mm); there is no valid "
+            "involute flank",
+        )
+
+    if member.generated_root_r is not None:
+        if not _is_finite(member.generated_root_r) or member.generated_root_r <= 0.0:
+            result.error(field, f"{member.name}'s generated root radius is invalid")
+        elif member.generated_root_r > member.root_r + GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"{member.name}'s generated root radius lies outside its nominal "
+                "root radius",
+            )
+    return True
+
 
 def _check_internal_tooth_form(
-    member, field: str, p: SpurSetParams, result: ValidationResult,
+    geo, member, field: str, p: SpurSetParams, result: ValidationResult,
 ) -> None:
     """The same two questions about a ring gear, asked at the other end.
 
@@ -405,7 +668,7 @@ def _check_internal_tooth_form(
     # can fall below its base circle and get a radial line drawn instead, which
     # is a standard simplification; a ring gear whose tip is inside its base
     # circle has no involute flank at all and there is nothing honest to draw.
-    if member.tip_r < member.base_r:
+    if member.tip_r <= member.base_r + GEOMETRY_TOLERANCE:
         result.error(
             field,
             f"the ring's tip radius ({member.tip_r:.2f} mm) is inside its base "
@@ -428,7 +691,8 @@ def _check_internal_tooth_form(
     if land <= 0.0:
         result.error(
             field,
-            f"the ring's teeth come to a point before the tip radius; "
+            f"the ring's top land is {land:.6g} mm; the teeth come to a point "
+            f"before the tip radius; "
             f"{member.z} teeth is too few at this pressure angle",
         )
     elif land < 0.2 * p.module:
@@ -437,3 +701,98 @@ def _check_internal_tooth_form(
             f"the ring's top land is only {land:.3f} mm "
             f"({land / p.module:.2f} * module); the tips are nearly pointed",
         )
+
+    _check_tooth_space_loop(geo, member.name, field, result)
+
+
+def _check_tooth_space_loop(
+    geo, member_name: str, field: str, result: ValidationResult,
+) -> None:
+    """Reject a collapsed, degenerate, or self-intersecting space boundary."""
+    try:
+        section = tooth_space_section(geo, member_name)
+    except (ValueError, OverflowError, ZeroDivisionError) as exc:
+        result.error(field, f"tooth space could not be generated: {exc}")
+        return
+
+    loop = section.loop_2d
+    if len(loop) < 3:
+        result.error(field, "tooth space has fewer than three boundary points")
+        return
+    if any(
+        not _is_finite(coordinate)
+        for point in loop
+        for coordinate in point
+    ):
+        result.error(field, "tooth space boundary contains a non-finite point")
+        return
+
+    area2 = sum(
+        a[0] * b[1] - b[0] * a[1]
+        for a, b in zip(loop, loop[1:] + loop[:1])
+    )
+    if abs(area2) <= GEOMETRY_TOLERANCE:
+        result.error(field, "tooth space boundary has zero enclosed area")
+        return
+
+    if _loop_has_self_intersection(loop):
+        result.error(
+            field,
+            "tooth space boundary self-intersects and cannot form a valid cut",
+        )
+
+
+def _loop_has_self_intersection(loop) -> bool:
+    """Return whether any non-adjacent closed-loop edges intersect."""
+    count = len(loop)
+    for first in range(count):
+        a, b = loop[first], loop[(first + 1) % count]
+        for second in range(first + 1, count):
+            if second == first + 1 or (first == 0 and second == count - 1):
+                continue
+            c, d = loop[second], loop[(second + 1) % count]
+            if _segments_intersect(a, b, c, d):
+                return True
+    return False
+
+
+def _segments_intersect(a, b, c, d) -> bool:
+    """Closed-segment intersection, including non-adjacent touching."""
+    tolerance = GEOMETRY_TOLERANCE
+    if (
+        max(a[0], b[0]) < min(c[0], d[0]) - tolerance
+        or max(c[0], d[0]) < min(a[0], b[0]) - tolerance
+        or max(a[1], b[1]) < min(c[1], d[1]) - tolerance
+        or max(c[1], d[1]) < min(a[1], b[1]) - tolerance
+    ):
+        return False
+
+    def cross(o, p, q):
+        return (p[0] - o[0]) * (q[1] - o[1]) - (
+            p[1] - o[1]
+        ) * (q[0] - o[0])
+
+    def sign(value):
+        if value > tolerance:
+            return 1
+        if value < -tolerance:
+            return -1
+        return 0
+
+    def on_segment(o, p, q):
+        return (
+            abs(cross(o, p, q)) <= tolerance
+            and min(o[0], p[0]) - tolerance <= q[0] <= max(o[0], p[0]) + tolerance
+            and min(o[1], p[1]) - tolerance <= q[1] <= max(o[1], p[1]) + tolerance
+        )
+
+    ab_c, ab_d = sign(cross(a, b, c)), sign(cross(a, b, d))
+    cd_a, cd_b = sign(cross(c, d, a)), sign(cross(c, d, b))
+    if ab_c * ab_d < 0 and cd_a * cd_b < 0:
+        return True
+    return (
+        (ab_c == 0 and on_segment(a, b, c))
+        or (ab_d == 0 and on_segment(a, b, d))
+        or (cd_a == 0 and on_segment(c, d, a))
+        or (cd_b == 0 and on_segment(c, d, b))
+    )
