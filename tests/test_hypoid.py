@@ -90,6 +90,104 @@ NON_ANCHOR_SECTION = HypoidSetParams.with_defaults(
     spiral_angle=35.0, cutter_radius=30.0,
 )
 
+NON_ANCHOR_FACE_RATIO = HypoidSetParams.with_defaults(
+    2.5, 19, 47, offset=7.5, face_width=12.0,
+    spiral_angle=32.0, cutter_radius=45.0, shaft_angle=80.0,
+)
+
+
+def _wheel_face_overlap_ratio_formula(geo):
+    """Independent wheel-side evaluation of the documented estimate."""
+    return abs(
+        geo.gear.outer_cone_distance * geo.gear.face_width
+        * math.tan(geo.gear.mean_spiral_angle)
+        / (
+            math.pi * geo.gear.cone_distance
+            * geo.gear.outer_transverse_module
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "params",
+    [ANCHOR, NON_ANCHOR_SECTION, NON_ANCHOR_FACE_RATIO],
+    ids=["anchor", "17x43", "19x47"],
+)
+def test_face_overlap_ratio_uses_consistent_wheel_method1_quantities(params):
+    geo = compute_set(params)
+
+    assert geo.face_overlap_ratio_estimate == pytest.approx(
+        _wheel_face_overlap_ratio_formula(geo), abs=1e-12
+    )
+    assert geo.face_contact_ratio == pytest.approx(
+        geo.face_overlap_ratio_estimate, abs=1e-12
+    )
+    assert geo.wheel_outer_transverse_module == pytest.approx(params.module, abs=1e-12)
+    assert geo.wheel_mean_transverse_module == pytest.approx(
+        geo.wheel_outer_transverse_module
+        * geo.gear.cone_distance / geo.gear.outer_cone_distance,
+        abs=1e-12,
+    )
+    # The outer/mean-module form is equivalent to the mean-normal form only
+    # after using the *wheel* beta and converting tan(beta) to sin(beta).
+    assert geo.face_overlap_ratio_estimate == pytest.approx(
+        abs(
+            geo.wheel_face_width * math.sin(geo.gear.mean_spiral_angle)
+            / (math.pi * geo.mean_normal_module)
+        ),
+        abs=1e-12,
+    )
+
+
+def test_anchor_does_not_mix_pinion_spiral_with_wheel_overlap_quantities():
+    geo = compute_set(ANCHOR)
+    legacy_mixed = abs(
+        geo.wheel_face_width * math.tan(geo.pinion.mean_spiral_angle)
+        / (math.pi * geo.mean_normal_module)
+    )
+    assert legacy_mixed == pytest.approx(4.3109916911, abs=1e-9)
+    assert geo.face_overlap_ratio_estimate != pytest.approx(legacy_mixed)
+    assert geo.face_overlap_ratio_estimate == pytest.approx(2.2573621588, abs=1e-9)
+
+
+def test_zero_member_spiral_reduces_the_wheel_overlap_estimate_to_zero():
+    params = HypoidSetParams.with_defaults(
+        2.0, 17, 43, offset=0.0, face_width=8.0,
+        spiral_angle=0.0, cutter_radius=30.0,
+    )
+    geo = compute_set(params)
+    assert geo.pinion.mean_spiral_angle == pytest.approx(0.0, abs=1e-12)
+    assert geo.gear.mean_spiral_angle == pytest.approx(0.0, abs=1e-12)
+    assert geo.face_overlap_ratio_estimate == pytest.approx(0.0, abs=1e-12)
+
+
+def test_face_overlap_ratio_is_hand_invariant():
+    right = compute_set(ANCHOR)
+    left = compute_set(replace(ANCHOR, hand="left"))
+    assert left.gear.mean_spiral_angle == pytest.approx(
+        -right.gear.mean_spiral_angle, abs=1e-12
+    )
+    assert left.face_overlap_ratio_estimate == pytest.approx(
+        right.face_overlap_ratio_estimate, abs=1e-12
+    )
+
+
+def test_face_overlap_ratio_grows_with_facewidth_and_spiral_magnitude():
+    base = HypoidSetParams.with_defaults(
+        2.0, 17, 43, offset=0.0, face_width=8.0,
+        spiral_angle=0.0, cutter_radius=30.0,
+    )
+    by_width = [
+        compute_set(replace(base, face_width=width)).face_overlap_ratio_estimate
+        for width in (4.0, 6.0, 8.0, 10.0, 12.0)
+    ]
+    by_spiral = [
+        compute_set(replace(base, spiral_angle=spiral)).face_overlap_ratio_estimate
+        for spiral in (0.0, 10.0, 20.0, 30.0, 40.0, 50.0)
+    ]
+    assert by_width == sorted(by_width)
+    assert by_spiral == sorted(by_spiral)
+
 
 @pytest.mark.parametrize(
     "params",

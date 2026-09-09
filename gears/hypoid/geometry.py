@@ -196,6 +196,16 @@ class HypoidMemberGeometry:
         return 2.0 * math.pi / self.z
 
     @property
+    def mean_transverse_module(self) -> float:
+        """Mean transverse module at this member's Method 1 point (mm)."""
+        return 2.0 * self.pitch_radius / self.z
+
+    @property
+    def outer_transverse_module(self) -> float:
+        """Outer transverse module at this member's outer pitch cone (mm)."""
+        return self.outer_pitch_diameter / self.z
+
+    @property
     def normal_tooth_thickness(self) -> float:
         """Compatibility alias for the ISO mean-normal thickness."""
         return self.mean_normal_tooth_thickness
@@ -456,9 +466,58 @@ class HypoidSetGeometry:
         return math.degrees(self.offset_angle)
 
     @property
+    def wheel_outer_transverse_module(self) -> float:
+        """The Method 1 input module ``m_et2`` (the wheel outer module)."""
+        return self.gear.outer_transverse_module
+
+    @property
+    def wheel_mean_transverse_module(self) -> float:
+        """Wheel transverse module at its Method 1 mean calculation point."""
+        return self.gear.mean_transverse_module
+
+    @property
+    def wheel_face_width(self) -> float:
+        """Wheel net facewidth ``b2`` / physical pitch-cone face span (mm)."""
+        return self.gear.face_width
+
+    @property
+    def face_overlap_ratio_estimate(self) -> float:
+        """Wheel-side ISO/AGMA-style face-overlap estimate ``epsilon_beta``.
+
+        ISO 23509 Annex B.7 gives this relationship for spiral-bevel design
+        selection.  Method 1 is a hypoid calculation, so this is deliberately
+        reported as an estimate rather than an operating flank contact ratio.
+        The wheel quantities are kept together because the public Method 1
+        module and facewidth are wheel quantities::
+
+            epsilon_beta = Re2 * b2 * tan(beta_m2)
+                            / (pi * Rm2 * m_et2)
+
+        ``Re2`` and ``Rm2`` are the wheel outer and mean cone distances,
+        ``b2`` is the physical wheel pitch-cone span, ``beta_m2`` is the wheel
+        mean spiral angle, and ``m_et2`` is the wheel outer transverse module.
+        Taking the magnitude makes hand reversal a mirror operation only.
+        """
+        re2 = self.gear.outer_cone_distance
+        rm2 = self.gear.cone_distance
+        b2 = self.wheel_face_width
+        m_et2 = self.wheel_outer_transverse_module
+        if min(re2, rm2, b2, m_et2) <= 0.0:
+            return 0.0
+        return abs(
+            re2 * b2 * math.tan(self.gear.mean_spiral_angle)
+            / (math.pi * rm2 * m_et2)
+        )
+
+    @property
     def face_contact_ratio(self) -> float:
-        pitch = math.pi * self.mean_normal_module
-        return abs(self.params.face_width * math.tan(self.pinion.mean_spiral_angle) / pitch)
+        """Compatibility alias for :attr:`face_overlap_ratio_estimate`.
+
+        This name is retained for callers of earlier releases.  The Method 1
+        reports use the explicit ``face overlap ratio estimate`` label because
+        the Tredgold sections do not calculate a true operating contact ratio.
+        """
+        return self.face_overlap_ratio_estimate
 
     @property
     def circular_pitch(self) -> float:

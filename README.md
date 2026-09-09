@@ -515,6 +515,24 @@ minus the derived mean-normal backlash. Each is then converted by its own
 spiral angle for the transverse Tredgold section. Consequently zero backlash
 closes at the pitch point instead of leaving a spiral-angle-sized visible gap.
 
+The reported **face overlap ratio estimate** is not a calculated operating
+contact ratio. It is the wheel-side ISO 23509 Annex B.7 spiral-bevel selection
+relationship carried into the Method 1 hypoid dimensions:
+
+```
+epsilon_beta_est = Re2 * b2 * abs(tan(beta_m2))
+                   / (pi * Rm2 * m_et2)
+```
+
+`m_et2` is the wheel outer transverse module (the input `module`), `b2` is
+the wheel physical pitch-cone face span, `Re2` is its outer cone distance,
+`Rm2` is its actual Method 1 mean calculation-point cone distance, and
+`beta_m2` is the wheel mean spiral angle. This is a face/overlap estimate,
+distinct from a transverse profile contact ratio and from total contact ratio.
+The pinion calculated facewidth and pinion spiral angle are not mixed into this
+wheel-side formula. Because the Tredgold loft is not a generated cutter
+envelope, the estimate must not be read as a true flank contact ratio.
+
 The Method 1 solver is deliberately bounded and reports non-convergence as a
 validation error. This keeps an impossible offset from reaching the loft or the
 SOLIDWORKS assembly builder.

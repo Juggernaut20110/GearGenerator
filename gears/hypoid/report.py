@@ -72,7 +72,13 @@ def print_report(geo) -> None:
         print(_row("cutter curvature", f(geo.method1.mean_tooth_curvature), "", "mm"))
         print(_row("limit curvature", f(geo.method1.limit_radius_of_curvature), "", "mm"))
         print(_row("curvature residual", f(geo.method1.curvature_residual), "", "mm"))
-    print(_row("face contact ratio", f(geo.face_contact_ratio)))
+    print(_row("wheel outer transverse module m_et2", f(geo.wheel_outer_transverse_module), "", "mm"))
+    print(_row("wheel mean transverse module m_mt2", f(geo.wheel_mean_transverse_module), "", "mm"))
+    print(_row("wheel physical facewidth b2", f(geo.wheel_face_width), "", "mm"))
+    print(_row("wheel outer cone distance Re2", f(geo.gear.outer_cone_distance), "", "mm"))
+    print(_row("wheel mean cone distance Rm2", f(geo.gear.cone_distance), "", "mm"))
+    print(_row("wheel mean spiral angle beta_m2", f(geo.gear.mean_spiral_angle_deg), "", "deg"))
+    print(_row("face overlap ratio estimate epsilon_beta", f(geo.face_overlap_ratio_estimate)))
     print(f"\nMEMBERS{'':<21}{'PINION':>14}{'GEAR':>14}")
     a, b = geo.pinion, geo.gear
     for label, left, right, unit in (
