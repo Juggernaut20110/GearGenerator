@@ -1,4 +1,11 @@
-"""Pure-Python acceptance tests for the ISO Method 1 hypoid support."""
+"""Pure-Python hypoid acceptance and production-path tests.
+
+The fixed 13/42 values below are external/reference checks.  Tests that
+recompute ISO equations from returned fields are explicitly formula audits;
+the contact, placement, trace-differentiation, hand, and boundary tests are
+the independent physical invariants.  No test here treats the Tredgold loft
+as a true generated or conjugate hypoid flank.
+"""
 
 import math
 from dataclasses import replace
@@ -75,7 +82,7 @@ def test_method_1_anchor_exposes_distinct_generated_normal_flank_angles():
         )
 
 
-def test_method_1_anchor_depths_and_angles_use_independent_equations():
+def test_method_1_anchor_depths_and_angles_recompute_method1_equations():
     geo = compute_set(ANCHOR)
     x_hm1 = ANCHOR.depth_factor * (0.5 - ANCHOR.gear_mean_addendum_factor)
     k_hap = 0.5 * ANCHOR.depth_factor
@@ -128,9 +135,20 @@ def test_method_1_anchor_depths_and_angles_use_independent_equations():
             abs=1e-12,
         )
 
-    assert geo.pinion.face_width == pytest.approx(31.910, abs=0.002)
+    # ISO 23509 Method 1 formula 160 gives b_reri1.  It is distinct from the
+    # physical pitch-cone span b_e1+b_i1 used by the tooth boundaries.
+    assert geo.pinion.face_width == pytest.approx(30.470, abs=0.002)
+    assert geo.pinion.face_width_along_pitch_cone == pytest.approx(31.910, abs=0.002)
+    assert geo.pinion.tooth_face_width == pytest.approx(
+        geo.pinion.face_width_along_pitch_cone, abs=1e-12
+    )
     assert geo.gear.face_width == pytest.approx(30.0, abs=1e-12)
+    assert geo.gear.face_width_along_pitch_cone == pytest.approx(30.0, abs=1e-12)
     method = geo.method1
+    assert method.pinion_face_width == pytest.approx(30.470, abs=0.002)
+    assert method.pinion_face_width_increment_along_axis == pytest.approx(
+        0.653, abs=0.002
+    )
     assert method.wheel_face_width_factor == pytest.approx(
         geo.gear.outer_face_width / geo.gear.face_width, abs=1e-12
     )
@@ -144,7 +162,7 @@ def test_method_1_anchor_depths_and_angles_use_independent_equations():
     assert method.pinion_root_apex_z == pytest.approx(geo.pinion.root_apex_z, abs=1e-12)
 
 
-def test_method_1_anchor_stores_independent_longitudinal_face_boundaries():
+def test_method_1_anchor_stores_fixed_and_derived_longitudinal_face_boundaries():
     geo = compute_set(ANCHOR)
     pinion, gear = geo.pinion, geo.gear
 
@@ -152,9 +170,14 @@ def test_method_1_anchor_stores_independent_longitudinal_face_boundaries():
     assert pinion.tooth_face_outer_cone_distance == pytest.approx(89.6097, abs=0.002)
     assert gear.tooth_face_inner_cone_distance == pytest.approx(61.4680, abs=0.002)
     assert gear.tooth_face_outer_cone_distance == pytest.approx(91.4680, abs=0.002)
-    assert pinion.tooth_face_width == pytest.approx(31.910, abs=0.002)
-    assert gear.tooth_face_width == pytest.approx(30.000, abs=1e-12)
-    assert pinion.tooth_face_width != pytest.approx(gear.tooth_face_width)
+    assert pinion.face_width == pytest.approx(30.470, abs=0.002)
+    assert pinion.face_width_along_pitch_cone == pytest.approx(31.910, abs=0.002)
+    assert pinion.tooth_face_width == pytest.approx(
+        pinion.face_width_along_pitch_cone, abs=1e-12
+    )
+    assert gear.face_width == pytest.approx(30.000, abs=1e-12)
+    assert gear.face_width_along_pitch_cone == pytest.approx(30.000, abs=1e-12)
+    assert pinion.face_width != pytest.approx(pinion.face_width_along_pitch_cone)
 
     method = geo.method1
     assert method.pinion_boundary_wheel_inner_cone_distance == pytest.approx(
@@ -361,7 +384,7 @@ def test_hypoid_zero_backlash_has_no_backlash_thickness_correction():
     ) == pytest.approx(math.pi * geo.mean_normal_module, abs=1e-12)
 
 
-def _independent_limit_radius(geo):
+def _recomputed_limit_radius_from_public_fields(geo):
     """Re-evaluate ISO 23509 formulas 32 and 33 from public result fields."""
     a, b, method = geo.pinion, geo.gear, geo.method1
     beta1 = abs(a.mean_spiral_angle)
@@ -397,7 +420,7 @@ def _independent_limit_radius(geo):
     )
 
 
-def test_method_1_public_fields_close_independent_pitch_and_curvature_equations():
+def test_method_1_public_fields_close_recomputed_pitch_and_curvature_equations():
     geo = compute_set(ANCHOR)
     method = geo.method1
     assert (
@@ -416,7 +439,7 @@ def test_method_1_public_fields_close_independent_pitch_and_curvature_equations(
         / ANCHOR.z2,
         abs=1e-12,
     )
-    alpha_lim, rho_lim = _independent_limit_radius(geo)
+    alpha_lim, rho_lim = _recomputed_limit_radius_from_public_fields(geo)
     assert method.limit_pressure_angle == pytest.approx(alpha_lim, abs=1e-12)
     assert method.limit_radius_of_curvature == pytest.approx(rho_lim, abs=1e-9)
     assert method.limit_radius_of_curvature == pytest.approx(ANCHOR.cutter_radius, abs=1e-8)
@@ -538,6 +561,38 @@ def test_sections_are_closed_and_cover_both_face_ends():
         i_back = 4 if geo.params.min_root_thickness > 0.0 else 3
         assert max(z for _, _, z in inner.loop_3d()) < outline[0][1]
         assert min(z for _, _, z in outer.loop_3d()) > outline[i_back][1]
+
+
+def test_production_loft_guide_uses_the_split_cap_vertex_for_every_station():
+    """The pure-Python station/guide contract matches the SOLIDWORKS path.
+
+    ``gears.sw.hypoid_part._guide_points`` samples exactly this
+    ``tooth_space_section(..., split_cap=True)`` cap vertex and maps it with
+    ``to_cone_3d``.  Keeping the assertion here avoids importing COM-bound
+    SOLIDWORKS code while checking that physical and loft-only stations use
+    the same production section geometry.
+    """
+    geo = compute_set(ANCHOR)
+    for member in ("pinion", "gear"):
+        for distance in section_cone_distances(geo, member):
+            section = tooth_space_section(geo, member, distance, split_cap=True)
+            cap = (section.r_cap, 0.0)
+            assert section.segments["cap_neg"][-1] == pytest.approx(cap, abs=1e-12)
+            assert section.segments["cap_pos"][0] == pytest.approx(cap, abs=1e-12)
+            mapped = to_cone_3d(
+                cap[0], cap[1], section.pitch_angle,
+                section.cone_apex_z, section.phase,
+            )
+            assert mapped == pytest.approx(
+                to_cone_3d(
+                    section.segments["cap_pos"][0][0],
+                    section.segments["cap_pos"][0][1],
+                    section.pitch_angle,
+                    section.cone_apex_z,
+                    section.phase,
+                ),
+                abs=1e-12,
+            )
 
 
 def test_anchor_drive_and_coast_flanks_are_independently_generated():

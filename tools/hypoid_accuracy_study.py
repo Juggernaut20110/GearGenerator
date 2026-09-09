@@ -3,20 +3,21 @@
 This is deliberately a study tool, not a production geometry path.  The
 repository does not contain enough cutter and machine-setting data to rebuild
 an ISO/Gleason generated envelope.  It therefore compares the current
-back-cone/Tredgold section loft against two explicit trace-transport
-references:
+back-cone/Tredgold section loft against two explicit trace-transport comparison
+models and reports the error categories separately:
 
 ``raw-crown``
     The circular ``CrownTrace`` angle used directly as the longitudinal phase,
-    without the pitch-cone development factor.  This is the unscaled phase
-    used by the original hypoid path.
+    without the pitch-cone development factor.  This is the intentionally
+    unscaled comparison model used by the original hypoid path.
 
 ``developed-cone``
     The ``CrownTrace`` documentation's cone-development mapping, in which the
     crown-plane angle is divided by ``sin(pitch_angle)`` before it is used as
     real cone phase.  For a non-zero-offset pinion, the production path also
     applies the Method 1 wheel-to-pinion offset transport, so this remains an
-    explicit circular-trace reference rather than an exact production target.
+    explicit circular-trace comparison model rather than an exact generated
+    target.
 
 Neither reference is a true generated hypoid flank.  A true envelope also
 needs the inside/outside blade geometry, cutter-head motion and machine
@@ -47,7 +48,13 @@ from gears.hypoid.geometry import (
     section_cone_distances,
     tooth_space_section,
 )
-from gears.hypoid.mesh import contact_point, gear_contact_point
+from gears.hypoid.mesh import (
+    contact_point,
+    gear_contact_point,
+    gear_mate_ratio,
+    gear_translation,
+    skew_axis_distance,
+)
 from gears.hypoid.params import HypoidSetParams
 from gears.bevel.geometry import to_cone_3d
 
@@ -242,12 +249,132 @@ def _summary(values: Iterable[float]) -> dict[str, float]:
     }
 
 
+def _production_pitch_trace_spiral_angle(
+    geo: HypoidSetGeometry, member: str, cone_dist: float
+) -> float:
+    """Differentiate the actual section/``to_cone_3d`` production path.
+
+    The point follows the developed pitch generator through the same phase
+    stored on ``tooth_space_section``.  At the local radial azimuth ``q`` its
+    cone generator and circumferential directions are
+
+        g = (sin(delta) cos(q), sin(delta) sin(q), cos(delta))
+        c = (-sin(q), cos(q), 0).
+
+    Thus ``atan2(v·c, v·g)`` is the physical longitudinal trace angle.  This
+    is a diagnostic of the production Tredgold trace transport, not a claim
+    that the flank is a generated or conjugate hypoid surface.
+    """
+    m = geo.member(member)
+    h = max(1e-5, min(1e-3, 1e-4 * m.cone_distance))
+
+    def point(value: float):
+        section = tooth_space_section(geo, member, value)
+        developed_pitch_radius = m.virtual_pitch_r * value / m.cone_distance
+        return to_cone_3d(
+            developed_pitch_radius,
+            0.0,
+            m.pitch_angle,
+            section.cone_apex_z,
+            section.phase,
+        )
+
+    before = point(cone_dist - h)
+    after = point(cone_dist + h)
+    tangent = _scale(_sub(after, before), 1.0 / (2.0 * h))
+    current = point(cone_dist)
+    azimuth = math.atan2(current[1], current[0])
+    circumferential = (-math.sin(azimuth), math.cos(azimuth), 0.0)
+    generator = (
+        math.sin(m.pitch_angle) * math.cos(azimuth),
+        math.sin(m.pitch_angle) * math.sin(azimuth),
+        math.cos(m.pitch_angle),
+    )
+    return math.atan2(_dot(tangent, circumferential), _dot(tangent, generator))
+
+
+def _production_trace_report(
+    geo: HypoidSetGeometry, member: str
+) -> dict:
+    """Report actual-vs-Method-1 spiral angles at all physical boundaries."""
+    m = geo.member(member)
+    expected_sense = 1.0 if member == "pinion" else -1.0
+    stations = {
+        "inner": (m.tooth_face_inner_cone_distance, m.inner_spiral_angle),
+        "mean": (m.cone_distance, m.mean_spiral_angle),
+        "outer": (m.tooth_face_outer_cone_distance, m.outer_spiral_angle),
+    }
+    values = {}
+    for name, (cone_dist, expected) in stations.items():
+        actual = _production_pitch_trace_spiral_angle(geo, member, cone_dist)
+        expected_local = expected_sense * expected
+        values[name] = {
+            "cone_dist_mm": cone_dist,
+            "actual_signed_deg": math.degrees(actual),
+            "method1_signed_deg": math.degrees(expected_local),
+            "error_deg": math.degrees(actual - expected_local),
+        }
+    errors = [abs(value["error_deg"]) for value in values.values()]
+    return {
+        "stations": values,
+        "max_abs_error_deg": max(errors),
+        "rms_error_deg": math.sqrt(sum(value * value for value in errors) / len(errors)),
+    }
+
+
+def _compare_approximation_models(
+    geo: HypoidSetGeometry, member: str, side: str
+) -> dict:
+    """Compare two explicit trace transports, not a generated reference."""
+    m = geo.member(member)
+    longitudinal = [
+        m.tooth_face_inner_cone_distance
+        + (m.tooth_face_outer_cone_distance - m.tooth_face_inner_cone_distance)
+        * fraction
+        for fraction in (0.0, 0.25, 0.5, 0.75, 1.0)
+    ]
+    profiles = (0.2, 0.5, 0.8)
+    position_errors = []
+    normal_errors = []
+    samples = []
+    for cone_dist in longitudinal:
+        for profile in profiles:
+            raw = _surface_sample(
+                geo, member, side, cone_dist, profile, "raw-crown"
+            )
+            developed = _surface_sample(
+                geo, member, side, cone_dist, profile, "developed-cone"
+            )
+            position_errors.append(_distance(raw.position, developed.position))
+            normal_errors.append(_angle_between(raw.normal, developed.normal))
+            samples.append(
+                {
+                    "cone_dist_mm": cone_dist,
+                    "profile": profile,
+                    "position_deviation_mm": position_errors[-1],
+                    "normal_deviation_deg": normal_errors[-1],
+                }
+            )
+    return {
+        "position_deviation_mm": _summary(position_errors),
+        "normal_deviation_deg": _summary(normal_errors),
+        "samples": samples,
+    }
+
+
 def _compare_surface(
     geo: HypoidSetGeometry,
     member: str,
     side: str,
     reference: str,
 ) -> dict:
+    """Compare production sections with one named phase-transport model.
+
+    The returned positional values are longitudinal deviations of the
+    production Tredgold surface from that explicit comparison model.  They
+    are not macro-geometry errors and neither comparison model is a generated
+    hypoid envelope.
+    """
     m = geo.member(member)
     longitudinal = [
         m.tooth_face_inner_cone_distance
@@ -296,7 +423,9 @@ def _compare_surface(
             )
     return {
         "position_error_mm": _summary(position_errors),
+        "longitudinal_position_deviation_mm": _summary(position_errors),
         "normal_error_deg": _summary(normal_errors),
+        "surface_normal_deviation_deg": _summary(normal_errors),
         "phase_error_rad": _summary(phase_errors),
         "phase_error_deg": _summary(math.degrees(value) for value in phase_errors),
         "pitch_tangential_error_mm": _summary(pitch_tangential_errors),
@@ -337,8 +466,19 @@ def _loft_chord_deviation(
 def _contact_summary(geo: HypoidSetGeometry) -> dict[str, float]:
     p = contact_point(geo)
     g = gear_contact_point(geo)
+    translation = gear_translation(geo)
+    axis1 = (0.0, 0.0, 1.0)
+    axis2 = (math.sin(geo.params.sigma), 0.0, math.cos(geo.params.sigma))
+    axis_distance = skew_axis_distance(
+        (0.0, 0.0, 0.0), axis1, translation, axis2
+    )
+    ratio = gear_mate_ratio(geo.pinion.z, geo.gear.z)
     return {
         "mean_contact_position_error_mm": _distance(p, g),
+        "shaft_axis_distance_mm": axis_distance,
+        "shaft_axis_offset_error_mm": axis_distance - abs(geo.params.offset),
+        "velocity_ratio": -ratio[1] / ratio[0],
+        "velocity_ratio_error": -ratio[1] / ratio[0] + geo.params.ratio,
         "pinion_mean_phase_deg": math.degrees(
             _section_phase(geo, "pinion", geo.pinion.cone_distance)
         ),
@@ -357,27 +497,53 @@ def _case_report(params: HypoidSetParams) -> dict:
         geo = compute_set(params)
         member_reports = {}
         for member in ("pinion", "gear"):
+            raw_crown = {
+                side: _compare_surface(geo, member, side, "raw-crown")
+                for side in ("drive", "coast")
+            }
+            developed_cone = {
+                side: _compare_surface(geo, member, side, "developed-cone")
+                for side in ("drive", "coast")
+            }
+            raw_vs_developed = {
+                side: _compare_approximation_models(geo, member, side)
+                for side in ("drive", "coast")
+            }
             member_reports[member] = {
                 "tooth_face_inner_mm": geo.member(member).tooth_face_inner_cone_distance,
                 "tooth_face_outer_mm": geo.member(member).tooth_face_outer_cone_distance,
+                "method1_face_width_mm": geo.member(member).face_width,
+                "pitch_cone_face_width_mm": geo.member(member).face_width_along_pitch_cone,
                 "tooth_face_width_mm": geo.member(member).tooth_face_width,
-                "raw_crown": {
-                    side: _compare_surface(geo, member, side, "raw-crown")
+                "longitudinal_trace_transport": {
+                    "production_method1_trace": _production_trace_report(geo, member),
+                    "production_vs_raw_crown_model": raw_crown,
+                    "production_vs_developed_cone_model": developed_cone,
+                    "raw_crown_vs_developed_cone_model": raw_vs_developed,
+                },
+                "tredgold_section_profile": {
+                    "production_model": "Tredgold/back-cone involute section",
+                    "generated_envelope_reference_available": False,
+                    "profile_error": None,
+                    "limitation": (
+                        "No true generated-envelope inputs are available, so "
+                        "profile approximation error is not isolated."
+                    ),
+                },
+                "loft_station_interpolation": {
+                    side: _loft_chord_deviation(geo, member, side)
                     for side in ("drive", "coast")
                 },
-                "developed_cone": {
-                    side: _compare_surface(geo, member, side, "developed-cone")
-                    for side in ("drive", "coast")
-                },
-                "loft_chord": (
-                    {
-                        side: _loft_chord_deviation(geo, member, side)
-                        for side in ("drive", "coast")
-                    }
-                    if params == ANCHOR
-                    else None
-                ),
             }
+            # Keep the old top-level names readable for downstream scripts,
+            # while the structured names above make the diagnostic category
+            # explicit.  These are comparison models, never generated flanks.
+            member_reports[member]["raw_crown"] = raw_crown
+            member_reports[member]["developed_cone"] = developed_cone
+            member_reports[member]["loft_chord"] = member_reports[member][
+                "loft_station_interpolation"
+            ]
+        contact = _contact_summary(geo)
         return {
             "valid": True,
             "inputs": {
@@ -397,10 +563,13 @@ def _case_report(params: HypoidSetParams) -> dict:
                 "mean_normal_module_mm": geo.mean_normal_module,
                 "pinion_mean_spiral_deg": geo.pinion.mean_spiral_angle_deg,
                 "gear_mean_spiral_deg": geo.gear.mean_spiral_angle_deg,
-                "pinion_face_width_mm": geo.pinion.tooth_face_width,
-                "gear_face_width_mm": geo.gear.tooth_face_width,
+                "pinion_face_width_mm": geo.pinion.face_width,
+                "gear_face_width_mm": geo.gear.face_width,
+                "pinion_pitch_cone_face_width_mm": geo.pinion.face_width_along_pitch_cone,
+                "gear_pitch_cone_face_width_mm": geo.gear.face_width_along_pitch_cone,
             },
-            "contact": _contact_summary(geo),
+            "method1_macro_geometry": contact,
+            "contact": contact,
             "members": member_reports,
             "true_generated_reference": {
                 "available": False,
@@ -457,11 +626,14 @@ def _markdown(report: dict) -> str:
     lines = [
         "# Hypoid accuracy study",
         "",
-        "This report compares the current Tredgold/back-cone section surface "
-        "with explicit circular-cutter trace transports. It is not a true "
-        "generated-envelope comparison.",
+        "This report separates Method 1 macro geometry, longitudinal trace "
+        "transport, Tredgold section-profile comparison, and loft station "
+        "interpolation. The named raw-crown and developed-cone models are "
+        "explicit comparison models, not a true generated-envelope reference.",
         "",
-        "| case | valid | pinion raw max mm | gear raw max mm | pinion developed max mm | gear developed max mm |",
+        "## Comparison-model positional deviations",
+        "",
+        "| case | valid | pinion raw mm | gear raw mm | pinion developed mm | gear developed mm |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for name, result in report["cases"].items():
@@ -480,9 +652,35 @@ def _markdown(report: dict) -> str:
     lines.extend(
         [
             "",
-            "The JSON output contains the drive/coast, toe/heel and profile-grid "
-            "samples, phase errors, normal errors, face limits and section-chord "
-            "diagnostic.",
+            "## Production-path trace and macro checks",
+            "",
+            "| case | member | max spiral error deg | inner error deg | mean error deg | outer error deg | loft chord max mm |",
+            "|---|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for name, result in report["cases"].items():
+        if not result["valid"]:
+            continue
+        for member in ("pinion", "gear"):
+            trace = result["members"][member]["longitudinal_trace_transport"][
+                "production_method1_trace"
+            ]
+            stations = trace["stations"]
+            loft = result["members"][member]["loft_station_interpolation"]
+            chord_max = max(loft[side]["max"] for side in ("drive", "coast"))
+            lines.append(
+                f"| {name} | {member} | {trace['max_abs_error_deg']:.6g} | "
+                f"{abs(stations['inner']['error_deg']):.6g} | "
+                f"{abs(stations['mean']['error_deg']):.6g} | "
+                f"{abs(stations['outer']['error_deg']):.6g} | {chord_max:.6g} |"
+            )
+    lines.extend(
+        [
+            "",
+            "The JSON output additionally contains macro contact/axis/ratio "
+            "residuals, production-vs-model longitudinal position and surface-"
+            "normal deviations, direct comparison between the two explicit "
+            "phase models, face limits, and section-chord diagnostics.",
         ]
     )
     return "\n".join(lines)

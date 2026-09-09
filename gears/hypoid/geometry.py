@@ -38,10 +38,19 @@ class HypoidMemberGeometry:
     """Calculated geometry for one hypoid member.
 
     All distances and radii are in millimetres.  Angles are stored in radians
-    and exposed in degrees by the ``*_deg`` properties.  ``outer_*`` and
-    ``inner_*`` fields describe the physical Method 1 blank/tooth boundaries.
-    ``tredgold_*`` fields describe only the developed back-cone involute
-    approximation used by the current tooth-section builder.
+    and exposed in degrees by the ``*_deg`` properties.  ``face_width`` is the
+    Method 1 calculated member facewidth: the pinion value is ``b_reri1`` and
+    the wheel value is the input ``b2``.  ``face_width_along_pitch_cone`` is a
+    different quantity for an offset hypoid: it is the physical pitch-cone
+    distance span ``b_e + b_i`` between the outer and inner tooth boundaries.
+    ``outer_face_width`` and ``inner_face_width`` are the corresponding
+    distances from the calculation point to those physical boundaries.
+
+    ``tooth_face_width`` is retained as a compatibility alias for
+    ``face_width_along_pitch_cone``.  It must not be confused with the Method
+    1 member facewidth on an offset pinion.  The ``tredgold_*`` fields describe
+    only the developed back-cone involute approximation used by the current
+    tooth-section builder.
     """
 
     name: str
@@ -67,6 +76,8 @@ class HypoidMemberGeometry:
     face_angle: float
     root_angle: float
     face_width: float
+    face_width_along_pitch_cone: float
+    # Compatibility alias.  New code should use face_width_along_pitch_cone.
     tooth_face_width: float
     outer_face_width: float
     inner_face_width: float
@@ -123,6 +134,11 @@ class HypoidMemberGeometry:
     def outside_dia(self) -> float:
         """Compatibility alias for the physical outer tip diameter (mm)."""
         return self.outer_tip_diameter
+
+    @property
+    def physical_pitch_cone_face_width(self) -> float:
+        """Compatibility-friendly name for the physical ``b_e + b_i`` span."""
+        return self.face_width_along_pitch_cone
 
     @property
     def pitch_angle_deg(self) -> float:
@@ -242,10 +258,15 @@ class HypoidMethod1Geometry:
     iterations: int
     # Method 1 blank closure values.  They live with the pitch solution so
     # callers can audit the complete calculation without reconstructing the
-    # hidden intermediate geometry used by compute_set().
+    # hidden intermediate geometry used by compute_set().  In particular,
+    # pinion_face_width is b_reri1 (formula 160), while the physical pinion
+    # pitch-cone span is pinion_outer_face_width + pinion_inner_face_width
+    # (formula 166).
     wheel_face_width_factor: float | None = None
     wheel_outer_face_width: float | None = None
     wheel_inner_face_width: float | None = None
+    pinion_face_width: float | None = None
+    pinion_face_width_increment_along_axis: float | None = None
     pinion_outer_face_width: float | None = None
     pinion_inner_face_width: float | None = None
     pinion_boundary_wheel_outer_cone_distance: float | None = None
@@ -1030,6 +1051,7 @@ def _member(
     addendum_angle,
     dedendum_angle,
     inner_cone_distance,
+    face_width,
     outer_face_width,
     inner_face_width,
     pitch_apex_z,
@@ -1045,6 +1067,13 @@ def _member(
 ):
     """Build one member from the ISO Method 1 blank dimensions.
 
+    ``face_width`` is the Method 1 calculated member facewidth.  For an
+    offset pinion it is ``b_reri1`` from ISO 23509 formula 160, whereas the
+    physical tooth boundaries are located with ``b_e1`` and ``b_i1``.
+    Consequently the physical pitch-cone span is ``b_e1 + b_i1`` and is not
+    generally equal to ``face_width``.  The wheel's requested ``b2`` is split
+    into ``b_e2`` and ``b_i2``, so its two values happen to coincide.
+
     ``tredgold_tip_radius`` and ``tredgold_mean_root_radius`` deliberately
     remain the Tredgold back-cone section radii used by the involute
     approximation.  The physical Method 1 blank radii are the explicit
@@ -1057,6 +1086,8 @@ def _member(
         raise ValueError(f"{name} Method 1 pitch angle is outside the external-pair range")
     if cone_distance <= 0.0 or inner_cone_distance <= 0.0:
         raise ValueError(f"{name} Method 1 cone distance is not positive")
+    if face_width <= 0.0:
+        raise ValueError(f"{name} Method 1 member facewidth is not positive")
     if outer_face_width <= 0.0 or inner_face_width <= 0.0:
         raise ValueError(f"{name} Method 1 face boundary is not positive")
     outer_cone_distance = cone_distance + outer_face_width
@@ -1169,7 +1200,8 @@ def _member(
         dedendum_angle=dedendum_angle,
         face_angle=face_angle,
         root_angle=root_angle,
-        face_width=outer_face_width + inner_face_width,
+        face_width=face_width,
+        face_width_along_pitch_cone=outer_face_width + inner_face_width,
         tooth_face_width=outer_face_width + inner_face_width,
         outer_face_width=outer_face_width,
         inner_face_width=inner_face_width,
@@ -1477,6 +1509,8 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         wheel_face_width_factor=cbe2,
         wheel_outer_face_width=be2,
         wheel_inner_face_width=bi2,
+        pinion_face_width=breri1,
+        pinion_face_width_increment_along_axis=delta_bx1,
         pinion_outer_face_width=be1,
         pinion_inner_face_width=bi1,
         pinion_boundary_wheel_outer_cone_distance=(
@@ -1512,6 +1546,9 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         addendum_angle=theta_a1,
         dedendum_angle=theta_f1,
         inner_cone_distance=Ri1,
+        # ISO 23509 Method 1 formula 160 (b_reri1).  This is the calculated
+        # pinion facewidth; the physical pitch-cone boundary span is be1+bi1.
+        face_width=breri1,
         outer_face_width=be1,
         inner_face_width=bi1,
         pitch_apex_z=tz1,
@@ -1541,6 +1578,9 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
         addendum_angle=theta_a2,
         dedendum_angle=theta_f2,
         inner_cone_distance=Ri2,
+        # For the wheel, the requested b2 is also its physical pitch-cone
+        # span because the wheel calculation point is split by c_be2.
+        face_width=p.face_width,
         outer_face_width=be2,
         inner_face_width=bi2,
         pitch_apex_z=tz2,
@@ -1825,7 +1865,7 @@ def _hypoid_root_fillet(
     else:
         # ``root_fillet`` is deliberately shared with the external involute
         # code and expects its working flank on the positive-y side.  Reflect
-        # only this independently generated coast/drive curve for the fit;
+        # only this independently constructed coast/drive curve for the fit;
         # the resulting geometry is reflected back immediately.
         result = involute.root_fillet(_reflect_flank(flank), r_root, rho)
     if result is None:
@@ -1942,7 +1982,7 @@ def _hypoid_flank_points(
     pressure_angle: float,
     n_flank: int,
 ) -> list[Point2]:
-    """Build one Tredgold involute using one generated normal angle."""
+    """Build one Tredgold involute using one Method 1 generated angle."""
     scale = cone_dist / max(member.cone_distance, 1e-9)
     pitch = member.virtual_pitch_r * scale
     base = pitch * math.cos(pressure_angle)
@@ -1975,7 +2015,7 @@ def _hypoid_flank_points(
 def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | None = None,
                         split_cap: bool = False,
                         n_flank: int = involute.FLANK_POINTS) -> HypoidSection:
-    """Build an independently generated Method 1 Tredgold tooth space.
+    """Build an independently constructed Method 1 Tredgold tooth space.
 
     The drive and coast normal pressure angles are distinct Method 1
     quantities.  The resulting pair of involutes is a better section model,
@@ -2050,7 +2090,7 @@ def _section_clearance_bounds(
     i_back = 4 if p.min_root_thickness > 0.0 else 3
     z_back = outline[i_back][1]
     margin = max(0.1, 0.1 * p.module)
-    step = max(p.module, m.tooth_face_width / 8.0)
+    step = max(p.module, m.face_width_along_pitch_cone / 8.0)
 
     def clears_front(cone_dist: float) -> bool:
         section = tooth_space_section(geo, member, cone_dist)

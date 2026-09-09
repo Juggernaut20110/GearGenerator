@@ -2,7 +2,7 @@
 
 Lengths are millimetres and angles are degrees at this boundary.  The module
 is the outer transverse module of the wheel, matching the published Method 1
-input convention (``d_e2 = module * z2``).  The solver exposes the generated
+input convention (``d_e2 = module * z2``).  The solver exposes the calculated
 mean normal module in its result rather than pretending it is an input.
 """
 

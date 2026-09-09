@@ -51,7 +51,7 @@ def print_report(geo) -> None:
     print(_row("hypoid offset", f(p.offset), "", "mm"))
     print(_row("pinion spiral angle", f(p.spiral_angle), "", "deg"))
     print(_row("cutter radius", optional(p.cutter_radius), "", "mm"))
-    print(_row("face width", f(p.face_width), "", "mm"))
+    print(_row("input wheel facewidth b2", f(p.face_width), "", "mm"))
     print(_row("outer transverse backlash (j_et2)", f(geo.outer_transverse_backlash), "", "mm"))
     print(_row("backlash convention", "outer transverse at wheel outer cone"))
     print(_row("gear addendum angle input", f(p.gear_addendum_angle), "", "deg"))
@@ -83,12 +83,12 @@ def print_report(geo) -> None:
         ("outer spiral angle", f(math.degrees(a.outer_spiral_angle)), f(math.degrees(b.outer_spiral_angle)), "deg"),
         ("mean pitch radius", f(a.pitch_radius), f(b.pitch_radius), "mm"),
         ("mean cone distance", f(a.cone_distance), f(b.cone_distance), "mm"),
-        ("calculated member face width", f(a.face_width), f(b.face_width), "mm"),
-        ("physical Method 1 tooth-face width", f(a.tooth_face_width), f(b.tooth_face_width), "mm"),
+        ("Method 1 member facewidth (b_reri1 / b2)", f(a.face_width), f(b.face_width), "mm"),
+        ("physical pitch-cone tooth-face span (b_e + b_i)", f(a.face_width_along_pitch_cone), f(b.face_width_along_pitch_cone), "mm"),
         ("tooth face inner cone distance", f(a.tooth_face_inner_cone_distance), f(b.tooth_face_inner_cone_distance), "mm"),
         ("tooth face outer cone distance", f(a.tooth_face_outer_cone_distance), f(b.tooth_face_outer_cone_distance), "mm"),
-        ("outer face width", f(a.outer_face_width), f(b.outer_face_width), "mm"),
-        ("inner face width", f(a.inner_face_width), f(b.inner_face_width), "mm"),
+        ("outer boundary from calculation point (b_e)", f(a.outer_face_width), f(b.outer_face_width), "mm"),
+        ("inner boundary from calculation point (b_i)", f(a.inner_face_width), f(b.inner_face_width), "mm"),
         ("addendum", f(a.addendum), f(b.addendum), "mm"),
         ("dedendum", f(a.dedendum), f(b.dedendum), "mm"),
         ("working depth", f(a.working_depth), f(b.working_depth), "mm"),

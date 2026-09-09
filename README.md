@@ -499,11 +499,14 @@ implemented.
 
 The two lofts wind in opposite local phase senses. Their mean trace tangents
 are resolved in the same skew-axis contact plane instead of copying the bevel
-common-apex phase rule. Method 1 calculates distinct pinion and wheel physical
-tooth-face boundaries and blank dimensions; separate terminal sections may
-extend beyond those boundaries solely so a SOLIDWORKS loft cut clears the
-blank. Assembly placement leaves the solved mean pitch points coincident at
-zero backlash.
+common-apex phase rule; the pinion and wheel tangents are not required to be
+equal. Method 1 calculates distinct pinion and wheel spiral quantities and
+physical tooth-face boundaries. The pinion's calculated member facewidth can
+therefore differ from its physical pitch-cone boundary span, while the wheel's
+input facewidth is split into its outer and inner spans. Separate terminal
+sections may extend beyond those physical boundaries solely so a SOLIDWORKS
+loft cut clears the blank. Assembly placement leaves the solved mean pitch
+points coincident at zero backlash.
 
 Tooth thickness is balanced across the pair in the normal plane. The Method 1
 thickness factor transfers thickness from the wheel to the pinion instead of

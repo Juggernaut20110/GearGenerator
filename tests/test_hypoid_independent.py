@@ -1,9 +1,12 @@
-"""Independent regression and invariant checks for the pure-Python hypoid model.
+"""Reference, invariant, and implementation-audit checks for hypoid geometry.
 
 These checks intentionally do not import helpers from ``tests.test_hypoid`` and
 do not use the solver's private trial function.  The fixed anchor assertions
-are published Method 1 values; the remaining checks re-derive cone, offset,
-curvature, backlash, and placement equations from the returned geometry.
+are published Method 1 values.  The contact, placement, trace, hand, and
+offset tests are independent physical invariants.  The tests whose names say
+``recomputed``, ``formula``, or ``equation`` deliberately audit implementation
+equations from public fields; they are not independent evidence of those same
+equations.
 
 The mesh probe at the end validates pitch-surface contact and tooth-phase
 advance only.  It is not a claim that the Tredgold sections are a generated
@@ -96,7 +99,7 @@ def _finite_positive(*values: float) -> bool:
     return all(math.isfinite(value) and value > 0.0 for value in values)
 
 
-def _independent_limit_radius(geo) -> float:
+def _recomputed_limit_radius_from_public_fields(geo) -> float:
     """ISO Method 1 curvature equation evaluated from public result fields."""
     pinion, wheel, method = geo.pinion, geo.gear, geo.method1
     beta1 = abs(pinion.mean_spiral_angle)
@@ -265,7 +268,7 @@ def test_published_anchor_depth_face_and_generated_flank_values_are_fixed():
     )
 
 
-def test_published_anchor_has_independent_member_face_boundaries():
+def test_published_anchor_has_fixed_and_derived_member_face_boundaries():
     geo = compute_set(ANCHOR)
     method = geo.method1
     zeta = abs(method.pinion_offset_angle_pitch)
@@ -304,14 +307,22 @@ def test_published_anchor_has_independent_member_face_boundaries():
     assert method.pinion_boundary_wheel_inner_cone_distance == pytest.approx(
         expected_ri21, abs=1e-12
     )
-    assert geo.pinion.tooth_face_width == pytest.approx(31.910, abs=0.002)
-    assert geo.gear.tooth_face_width == pytest.approx(30.000, abs=1e-12)
-    assert geo.pinion.tooth_face_width != pytest.approx(geo.gear.tooth_face_width)
+    assert geo.pinion.face_width == pytest.approx(30.470, abs=0.002)
+    assert geo.pinion.face_width_along_pitch_cone == pytest.approx(31.910, abs=0.002)
+    assert geo.gear.face_width == pytest.approx(30.000, abs=1e-12)
+    assert geo.gear.face_width_along_pitch_cone == pytest.approx(30.000, abs=1e-12)
+    assert geo.pinion.tooth_face_width == pytest.approx(
+        geo.pinion.face_width_along_pitch_cone, abs=1e-12
+    )
+    assert geo.pinion.face_width != pytest.approx(
+        geo.pinion.face_width_along_pitch_cone
+    )
 
 
 @pytest.mark.parametrize("spec", OTHER_DESIGNS)
 def test_two_non_anchor_designs_close_without_anchor_regression_values(spec):
-    geo = compute_set(_params(spec))
+    params = _params(spec)
+    geo = compute_set(params)
 
     assert geo.method1.iterations >= 1
     assert geo.method1.limit_radius_of_curvature == pytest.approx(
@@ -324,6 +335,17 @@ def test_two_non_anchor_designs_close_without_anchor_regression_values(spec):
     assert geo.gear.pitch_angle > 0.0
     assert geo.pinion.tooth_face_inner_cone_distance < geo.pinion.tooth_face_outer_cone_distance
     assert geo.gear.tooth_face_inner_cone_distance < geo.gear.tooth_face_outer_cone_distance
+    assert geo.pinion.face_width == pytest.approx(
+        geo.method1.pinion_face_width, abs=1e-12
+    )
+    for member in (geo.pinion, geo.gear):
+        assert member.face_width_along_pitch_cone == pytest.approx(
+            member.outer_face_width + member.inner_face_width, abs=1e-12
+        )
+    if abs(params.offset) > 1e-12:
+        assert geo.pinion.face_width != pytest.approx(
+            geo.pinion.face_width_along_pitch_cone
+        )
 
 
 def test_zero_offset_reduces_to_the_independent_intersecting_bevel_limit():
@@ -347,7 +369,10 @@ def test_zero_offset_reduces_to_the_independent_intersecting_bevel_limit():
     )
     assert geo.pitch_plane_offset == 0.0
     assert geo.method1.limit_radius_of_curvature is None
-    assert geo.pinion.tooth_face_width == pytest.approx(geo.gear.tooth_face_width)
+    assert geo.pinion.face_width == pytest.approx(geo.gear.face_width)
+    assert geo.pinion.face_width_along_pitch_cone == pytest.approx(
+        geo.gear.face_width_along_pitch_cone
+    )
 
 
 def test_positive_and_negative_offsets_have_signed_only_changes():
@@ -430,10 +455,10 @@ def test_right_and_left_hand_geometry_is_a_mirror_with_same_magnitudes():
 
 
 @pytest.mark.parametrize("cutter_radius", [30.0, 60.0])
-def test_cutter_radius_is_in_the_independent_method1_curvature_closure(cutter_radius):
+def test_cutter_radius_is_in_the_recomputed_method1_curvature_closure(cutter_radius):
     params = _params(DESIGN_A, cutter_radius=cutter_radius)
     geo = compute_set(params)
-    expected = _independent_limit_radius(geo)
+    expected = _recomputed_limit_radius_from_public_fields(geo)
 
     assert expected == pytest.approx(cutter_radius, abs=1e-8)
     assert geo.method1.limit_radius_of_curvature == pytest.approx(expected, abs=1e-8)
