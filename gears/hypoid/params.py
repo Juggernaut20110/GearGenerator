@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from ..params_io import JsonParams
 
 
+# CAD-only convention for the approximate Tredgold section.  This is not the
+# cutter-head radius and cannot represent a cutter blade edge without the
+# missing machine/cutter data.
+HYPOID_DEFAULT_ROOT_FILLET_FACTOR = 0.1
+
+
 @dataclass(frozen=True)
 class HypoidSetParams(JsonParams):
     """Inputs for one external hypoid pair.
@@ -45,6 +51,10 @@ class HypoidSetParams(JsonParams):
     # backlash allowance j_et2, measured at the wheel outer pitch cone.
     backlash: float = 0.0
     min_root_thickness: float = 0.5
+    # Approximate circular tooth-root fillet in the developed Tredgold
+    # section, mm.  None preserves the historical module-based default while
+    # making it independent of structural blank backing thickness.
+    root_fillet_radius: float | None = None
 
     # ISO Method 1 data-type-I factors.  These are intentionally editable in
     # JSON/API use but are not put in the first GUI pass.
@@ -85,6 +95,19 @@ class HypoidSetParams(JsonParams):
     def outer_transverse_backlash(self) -> float:
         """ISO ``j_et2``; the convention of the public ``backlash`` input."""
         return self.backlash
+
+    @property
+    def effective_root_fillet_radius(self) -> float:
+        """Approximate Tredgold root fillet radius used by section building.
+
+        This is not a cutter blade-edge radius.  A true hypoid root fillet
+        requires cutter blade and machine geometry, which this model does not
+        contain.  ``None`` selects the documented CAD-only default of 0.1
+        times the input outer transverse module.
+        """
+        if self.root_fillet_radius is None:
+            return HYPOID_DEFAULT_ROOT_FILLET_FACTOR * self.module
+        return self.root_fillet_radius
 
     @property
     def ratio(self) -> float:

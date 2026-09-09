@@ -187,6 +187,7 @@ HYPOID_FIELDS: tuple[Field, ...] = (
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
     Field("min_root_thickness", "Min root thickness", float, "mm"),
+    Field("root_fillet_radius", "Approx. tooth-root fillet radius", float, "mm", optional=True),
 )
 
 PLANETARY_FIELDS: tuple[Field, ...] = (
@@ -225,7 +226,7 @@ def _ordered_fields() -> tuple[Field, ...]:
         "pressure_angle", "shaft_angle", "trace_kind", "offset", "spiral_angle",
         "helix_angle", "hand", "cutter_radius", "backlash",
         "face_width", "bore", "hub_thickness", "rim_thickness",
-        "min_root_thickness",
+        "min_root_thickness", "root_fillet_radius",
     )
     return tuple(seen[name] for name in order)
 

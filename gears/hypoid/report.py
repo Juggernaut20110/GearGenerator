@@ -17,12 +17,16 @@ from .validate import validate
 
 FLAGS = (
     "alpha", "sigma", "offset", "spiral", "cutter_radius", "face_width",
-    "bore", "hub", "min_root", "backlash", "member", "end",
+    "bore", "hub", "min_root", "root_fillet_radius", "backlash", "member", "end",
 )
 
 
 def add_arguments(ap) -> None:
     ap.add_argument("--offset", type=float, default=0.0, help="signed hypoid offset, mm")
+    ap.add_argument(
+        "--root-fillet-radius", type=float, default=None,
+        help="approximate Tredgold tooth-root fillet radius, mm (default: 0.1 module)",
+    )
 
 
 def params_from_args(args) -> HypoidSetParams:
@@ -32,7 +36,9 @@ def params_from_args(args) -> HypoidSetParams:
         "hand": args.hand, "backlash": args.backlash,
     }
     for source, target in (("cutter_radius", "cutter_radius"), ("face_width", "face_width"),
-                           ("bore", "bore"), ("hub", "hub_thickness"), ("min_root", "min_root_thickness")):
+                           ("bore", "bore"), ("hub", "hub_thickness"),
+                           ("min_root", "min_root_thickness"),
+                           ("root_fillet_radius", "root_fillet_radius")):
         value = getattr(args, source, None)
         if value is not None:
             overrides[target] = value
@@ -51,6 +57,7 @@ def print_report(geo) -> None:
     print(_row("hypoid offset", f(p.offset), "", "mm"))
     print(_row("pinion spiral angle", f(p.spiral_angle), "", "deg"))
     print(_row("cutter radius", optional(p.cutter_radius), "", "mm"))
+    print(_row("approximate Tredgold root fillet radius", optional(p.root_fillet_radius), "", "mm"))
     print(_row("input wheel facewidth b2", f(p.face_width), "", "mm"))
     print(_row("outer transverse backlash (j_et2)", f(geo.outer_transverse_backlash), "", "mm"))
     print(_row("backlash convention", "outer transverse at wheel outer cone"))

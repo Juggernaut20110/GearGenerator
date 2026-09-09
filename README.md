@@ -515,6 +515,19 @@ minus the derived mean-normal backlash. Each is then converted by its own
 spiral angle for the transverse Tredgold section. Consequently zero backlash
 closes at the pitch point instead of leaving a spiral-angle-sized visible gap.
 
+`min_root_thickness` is only the structural backing/root-rim dimension of the
+blank. The approximate Tredgold tooth-space builder has a separate
+`root_fillet_radius` input in millimetres. If it is omitted, the CAD-only
+default is `0.1 * module`; the radius is fitted independently to both drive and
+coast flanks. An explicitly supplied oversized value is rejected; the
+module-based default warns and leaves an affected construction section sharp
+when the independent flank geometry has no room for a circular blend. It is
+not the cutter-head
+`cutter_radius`, nor a cutter blade-edge radius. A true hypoid root fillet
+requires cutter blade and machine geometry that this implementation does not
+model, so this circular transition must not be interpreted as a generated
+cutter envelope.
+
 The reported **face overlap ratio estimate** is not a calculated operating
 contact ratio. It is the wheel-side ISO 23509 Annex B.7 spiral-bevel selection
 relationship carried into the Method 1 hypoid dimensions:

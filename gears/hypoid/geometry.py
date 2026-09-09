@@ -361,6 +361,8 @@ class HypoidSection:
     coast_transverse_pressure_angle: float
     drive_base_radius: float
     coast_base_radius: float
+    root_fillet_radius: float
+    filleted: bool
     drive_flank: list[Point2]
     coast_flank: list[Point2]
     segments: dict[str, list[Point2]]
@@ -1984,9 +1986,18 @@ def _reflect_flank(points: list[Point2]) -> list[Point2]:
 
 
 def _hypoid_root_fillet(
-    flank: list[Point2], r_root: float, rho: float, *, negative: bool
+    flank: list[Point2], r_root: float, rho: float, *, negative: bool,
+    strict: bool = False,
 ) -> tuple[list[Point2], list[Point2]]:
-    """Fit the shared circular root fillet without sharing a flank curve."""
+    """Fit one independent approximate circular root fillet.
+
+    A positive radius is a requested geometric feature, not a best-effort
+    hint. Refusing a radius that cannot meet this particular flank prevents
+    one side of an independent drive/coast section from silently becoming a
+    sharp corner.
+    """
+    if not math.isfinite(rho) or rho < 0.0:
+        raise ValueError("hypoid root fillet radius must be finite and non-negative")
     if not negative:
         result = involute.root_fillet(flank, r_root, rho)
     else:
@@ -1995,6 +2006,12 @@ def _hypoid_root_fillet(
         # only this independently constructed coast/drive curve for the fit;
         # the resulting geometry is reflected back immediately.
         result = involute.root_fillet(_reflect_flank(flank), r_root, rho)
+    if result is None and rho > 0.0 and strict:
+        side = "negative" if negative else "positive"
+        raise ValueError(
+            f"hypoid root fillet radius {rho:.6g} mm does not fit the "
+            f"{side} tooth-space flank"
+        )
     if result is None:
         return flank, []
     trimmed, arc = result
@@ -2011,6 +2028,7 @@ def hypoid_tooth_space_loop(
     fillet_rho: float,
     *,
     split_cap: bool = False,
+    strict_fillet: bool = False,
 ) -> tuple[
     dict[str, list[Point2]], list[Point2], bool, list[Point2], list[Point2]
 ]:
@@ -2025,6 +2043,8 @@ def hypoid_tooth_space_loop(
         raise ValueError("hypoid flank curves need at least two points")
     if r_root <= 0.0 or r_cap <= 0.0 or r_cap <= r_root:
         raise ValueError("hypoid tooth-space root and cap radii are invalid")
+    if not math.isfinite(fillet_rho) or fillet_rho < 0.0:
+        raise ValueError("hypoid root fillet radius must be finite and non-negative")
     points = [*left_flank, *right_flank]
     if any(
         not math.isfinite(value)
@@ -2034,10 +2054,10 @@ def hypoid_tooth_space_loop(
         raise ValueError("hypoid flank curve contains a non-finite point")
 
     left_flank, left_arc = _hypoid_root_fillet(
-        left_flank, r_root, fillet_rho, negative=True
+        left_flank, r_root, fillet_rho, negative=True, strict=strict_fillet
     )
     right_flank, right_arc = _hypoid_root_fillet(
-        right_flank, r_root, fillet_rho, negative=False
+        right_flank, r_root, fillet_rho, negative=False, strict=strict_fillet
     )
     left_root = math.atan2(
         (left_arc[0] if left_arc else left_flank[0])[1],
@@ -2097,7 +2117,7 @@ def hypoid_tooth_space_loop(
     return (
         segments,
         loop,
-        bool(left_arc or right_arc),
+        bool(left_arc and right_arc),
         left_flank,
         right_flank,
     )
@@ -2262,8 +2282,9 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
         positive_flank,
         root,
         cap,
-        max(0.0, geo.params.min_root_thickness * 0.4),
+        geo.params.effective_root_fillet_radius,
         split_cap=split_cap,
+        strict_fillet=geo.params.root_fillet_radius is not None,
     )
     drive_flank, coast_flank = (
         (right_flank, left_flank)
@@ -2291,6 +2312,8 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
         ),
         drive_base_radius=positive_base if positive_drive else negative_base,
         coast_base_radius=negative_base if positive_drive else positive_base,
+        root_fillet_radius=geo.params.effective_root_fillet_radius,
+        filleted=bool(segments["fillet_neg"] and segments["fillet_pos"]),
         drive_flank=drive_flank, coast_flank=coast_flank,
         segments=segments, loop_2d=loop,
     )

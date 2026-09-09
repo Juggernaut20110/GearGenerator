@@ -926,6 +926,62 @@ def test_hypoid_hand_mirrors_the_drive_and_coast_flanks():
             assert left_point[1] == pytest.approx(-right_point[1], abs=1e-12)
 
 
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_root_fillet_is_independent_of_structural_blank_backing(hand):
+    thin = compute_set(
+        replace(ANCHOR, hand=hand, min_root_thickness=0.2)
+    )
+    thick = compute_set(
+        replace(ANCHOR, hand=hand, min_root_thickness=4.0)
+    )
+
+    for name in ("pinion", "gear"):
+        assert blank_outline(thin, name) != blank_outline(thick, name)
+        a = tooth_space_section(thin, name)
+        b = tooth_space_section(thick, name)
+        assert a.root_fillet_radius == pytest.approx(
+            thin.params.effective_root_fillet_radius, abs=1e-12
+        )
+        assert a.loop_2d == b.loop_2d
+        assert a.segments == b.segments
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_explicit_root_fillet_changes_only_the_tredgold_root_transition(hand):
+    small = compute_set(
+        replace(ANCHOR, hand=hand, root_fillet_radius=0.05 * ANCHOR.module)
+    )
+    large = compute_set(
+        replace(ANCHOR, hand=hand, root_fillet_radius=0.20 * ANCHOR.module)
+    )
+
+    # The Method 1 macro solution is independent of the CAD-only root blend.
+    assert small.pinion.pitch_angle == pytest.approx(large.pinion.pitch_angle, abs=1e-12)
+    assert small.gear.pitch_angle == pytest.approx(large.gear.pitch_angle, abs=1e-12)
+    assert small.pinion.cone_distance == pytest.approx(large.pinion.cone_distance, abs=1e-12)
+    assert small.gear.cone_distance == pytest.approx(large.gear.cone_distance, abs=1e-12)
+    assert small.method1 == large.method1
+
+    for name in ("pinion", "gear"):
+        a = tooth_space_section(small, name)
+        b = tooth_space_section(large, name)
+        assert a.filleted and b.filleted
+        assert a.root_fillet_radius < b.root_fillet_radius
+        assert a.segments["fillet_neg"] != b.segments["fillet_neg"]
+        assert a.segments["fillet_pos"] != b.segments["fillet_pos"]
+
+
+def test_excessive_explicit_root_fillet_is_rejected():
+    result = validate(
+        replace(ANCHOR, root_fillet_radius=5.0 * ANCHOR.module)
+    )
+    assert not result.ok
+    assert any(
+        "root fillet" in issue.message.lower()
+        for issue in result.errors
+    )
+
+
 def test_independent_hypoid_flanks_keep_root_and_top_land_constraints():
     geo = compute_set(ANCHOR)
     section = tooth_space_section(geo, "gear", split_cap=True)

@@ -37,6 +37,13 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         result.error("bore", "cannot be negative")
     if p.hub_thickness < 0 or p.min_root_thickness < 0:
         result.error("hub_thickness", "backing dimensions cannot be negative")
+    if p.root_fillet_radius is not None and (
+        not math.isfinite(p.root_fillet_radius) or p.root_fillet_radius < 0.0
+    ):
+        result.error(
+            "root_fillet_radius",
+            "must be finite and non-negative when specified",
+        )
     if not math.isfinite(p.backlash) or p.backlash < 0:
         result.error("backlash", "must be finite and non-negative")
     if not -0.95 < p.thickness_factor < 0.95:
@@ -87,12 +94,26 @@ def validate(p: HypoidSetParams) -> ValidationResult:
                 f"{member.name} mean normal tooth thickness is not positive",
             )
         try:
-            tooth_space_section(geo, member.name)
+            sections = [
+                tooth_space_section(geo, member.name, distance)
+                for distance in (
+                    member.tooth_face_inner_cone_distance,
+                    member.cone_distance,
+                    member.tooth_face_outer_cone_distance,
+                )
+            ]
         except ValueError as exc:
             result.error(
                 member.name,
                 "Tredgold tooth-space approximation failed: " + str(exc),
             )
+        else:
+            if any(not section.filleted for section in sections):
+                result.warn(
+                    member.name,
+                    "the requested approximate root fillet does not fit every "
+                    "face section; the affected transition remains sharp",
+                )
 
     if p.cutter_radius is not None:
         for member in (geo.pinion, geo.gear):
