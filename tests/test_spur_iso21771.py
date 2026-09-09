@@ -1,0 +1,769 @@
+"""Independent equation checks for the ISO 21771 spur implementation.
+
+The expected values in this module are deliberately formed from equations
+written here.  The production geometry is used only for the values being
+checked, never for expected-value calculation.
+"""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from gears.spur import mesh
+from gears.spur.geometry import compute_set, tooth_space_section
+from gears.spur.params import SpurSetParams
+
+
+def _inv(alpha: float) -> float:
+    """The involute function, written locally for independent expectations."""
+    return math.tan(alpha) - alpha
+
+
+def _inverse_inv(value: float) -> float:
+    """Invert ``tan(alpha) - alpha`` by an independent bounded bisection."""
+    if value < -1e-14:
+        raise ValueError("expected involute is outside the physical domain")
+    if abs(value) <= 1e-14:
+        return 0.0
+    lo = 0.0
+    hi = math.nextafter(math.pi / 2.0, 0.0)
+    for _ in range(120):
+        mid = (lo + hi) / 2.0
+        if _inv(mid) < value:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _expected_pair(
+    module: float,
+    z1: int,
+    z2: int,
+    alpha_deg: float,
+    beta_deg: float,
+    x1: float,
+    x2: float,
+    backlash: float = 0.0,
+    internal: bool = False,
+    face_width: float = 20.0,
+):
+    """Return independent reference/working values for one gear pair."""
+    alpha_n = math.radians(alpha_deg)
+    beta = math.radians(beta_deg)
+    cos_beta = math.cos(beta)
+    m_t = module / cos_beta
+    alpha_t = math.atan2(math.tan(alpha_n), cos_beta)
+    q = z2 - z1 if internal else z1 + z2
+    combination = x2 - x1 if internal else x1 + x2
+    a_ref = m_t * q / 2.0
+
+    target = _inv(alpha_t) + 2.0 * combination * math.tan(alpha_n) / q
+    alpha_w = alpha_t if abs(combination) <= 1e-15 else _inverse_inv(target)
+    a_work = a_ref * math.cos(alpha_t) / math.cos(alpha_w)
+
+    members = []
+    for z, x, ring in ((z1, x1, False), (z2, x2, internal)):
+        r_ref = m_t * z / 2.0
+        r_base = r_ref * math.cos(alpha_t)
+        s_n_geometric = module * (
+            math.pi / 2.0 + 2.0 * x * math.tan(alpha_n)
+        )
+        s_t_geometric = s_n_geometric / cos_beta
+        s_t_actual = s_t_geometric - backlash / 2.0
+        s_n_actual = s_t_actual * cos_beta
+        if ring:
+            addendum = module * (1.0 - x)
+            dedendum = module * (1.25 + x)
+            r_tip = r_ref - addendum
+            r_root = r_ref + dedendum
+            space_width = math.pi * m_t - s_t_actual
+            psi0 = space_width / (2.0 * r_ref) + _inv(alpha_t)
+        else:
+            addendum = module * (1.0 + x)
+            dedendum = module * (1.25 - x)
+            r_tip = r_ref + addendum
+            r_root = r_ref - dedendum
+            psi0 = s_t_actual / (2.0 * r_ref) + _inv(alpha_t)
+
+        r_work = r_base / math.cos(alpha_w)
+        alpha_at_work = _inv(alpha_w)
+        if ring:
+            working_tooth = 2.0 * r_work * (
+                math.pi / z - (psi0 - alpha_at_work)
+            )
+        else:
+            working_tooth = 2.0 * r_work * (psi0 - alpha_at_work)
+        members.append(
+            {
+                "reference_r": r_ref,
+                "base_r": r_base,
+                "working_r": r_work,
+                "tip_r": r_tip,
+                "root_r": r_root,
+                "s_n_geometric": s_n_geometric,
+                "s_t_geometric": s_t_geometric,
+                "s_n_actual": s_n_actual,
+                "s_t_actual": s_t_actual,
+                "psi0": psi0,
+                "working_tooth": working_tooth,
+            }
+        )
+
+    branches = [
+        math.sqrt(max(0.0, item["tip_r"] ** 2 - item["base_r"] ** 2))
+        for item in members
+    ]
+    action = (
+        branches[0] - branches[1] + a_work * math.sin(alpha_w)
+        if internal
+        else branches[0] + branches[1] - a_work * math.sin(alpha_w)
+    )
+    epsilon_alpha = max(
+        0.0,
+        action / (math.pi * m_t * math.cos(alpha_t)),
+    )
+    epsilon_beta = (
+        face_width * abs(math.sin(beta)) / (math.pi * module)
+        if abs(beta) > 1e-15
+        else 0.0
+    )
+    return {
+        "m_t": m_t,
+        "alpha_t": alpha_t,
+        "a_ref": a_ref,
+        "a_work": a_work,
+        "alpha_w": alpha_w,
+        "epsilon_alpha": epsilon_alpha,
+        "epsilon_beta": epsilon_beta,
+        "epsilon_gamma": epsilon_alpha + epsilon_beta,
+        "members": members,
+    }
+
+
+def _assert_pair_matches_expected(geo, expected, internal: bool) -> None:
+    """Compare all pair/member quantities represented by the model."""
+    assert geo.transverse_module == pytest.approx(expected["m_t"], abs=1e-11)
+    assert geo.reference_pressure_angle == pytest.approx(
+        expected["alpha_t"], abs=1e-11
+    )
+    assert geo.reference_centre_distance == pytest.approx(
+        expected["a_ref"], abs=1e-11
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        expected["a_work"], abs=1e-11
+    )
+    assert geo.working_pressure_angle == pytest.approx(
+        expected["alpha_w"], abs=1e-11
+    )
+    assert geo.transverse_contact_ratio == pytest.approx(
+        expected["epsilon_alpha"], abs=1e-11
+    )
+    assert geo.overlap_ratio == pytest.approx(expected["epsilon_beta"], abs=1e-11)
+    assert geo.total_contact_ratio == pytest.approx(
+        expected["epsilon_gamma"], abs=1e-11
+    )
+
+    for actual, reference in zip(
+        (geo.pinion, geo.gear), expected["members"]
+    ):
+        assert actual.reference_d == pytest.approx(
+            2.0 * reference["reference_r"], abs=1e-11
+        )
+        assert actual.base_d == pytest.approx(
+            2.0 * reference["base_r"], abs=1e-11
+        )
+        assert actual.working_d == pytest.approx(
+            2.0 * reference["working_r"], abs=1e-11
+        )
+        assert actual.tip_d == pytest.approx(
+            2.0 * reference["tip_r"], abs=1e-11
+        )
+        assert actual.root_d == pytest.approx(
+            2.0 * reference["root_r"], abs=1e-11
+        )
+        assert actual.geometric_tooth_thickness == pytest.approx(
+            reference["s_t_geometric"], abs=1e-11
+        )
+        assert actual.reference_tooth_thickness == pytest.approx(
+            reference["s_t_actual"], abs=1e-11
+        )
+        assert actual.normal_geometric_tooth_thickness == pytest.approx(
+            reference["s_n_geometric"], abs=1e-11
+        )
+        assert actual.normal_tooth_thickness == pytest.approx(
+            reference["s_n_actual"], abs=1e-11
+        )
+        assert actual.psi0 == pytest.approx(reference["psi0"], abs=1e-11)
+
+        # ``working tooth thickness`` is an implied quantity, not a stored
+        # production field. Derive it from the reported involute phase and
+        # working radius to verify that the actual profile has that thickness.
+        inv_at_work = _inv(expected["alpha_w"])
+        if actual.internal:
+            actual_working_tooth = 2.0 * actual.working_r * (
+                actual.half_pitch - (actual.psi0 - inv_at_work)
+            )
+        else:
+            actual_working_tooth = 2.0 * actual.working_r * (
+                actual.psi0 - inv_at_work
+            )
+        assert actual_working_tooth == pytest.approx(
+            reference["working_tooth"], abs=1e-10
+        )
+
+
+EXTERNAL_STRAIGHT_CASES = (
+    ("standard", 0.0, 0.0),
+    ("positive_pinion", 0.3, 0.0),
+    ("negative_pinion", -0.3, 0.0),
+    ("zero_total_unequal", 0.5, -0.5),
+    ("positive_total", 0.3, 0.2),
+)
+
+
+@pytest.mark.parametrize("case,x1,x2", EXTERNAL_STRAIGHT_CASES)
+def test_external_straight_matrix_matches_independent_iso_equations(
+    case, x1, x2
+):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        17,
+        43,
+        face_width=20.0,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(2.0, 17, 43, 20.0, 0.0, x1, x2)
+    _assert_pair_matches_expected(geo, expected, internal=False)
+
+
+@pytest.mark.parametrize("beta", [15.0, 30.0])
+@pytest.mark.parametrize("x1,x2", [(0.3, -0.1), (0.4, 0.2)])
+def test_external_helical_matrix_matches_independent_iso_equations(beta, x1, x2):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        17,
+        43,
+        face_width=20.0,
+        helix_angle=beta,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(2.0, 17, 43, 20.0, beta, x1, x2)
+    _assert_pair_matches_expected(geo, expected, internal=False)
+    assert geo.pinion.beta == pytest.approx(math.radians(beta), abs=1e-12)
+    assert geo.gear.beta == pytest.approx(-math.radians(beta), abs=1e-12)
+
+
+INTERNAL_STRAIGHT_CASES = (
+    ("standard", 0.0, 0.0),
+    ("pinion_shift", 0.3, 0.0),
+    ("zero_total_unequal", 0.3, -0.3),
+    ("positive_total", 0.0, 0.3),
+)
+
+
+@pytest.mark.parametrize("case,x1,x2", INTERNAL_STRAIGHT_CASES)
+def test_internal_straight_matrix_matches_independent_iso_equations(
+    case, x1, x2
+):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=True,
+        face_width=20.0,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(
+        2.0, 18, 60, 20.0, 0.0, x1, x2, internal=True
+    )
+    _assert_pair_matches_expected(geo, expected, internal=True)
+    assert geo.working_centre_distance == pytest.approx(
+        geo.gear.working_r - geo.pinion.working_r, abs=1e-11
+    )
+
+
+def test_internal_helical_profile_shift_matches_independent_equations():
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=True,
+        face_width=20.0,
+        helix_angle=15.0,
+        profile_shift_1=0.3,
+        profile_shift_2=0.1,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(
+        2.0, 18, 60, 20.0, 15.0, 0.3, 0.1, internal=True
+    )
+    _assert_pair_matches_expected(geo, expected, internal=True)
+    assert geo.pinion.beta == pytest.approx(geo.gear.beta, abs=1e-12)
+
+
+def test_profile_shift_sign_for_internal_pair_is_not_external_sum():
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=True,
+        face_width=20.0,
+        profile_shift_1=0.3,
+        profile_shift_2=0.0,
+    )
+    geo = compute_set(p)
+    correct = _expected_pair(2.0, 18, 60, 20.0, 0.0, 0.3, 0.0, internal=True)
+    wrong = _expected_pair(2.0, 18, 60, 20.0, 0.0, -0.3, 0.0, internal=True)
+
+    assert geo.working_centre_distance == pytest.approx(correct["a_work"], abs=1e-11)
+    assert geo.working_centre_distance != pytest.approx(wrong["a_work"], abs=1e-8)
+    assert geo.working_centre_distance < geo.reference_centre_distance
+
+
+def test_scaling_all_linear_inputs_preserves_angles_ratios_and_dimensionless_x():
+    small = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            face_width=20.0,
+            bore=8.0,
+            hub_thickness=5.0,
+            backlash=0.12,
+            helix_angle=15.0,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+    large = compute_set(
+        SpurSetParams.with_defaults(
+            4.0,
+            17,
+            43,
+            face_width=40.0,
+            bore=16.0,
+            hub_thickness=10.0,
+            backlash=0.24,
+            helix_angle=15.0,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+
+    for field in (
+        "transverse_module",
+        "circular_pitch",
+        "reference_centre_distance",
+        "working_centre_distance",
+        "axial_pitch",
+        "whole_depth",
+    ):
+        assert getattr(large, field) == pytest.approx(2.0 * getattr(small, field))
+
+    for small_member, large_member in zip(
+        (small.pinion, small.gear), (large.pinion, large.gear)
+    ):
+        for field in (
+            "reference_r",
+            "base_r",
+            "working_r",
+            "tip_r",
+            "root_r",
+            "geometric_tooth_thickness",
+            "reference_tooth_thickness",
+            "normal_geometric_tooth_thickness",
+            "normal_tooth_thickness",
+        ):
+            assert getattr(large_member, field) == pytest.approx(
+                2.0 * getattr(small_member, field)
+            )
+        assert large_member.profile_shift == small_member.profile_shift
+        assert large_member.psi0 == pytest.approx(small_member.psi0, abs=1e-12)
+        assert large_member.half_pitch == pytest.approx(
+            small_member.half_pitch, abs=1e-12
+        )
+        assert large_member.twist == pytest.approx(
+            small_member.twist, abs=1e-12
+        )
+
+    assert large.reference_pressure_angle == pytest.approx(
+        small.reference_pressure_angle, abs=1e-12
+    )
+    assert large.working_pressure_angle == pytest.approx(
+        small.working_pressure_angle, abs=1e-12
+    )
+    assert large.transverse_contact_ratio == pytest.approx(
+        small.transverse_contact_ratio, abs=1e-12
+    )
+    assert large.overlap_ratio == pytest.approx(small.overlap_ratio, abs=1e-12)
+    assert large.total_contact_ratio == pytest.approx(
+        small.total_contact_ratio, abs=1e-12
+    )
+
+
+def test_swapping_external_members_preserves_pair_geometry():
+    first = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            face_width=20.0,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+    swapped = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            43,
+            17,
+            face_width=20.0,
+            profile_shift_1=0.2,
+            profile_shift_2=0.4,
+        )
+    )
+
+    assert swapped.reference_centre_distance == pytest.approx(
+        first.reference_centre_distance, abs=1e-11
+    )
+    assert swapped.working_centre_distance == pytest.approx(
+        first.working_centre_distance, abs=1e-11
+    )
+    assert swapped.working_pressure_angle == pytest.approx(
+        first.working_pressure_angle, abs=1e-11
+    )
+    assert swapped.transverse_contact_ratio == pytest.approx(
+        first.transverse_contact_ratio, abs=1e-11
+    )
+    assert swapped.pinion.reference_d == pytest.approx(first.gear.reference_d)
+    assert swapped.gear.reference_d == pytest.approx(first.pinion.reference_d)
+
+
+def test_constant_external_shift_sum_preserves_pair_condition_but_redistributes_teeth():
+    first = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 17, 43, face_width=20.0, profile_shift_1=0.4, profile_shift_2=0.2
+        )
+    )
+    redistributed = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 17, 43, face_width=20.0, profile_shift_1=0.1, profile_shift_2=0.5
+        )
+    )
+
+    assert first.params.profile_shift_combination == pytest.approx(0.6)
+    assert redistributed.params.profile_shift_combination == pytest.approx(0.6)
+    assert redistributed.working_centre_distance == pytest.approx(
+        first.working_centre_distance, abs=1e-11
+    )
+    assert redistributed.working_pressure_angle == pytest.approx(
+        first.working_pressure_angle, abs=1e-11
+    )
+    assert sum(
+        member.geometric_tooth_thickness for member in (first.pinion, first.gear)
+    ) == pytest.approx(
+        sum(
+            member.geometric_tooth_thickness
+            for member in (redistributed.pinion, redistributed.gear)
+        ),
+        abs=1e-11,
+    )
+    assert redistributed.pinion.reference_tooth_thickness != pytest.approx(
+        first.pinion.reference_tooth_thickness, abs=1e-11
+    )
+
+
+def test_zero_shift_is_exactly_the_standard_reference_case():
+    default = compute_set(SpurSetParams.with_defaults(2.0, 17, 43))
+    explicit = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            profile_shift_1=0.0,
+            profile_shift_2=0.0,
+            working_centre_distance=None,
+            root_geometry="legacy",
+        )
+    )
+    assert explicit == default
+    assert explicit.pinion.reference_r == pytest.approx(17.0, abs=1e-12)
+    assert explicit.gear.reference_r == pytest.approx(43.0, abs=1e-12)
+    assert explicit.working_centre_distance == pytest.approx(60.0, abs=1e-12)
+
+
+def test_beta_tending_to_zero_converges_to_the_straight_equations():
+    straight = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            face_width=20.0,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+    nearly_straight = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            face_width=20.0,
+            helix_angle=1e-6,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+
+    for field in (
+        "transverse_module",
+        "reference_centre_distance",
+        "working_centre_distance",
+        "circular_pitch",
+        "whole_depth",
+        "transverse_contact_ratio",
+    ):
+        assert getattr(nearly_straight, field) == pytest.approx(
+            getattr(straight, field), abs=1e-10
+        )
+    assert nearly_straight.total_contact_ratio == pytest.approx(
+        straight.total_contact_ratio + nearly_straight.overlap_ratio,
+        abs=1e-10,
+    )
+    assert nearly_straight.reference_pressure_angle == pytest.approx(
+        straight.reference_pressure_angle, abs=1e-12
+    )
+    assert nearly_straight.working_pressure_angle == pytest.approx(
+        straight.working_pressure_angle, abs=1e-12
+    )
+    assert nearly_straight.overlap_ratio < 1e-7
+    for straight_member, nearly_member in zip(
+        (straight.pinion, straight.gear),
+        (nearly_straight.pinion, nearly_straight.gear),
+    ):
+        for field in (
+            "reference_r",
+            "base_r",
+            "working_r",
+            "tip_r",
+            "root_r",
+            "reference_tooth_thickness",
+            "psi0",
+        ):
+            assert getattr(nearly_member, field) == pytest.approx(
+                getattr(straight_member, field), abs=1e-10
+            )
+
+
+HOSTILE_CASES = (
+    ("near_undercut", 2.0, 17, 43, 20.0, 0.0, 0.0, 0.0),
+    ("large_positive_shift", 2.0, 17, 43, 20.0, 0.8, 0.0, 0.0),
+    ("large_negative_shift", 2.0, 17, 43, 20.0, -0.5, 0.0, 0.0),
+    ("low_pressure_angle", 2.0, 24, 48, 14.5, 0.2, -0.1, 0.0),
+    ("high_pressure_angle", 2.0, 24, 48, 25.0, 0.2, -0.1, 0.0),
+    ("small_helix", 2.0, 24, 48, 20.0, 0.2, -0.1, 0.1),
+    ("large_helix", 2.0, 24, 48, 20.0, 0.2, -0.1, 40.0),
+)
+
+
+@pytest.mark.parametrize(
+    "case,module,z1,z2,alpha,x1,x2,beta", HOSTILE_CASES
+)
+def test_numerically_hostile_but_valid_cases_remain_finite(
+    case, module, z1, z2, alpha, x1, x2, beta
+):
+    p = SpurSetParams.with_defaults(
+        module,
+        z1,
+        z2,
+        face_width=20.0,
+        pressure_angle=alpha,
+        helix_angle=beta,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(module, z1, z2, alpha, beta, x1, x2)
+    _assert_pair_matches_expected(geo, expected, internal=False)
+    assert 0.0 < geo.working_pressure_angle < math.pi / 2.0
+    assert geo.working_centre_distance > 0.0
+
+
+def _angle_difference(first: float, second: float) -> float:
+    return abs((first - second + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+@pytest.mark.parametrize(
+    "internal,x1,x2,backlash",
+    [
+        (False, 0.3, -0.1, 0.12),
+        (False, 0.4, 0.2, 0.12),
+        (True, 0.3, 0.0, 0.12),
+        (True, 0.3, -0.3, 0.12),
+    ],
+)
+def test_mesh_phase_and_backlash_are_consistent_at_working_distance(
+    internal, x1, x2, backlash
+):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=internal,
+        face_width=20.0,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+        backlash=backlash,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(
+        2.0,
+        18,
+        60,
+        20.0,
+        0.0,
+        x1,
+        x2,
+        backlash,
+        internal=internal,
+    )
+
+    signed_distance = -1.0 if internal else 1.0
+    assert mesh.gear_translation(geo) == pytest.approx(
+        (signed_distance * expected["a_work"], 0.0, 0.0), abs=1e-11
+    )
+
+    clock = mesh.clocking_for(geo)
+    tau = 2.0 * math.pi / geo.gear.z
+    target = 0.0 if internal else math.pi
+    centres = [clock + (k + 0.5) * tau for k in range(geo.gear.z)]
+    assert min(_angle_difference(value, target) for value in centres) < 1e-12
+
+    actual_tooth_thickness = []
+    for member in (geo.pinion, geo.gear):
+        angle = _inv(geo.reference_pressure_angle)
+        width = 2.0 * member.reference_r * (member.psi0 - angle)
+        if member.internal:
+            width = geo.circular_pitch - width
+        actual_tooth_thickness.append(width)
+
+    geometric_total = sum(
+        member.geometric_tooth_thickness for member in (geo.pinion, geo.gear)
+    )
+    actual_total = sum(actual_tooth_thickness)
+    assert geometric_total - actual_total == pytest.approx(backlash, abs=1e-11)
+    for member, width in zip((geo.pinion, geo.gear), actual_tooth_thickness):
+        assert member.geometric_tooth_thickness - width == pytest.approx(
+            backlash / 2.0, abs=1e-11
+        )
+
+
+@pytest.mark.parametrize(
+    "internal,beta,z1,z2,x1,x2,root_geometry",
+    [
+        (False, 0.0, 17, 43, 0.0, 0.0, "legacy"),
+        (False, 0.0, 12, 43, 0.0, 0.0, "rack_generated"),
+        (False, 15.0, 17, 43, 0.3, -0.1, "legacy"),
+        (True, 0.0, 18, 60, 0.3, 0.0, "legacy"),
+        (True, 15.0, 18, 60, 0.3, 0.1, "legacy"),
+    ],
+)
+def test_profile_segments_respect_the_independent_circles_and_involute_transition(
+    internal, beta, z1, z2, x1, x2, root_geometry
+):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        z1,
+        z2,
+        internal=internal,
+        face_width=20.0,
+        helix_angle=beta,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+        root_geometry=root_geometry,
+    )
+    geo = compute_set(p)
+
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        section = tooth_space_section(geo, name)
+
+        member_shift = x2 if name == "gear" else x1
+        reference_r = (
+            p.module / math.cos(math.radians(beta)) * member.z / 2.0
+        )
+        alpha_t = math.atan2(
+            math.tan(math.radians(p.pressure_angle)),
+            math.cos(math.radians(beta)),
+        )
+        expected_tip = (
+            reference_r - p.module * (1.0 - member_shift)
+            if member.internal
+            else reference_r + p.module * (1.0 + member_shift)
+        )
+        expected_root = (
+            reference_r + p.module * (1.25 + member_shift)
+            if member.internal
+            else reference_r - p.module * (1.25 - member_shift)
+        )
+        expected_base = reference_r * math.cos(alpha_t)
+        assert section.r_root == pytest.approx(member.root_r, abs=1e-11)
+        assert member.base_r == pytest.approx(expected_base, abs=1e-11)
+        assert member.tip_r == pytest.approx(expected_tip, abs=1e-11)
+        assert member.root_r == pytest.approx(expected_root, abs=1e-11)
+        assert section.r_tip == pytest.approx(expected_tip, abs=1e-11)
+        assert all(
+            math.hypot(x, y) == pytest.approx(section.r_root, abs=1e-8)
+            for x, y in section.segments["root"]
+        )
+        assert all(
+            math.hypot(x, y) == pytest.approx(section.r_cap, abs=1e-8)
+            for x, y in section.segments["cap"]
+        )
+
+        flank = section.segments["flank_pos"]
+        assert math.hypot(*flank[0]) == pytest.approx(section.r_tip, abs=1e-8)
+        # A circular legacy fillet can trim its first/last flank point to an
+        # interpolated tangent point. The remaining points are the sampled
+        # analytical involute and are the ones checked against the equation.
+        involute_points = (
+            section.segments["flank_pos"][:-1]
+            + section.segments["flank_neg"][1:]
+        )
+        for point in involute_points:
+            radius = math.hypot(*point)
+            if radius < member.base_r - 1e-8:
+                continue
+            roll_angle = math.acos(min(1.0, member.base_r / radius))
+            observed = abs(math.atan2(point[1], point[0]))
+            if member.internal:
+                expected = member.psi0 - _inv(roll_angle)
+            else:
+                expected = member.half_pitch - member.psi0 + _inv(roll_angle)
+            assert observed == pytest.approx(expected, abs=2e-8)
+
+        if member.internal:
+            assert section.r_cap < section.r_tip < section.r_root
+        else:
+            assert section.r_root < section.r_tip < section.r_cap
+
+        if root_geometry == "rack_generated" and not internal and beta == 0.0:
+            assert section.rack_generated
+            generated = (
+                section.segments["generated_root_pos"]
+                + section.segments["generated_root_neg"]
+            )
+            assert generated
+            assert all(
+                math.hypot(x, y) >= member.root_r - 1e-8
+                for x, y in generated
+            )
