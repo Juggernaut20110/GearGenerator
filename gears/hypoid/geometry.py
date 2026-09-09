@@ -497,43 +497,63 @@ class HypoidSetGeometry:
         return self.gear.face_width
 
     @property
-    def face_overlap_ratio_estimate(self) -> float:
-        """Wheel-side ISO/AGMA-style face-overlap estimate ``epsilon_beta``.
+    def spiral_bevel_face_overlap_estimate(self) -> float:
+        """ISO 23509 B.7/B.8 selection estimate applied to wheel geometry.
 
-        ISO 23509 Annex B.7 gives this relationship for spiral-bevel design
-        selection.  Method 1 is a hypoid calculation, so this is deliberately
-        reported as an estimate rather than an operating flank contact ratio.
-        The wheel quantities are kept together because the public Method 1
-        module and facewidth are wheel quantities::
+        ISO 23509:2016 Annex B.7.2 defines this relationship for selecting the
+        spiral angle of a spiral-bevel design.  Method 1 is a hypoid
+        calculation, so applying the relationship to its wheel dimensions is
+        an estimate, not an operating hypoid flank contact ratio.  With
+        ``q = b2 / Re2``, the standard equations are::
 
-            epsilon_beta = Re2 * b2 * tan(beta_m2)
-                            / (pi * Rm2 * m_et2)
+            K_z = q * (2 - q) / (2 * (1 - q))
+            epsilon_beta = Re2 / (pi * m_et2) * (
+                K_z * tan(beta_m2)
+                - K_z**3 / 3 * tan(beta_m2)**3
+            )
 
-        ``Re2`` and ``Rm2`` are the wheel outer and mean cone distances,
-        ``b2`` is the physical wheel pitch-cone span, ``beta_m2`` is the wheel
-        mean spiral angle, and ``m_et2`` is the wheel outer transverse module.
-        Taking the magnitude makes hand reversal a mirror operation only.
+        ``Re2`` is the wheel outer cone distance, ``b2`` is the wheel net
+        facewidth, ``m_et2`` is the wheel outer transverse module, and
+        ``beta_m2`` is the wheel mean spiral angle.  The magnitude makes hand
+        reversal a mirror operation only; it does not turn this estimate into
+        a generated-flank contact calculation.
         """
         re2 = self.gear.outer_cone_distance
-        rm2 = self.gear.cone_distance
         b2 = self.wheel_face_width
         m_et2 = self.wheel_outer_transverse_module
-        if min(re2, rm2, b2, m_et2) <= 0.0:
+        if min(re2, b2, m_et2) <= 0.0 or b2 >= re2:
             return 0.0
+
+        b_over_re = b2 / re2
+        k_z = b_over_re * (2.0 - b_over_re) / (2.0 * (1.0 - b_over_re))
+        tan_beta_m2 = math.tan(self.gear.mean_spiral_angle)
         return abs(
-            re2 * b2 * math.tan(self.gear.mean_spiral_angle)
-            / (math.pi * rm2 * m_et2)
+            re2 / (math.pi * m_et2)
+            * (
+                k_z * tan_beta_m2
+                - k_z**3 / 3.0 * tan_beta_m2**3
+            )
         )
 
     @property
-    def face_contact_ratio(self) -> float:
-        """Compatibility alias for :attr:`face_overlap_ratio_estimate`.
+    def face_overlap_ratio_estimate(self) -> float:
+        """Compatibility alias for :attr:`spiral_bevel_face_overlap_estimate`.
 
-        This name is retained for callers of earlier releases.  The Method 1
-        reports use the explicit ``face overlap ratio estimate`` label because
-        the Tredgold sections do not calculate a true operating contact ratio.
+        The retained name is an estimate for compatibility, not a claim that
+        the approximate Tredgold hypoid sections provide a true operating
+        contact ratio.
         """
-        return self.face_overlap_ratio_estimate
+        return self.spiral_bevel_face_overlap_estimate
+
+    @property
+    def face_contact_ratio(self) -> float:
+        """Compatibility alias for :attr:`spiral_bevel_face_overlap_estimate`.
+
+        This legacy name is retained for callers of earlier releases.  It must
+        not be interpreted as a true operating hypoid contact ratio: the
+        current Method 1 sections are an approximate Tredgold construction.
+        """
+        return self.spiral_bevel_face_overlap_estimate
 
     @property
     def circular_pitch(self) -> float:

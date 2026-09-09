@@ -1,10 +1,10 @@
 """Pure-Python hypoid acceptance and production-path tests.
 
 The fixed 13/42 values below are external/reference checks.  Tests that
-recompute ISO equations from returned fields are explicitly formula audits;
-the contact, placement, trace-differentiation, hand, and boundary tests are
-the independent physical invariants.  No test here treats the Tredgold loft
-as a true generated or conjugate hypoid flank.
+recompute the ISO B.7/B.8 equations from returned fields are explicitly
+formula audits; the contact, placement, trace-differentiation, hand, and
+boundary tests are the independent physical invariants.  No test here treats
+the Tredgold loft as a true generated or conjugate hypoid flank.
 """
 
 import math
@@ -183,15 +183,18 @@ def _assert_physical_section_topology(section, module):
     _assert_simple_loop(section.loop_2d, tolerance)
 
 
-def _wheel_face_overlap_ratio_formula(geo):
-    """Independent wheel-side evaluation of the documented estimate."""
+def _iso23509_b7_b8_wheel_formula(geo):
+    """Independently reproduce ISO 23509:2016 Annex B.7.2 B.7 and B.8."""
+    re2 = geo.gear.outer_cone_distance
+    b2 = geo.gear.face_width
+    m_et2 = geo.gear.outer_transverse_module
+    beta_m2 = geo.gear.mean_spiral_angle
+    b_over_re = b2 / re2
+    k_z = b_over_re * (2.0 - b_over_re) / (2.0 * (1.0 - b_over_re))
+    tan_beta_m2 = math.tan(beta_m2)
     return abs(
-        geo.gear.outer_cone_distance * geo.gear.face_width
-        * math.tan(geo.gear.mean_spiral_angle)
-        / (
-            math.pi * geo.gear.cone_distance
-            * geo.gear.outer_transverse_module
-        )
+        re2 / (math.pi * m_et2)
+        * (k_z * tan_beta_m2 - k_z**3 / 3.0 * tan_beta_m2**3)
     )
 
 
@@ -200,14 +203,16 @@ def _wheel_face_overlap_ratio_formula(geo):
     [ANCHOR, NON_ANCHOR_SECTION, NON_ANCHOR_FACE_RATIO],
     ids=["anchor", "17x43", "19x47"],
 )
-def test_face_overlap_ratio_uses_consistent_wheel_method1_quantities(params):
+def test_spiral_bevel_estimate_uses_independent_b7_b8_wheel_formula(params):
     geo = compute_set(params)
 
-    assert geo.face_overlap_ratio_estimate == pytest.approx(
-        _wheel_face_overlap_ratio_formula(geo), abs=1e-12
+    expected = _iso23509_b7_b8_wheel_formula(geo)
+    assert geo.spiral_bevel_face_overlap_estimate == pytest.approx(
+        expected, abs=1e-12
     )
+    assert geo.face_overlap_ratio_estimate == pytest.approx(expected, abs=1e-12)
     assert geo.face_contact_ratio == pytest.approx(
-        geo.face_overlap_ratio_estimate, abs=1e-12
+        expected, abs=1e-12
     )
     assert geo.wheel_outer_transverse_module == pytest.approx(params.module, abs=1e-12)
     assert geo.wheel_mean_transverse_module == pytest.approx(
@@ -215,26 +220,22 @@ def test_face_overlap_ratio_uses_consistent_wheel_method1_quantities(params):
         * geo.gear.cone_distance / geo.gear.outer_cone_distance,
         abs=1e-12,
     )
-    # The outer/mean-module form is equivalent to the mean-normal form only
-    # after using the *wheel* beta and converting tan(beta) to sin(beta).
-    assert geo.face_overlap_ratio_estimate == pytest.approx(
-        abs(
-            geo.wheel_face_width * math.sin(geo.gear.mean_spiral_angle)
-            / (math.pi * geo.mean_normal_module)
-        ),
-        abs=1e-12,
-    )
 
 
-def test_anchor_does_not_mix_pinion_spiral_with_wheel_overlap_quantities():
+def test_anchor_b7_b8_differs_from_the_previous_simplified_estimate():
     geo = compute_set(ANCHOR)
-    legacy_mixed = abs(
-        geo.wheel_face_width * math.tan(geo.pinion.mean_spiral_angle)
-        / (math.pi * geo.mean_normal_module)
+    previous_simplified = abs(
+        geo.gear.outer_cone_distance * geo.gear.face_width
+        * math.tan(geo.gear.mean_spiral_angle)
+        / (
+            math.pi * geo.gear.cone_distance
+            * geo.gear.outer_transverse_module
+        )
     )
-    assert legacy_mixed == pytest.approx(4.3109916911, abs=1e-9)
-    assert geo.face_overlap_ratio_estimate != pytest.approx(legacy_mixed)
-    assert geo.face_overlap_ratio_estimate == pytest.approx(2.2573621588, abs=1e-9)
+    exact = _iso23509_b7_b8_wheel_formula(geo)
+    assert geo.spiral_bevel_face_overlap_estimate == pytest.approx(exact, abs=1e-12)
+    assert exact != pytest.approx(previous_simplified, abs=1e-12)
+    assert exact > previous_simplified
 
 
 def test_zero_member_spiral_reduces_the_wheel_overlap_estimate_to_zero():
@@ -245,7 +246,9 @@ def test_zero_member_spiral_reduces_the_wheel_overlap_estimate_to_zero():
     geo = compute_set(params)
     assert geo.pinion.mean_spiral_angle == pytest.approx(0.0, abs=1e-12)
     assert geo.gear.mean_spiral_angle == pytest.approx(0.0, abs=1e-12)
+    assert geo.spiral_bevel_face_overlap_estimate == pytest.approx(0.0, abs=1e-12)
     assert geo.face_overlap_ratio_estimate == pytest.approx(0.0, abs=1e-12)
+    assert geo.face_contact_ratio == pytest.approx(0.0, abs=1e-12)
 
 
 def test_face_overlap_ratio_is_hand_invariant():
@@ -254,26 +257,68 @@ def test_face_overlap_ratio_is_hand_invariant():
     assert left.gear.mean_spiral_angle == pytest.approx(
         -right.gear.mean_spiral_angle, abs=1e-12
     )
-    assert left.face_overlap_ratio_estimate == pytest.approx(
-        right.face_overlap_ratio_estimate, abs=1e-12
+    assert left.spiral_bevel_face_overlap_estimate == pytest.approx(
+        right.spiral_bevel_face_overlap_estimate, abs=1e-12
     )
 
 
 def test_face_overlap_ratio_grows_with_facewidth_and_spiral_magnitude():
     base = HypoidSetParams.with_defaults(
         2.0, 17, 43, offset=0.0, face_width=8.0,
-        spiral_angle=0.0, cutter_radius=30.0,
+        spiral_angle=35.0, cutter_radius=30.0,
     )
     by_width = [
-        compute_set(replace(base, face_width=width)).face_overlap_ratio_estimate
+        compute_set(replace(base, face_width=width)).spiral_bevel_face_overlap_estimate
         for width in (4.0, 6.0, 8.0, 10.0, 12.0)
     ]
     by_spiral = [
-        compute_set(replace(base, spiral_angle=spiral)).face_overlap_ratio_estimate
+        compute_set(replace(base, spiral_angle=spiral)).spiral_bevel_face_overlap_estimate
         for spiral in (0.0, 10.0, 20.0, 30.0, 40.0, 50.0)
     ]
     assert by_width == sorted(by_width)
     assert by_spiral == sorted(by_spiral)
+
+
+@pytest.mark.parametrize("face_width", [4.0, 8.0, 16.0, 24.0])
+@pytest.mark.parametrize("spiral_angle", [0.0, 20.0, 50.0, 60.0])
+def test_b7_b8_is_checked_at_several_face_ratios_and_spiral_angles(
+    face_width, spiral_angle
+):
+    params = HypoidSetParams.with_defaults(
+        2.0, 17, 43, offset=0.0, face_width=face_width,
+        spiral_angle=spiral_angle, cutter_radius=30.0,
+    )
+    geo = compute_set(params)
+    b_over_re = geo.gear.face_width / geo.gear.outer_cone_distance
+    assert 0.0 < b_over_re < 1.0
+    assert geo.spiral_bevel_face_overlap_estimate == pytest.approx(
+        _iso23509_b7_b8_wheel_formula(geo), abs=1e-12
+    )
+
+
+def test_b7_b8_cubic_correction_matters_for_wide_high_spiral_design():
+    params = HypoidSetParams.with_defaults(
+        2.0, 17, 43, offset=0.0, face_width=24.0,
+        spiral_angle=60.0, cutter_radius=30.0,
+    )
+    geo = compute_set(params)
+    re2 = geo.gear.outer_cone_distance
+    b2 = geo.gear.face_width
+    m_et2 = geo.gear.outer_transverse_module
+    b_over_re = b2 / re2
+    k_z = b_over_re * (2.0 - b_over_re) / (2.0 * (1.0 - b_over_re))
+    tan_beta_m2 = abs(math.tan(geo.gear.mean_spiral_angle))
+    without_cubic = abs(
+        re2 / (math.pi * m_et2) * k_z * tan_beta_m2
+    )
+    previous_simplified = abs(
+        re2 * b2 * math.tan(geo.gear.mean_spiral_angle)
+        / (math.pi * geo.gear.cone_distance * m_et2)
+    )
+    exact = _iso23509_b7_b8_wheel_formula(geo)
+    assert geo.spiral_bevel_face_overlap_estimate == pytest.approx(exact, abs=1e-12)
+    assert abs(without_cubic - exact) > 0.5
+    assert abs(previous_simplified - exact) > 0.5
 
 
 @pytest.mark.parametrize(
@@ -1255,7 +1300,10 @@ def test_mesh_clocking_and_preview_are_available():
     for key, _ in preview.SCENE_LABELS:
         scene = preview.build_scene(geo, "pinion", key)
         assert scene.polylines
-    assert any(row.label == "hypoid offset" for row in preview.derived_rows(geo))
+    labels = {row.label for row in preview.derived_rows(geo)}
+    assert "hypoid offset" in labels
+    assert "spiral-bevel face overlap estimate epsilon_beta" in labels
+    assert "face overlap ratio estimate epsilon_beta" not in labels
     assert preview.csv_lines(geo, "pinion")[0].startswith("member,section")
 
 
@@ -1673,3 +1721,5 @@ def test_hypoid_is_selectable_from_the_cli(capsys):
     assert "mean normal backlash" in output
     assert "generated drive normal pressure angle" in output
     assert "generated coast normal pressure angle" in output
+    assert "spiral-bevel face overlap estimate epsilon_beta" in output
+    assert "face overlap ratio estimate epsilon_beta" not in output
