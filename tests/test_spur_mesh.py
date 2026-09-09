@@ -62,6 +62,19 @@ def test_the_gear_axis_lands_on_the_line_of_centres(geo):
     assert origin == pytest.approx((geo.centre_distance, 0.0, 0.0))
 
 
+def test_a_shifted_external_pair_is_placed_at_the_working_distance():
+    geo = compute_set(
+        SpurSetParams.with_defaults(2.0, 17, 43, profile_shift_1=0.2)
+    )
+    assert geo.working_centre_distance != geo.reference_centre_distance
+    assert mesh.gear_translation(geo) == pytest.approx(
+        (geo.working_centre_distance, 0.0, 0.0)
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        geo.pinion.working_r + geo.gear.working_r
+    )
+
+
 # --- clocking --------------------------------------------------------------
 
 

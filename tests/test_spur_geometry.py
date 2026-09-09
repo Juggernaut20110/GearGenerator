@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 import json
+import math
 
 import pytest
 
@@ -143,12 +143,202 @@ def test_profile_shift_and_basic_rack_coefficients_are_represented():
     assert inv(geo.working_pressure_angle) == pytest.approx(expected_inv, abs=1e-12)
     assert geo.pinion.profile_shift == p.profile_shift_1
     assert geo.gear.profile_shift == p.profile_shift_2
-    # The profile-shift data is available, while the tooth-space generator is
-    # intentionally still the legacy approximation in this foundation phase.
+    # The selected root mode is still represented by the legacy circular root
+    # approximation; the external straight involute itself is shifted.
     assert tooth_space_section(geo, "pinion").filleted
 
 
-def test_internal_profile_shift_combination_uses_ring_minus_pinion():
+def _reference_inv(angle: float) -> float:
+    """Independent copy of inv(alpha) for the shifted-pair fixtures."""
+    return math.tan(angle) - angle
+
+
+def _inverse_reference_inv(value: float) -> float:
+    """Independent bounded inverse used only to form expected test values."""
+    lo, hi = 0.0, math.nextafter(math.pi / 2.0, 0.0)
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        if _reference_inv(mid) < value:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _independent_shifted_values(module, teeth, shift, alpha, backlash):
+    """Return expected straight external values without production helpers."""
+    reference_r = module * teeth / 2.0
+    base_r = reference_r * math.cos(alpha)
+    geometric_thickness = module * (
+        math.pi / 2.0 + 2.0 * shift * math.tan(alpha)
+    )
+    reference_thickness = geometric_thickness - backlash / 2.0
+    tip_r = reference_r + module * (1.0 + shift)
+    root_r = reference_r - module * (1.25 - shift)
+    psi0 = reference_thickness / (2.0 * reference_r) + _reference_inv(alpha)
+    return {
+        "reference_r": reference_r,
+        "base_r": base_r,
+        "tip_r": tip_r,
+        "root_r": root_r,
+        "geometric_thickness": geometric_thickness,
+        "reference_thickness": reference_thickness,
+        "normal_geometric_thickness": geometric_thickness,
+        "normal_thickness": reference_thickness,
+        "psi0": psi0,
+    }
+
+
+SHIFT_CASES = (
+    ("zero", 0.0, 0.0),
+    ("positive_pinion", 0.2, 0.0),
+    ("negative_pinion", -0.2, 0.0),
+    ("balanced_individual", 0.5, -0.5),
+    ("positive_total", 0.2, 0.3),
+)
+
+
+@pytest.mark.parametrize("case,shift_1,shift_2", SHIFT_CASES)
+def test_external_straight_profile_shift_geometry_against_independent_equations(
+    case, shift_1, shift_2
+):
+    """The complete A-E fixture set is written out independently here."""
+    module = 2.0
+    z1, z2 = 17, 43
+    alpha = math.radians(20.0)
+    backlash = 0.0
+    p = SpurSetParams.with_defaults(
+        module,
+        z1,
+        z2,
+        profile_shift_1=shift_1,
+        profile_shift_2=shift_2,
+        backlash=backlash,
+    )
+    geo = compute_set(p)
+    q = z1 + z2
+    total_shift = shift_1 + shift_2
+    expected_working_inv = _reference_inv(alpha) + (
+        2.0 * total_shift * math.tan(alpha) / q
+    )
+    expected_working_angle = _inverse_reference_inv(expected_working_inv)
+    expected_reference_distance = module * q / 2.0
+    expected_working_distance = (
+        expected_reference_distance
+        * math.cos(alpha)
+        / math.cos(expected_working_angle)
+    )
+    expected_contact_denominator = math.pi * module * math.cos(alpha)
+
+    assert geo.reference_centre_distance == pytest.approx(
+        expected_reference_distance, abs=1e-12
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        expected_working_distance, abs=1e-12
+    )
+    assert geo.centre_distance == pytest.approx(expected_working_distance, abs=1e-12)
+    assert geo.working_pressure_angle == pytest.approx(
+        expected_working_angle, abs=1e-12
+    )
+    assert geo.centre_distance_modification == pytest.approx(
+        (expected_working_distance - expected_reference_distance) / module,
+        abs=1e-12,
+    )
+
+    expected_members = (
+        _independent_shifted_values(module, z1, shift_1, alpha, backlash),
+        _independent_shifted_values(module, z2, shift_2, alpha, backlash),
+    )
+    expected_action = 0.0
+    for member, expected in zip((geo.pinion, geo.gear), expected_members):
+        assert member.reference_d == pytest.approx(2.0 * expected["reference_r"])
+        assert member.base_d == pytest.approx(2.0 * expected["base_r"])
+        assert member.tip_d == pytest.approx(2.0 * expected["tip_r"])
+        assert member.root_d == pytest.approx(2.0 * expected["root_r"])
+        assert member.geometric_tooth_thickness == pytest.approx(
+            expected["geometric_thickness"], abs=1e-12
+        )
+        assert member.reference_tooth_thickness == pytest.approx(
+            expected["reference_thickness"], abs=1e-12
+        )
+        assert member.normal_geometric_tooth_thickness == pytest.approx(
+            expected["normal_geometric_thickness"], abs=1e-12
+        )
+        assert member.normal_tooth_thickness == pytest.approx(
+            expected["normal_thickness"], abs=1e-12
+        )
+        assert member.psi0 == pytest.approx(expected["psi0"], abs=1e-12)
+        assert member.working_r == pytest.approx(
+            expected["base_r"] / math.cos(expected_working_angle), abs=1e-12
+        )
+        expected_action += math.sqrt(
+            max(0.0, expected["tip_r"] ** 2 - expected["base_r"] ** 2)
+        )
+
+    expected_action -= expected_working_distance * math.sin(expected_working_angle)
+    expected_contact = expected_action / expected_contact_denominator
+    assert geo.transverse_contact_ratio == pytest.approx(expected_contact, abs=1e-12)
+
+
+def test_profile_shift_changes_actual_involute_space_orientation():
+    standard = compute_set(SpurSetParams.with_defaults(2.0, 17, 43))
+    shifted = compute_set(
+        SpurSetParams.with_defaults(2.0, 17, 43, profile_shift_1=0.2)
+    )
+    standard_section = tooth_space_section(standard, "pinion")
+    shifted_section = tooth_space_section(shifted, "pinion")
+
+    assert shifted.pinion.psi0 != pytest.approx(standard.pinion.psi0)
+    assert shifted_section.loop_2d != standard_section.loop_2d
+    # At the base circle the external tooth half-angle is psi0.  The space
+    # flank therefore starts at half_pitch - psi0, proving the changed psi0
+    # reaches the involute placement rather than stopping at the dimensions.
+    expected_space_angle = shifted.pinion.half_pitch - shifted.pinion.psi0
+    base_point = min(
+        shifted_section.segments["flank_neg"],
+        key=lambda point: abs(math.hypot(*point) - shifted.pinion.base_r),
+    )
+    assert math.atan2(-base_point[1], base_point[0]) == pytest.approx(
+        expected_space_angle, abs=1e-12
+    )
+
+
+def test_profile_shift_uses_module_and_normal_pressure_angle_exactly():
+    p = SpurSetParams.with_defaults(2.0, 17, 43, profile_shift_1=0.25)
+    geo = compute_set(p)
+    expected_delta = 2.0 * p.module * 0.25 * math.tan(math.radians(20.0))
+    assert geo.pinion.geometric_tooth_thickness - math.pi * p.module / 2.0 == pytest.approx(
+        expected_delta, abs=1e-12
+    )
+    assert geo.pinion.geometric_tooth_thickness != pytest.approx(
+        math.pi / 2.0 + 2.0 * 0.25 * math.tan(math.radians(20.0))
+    )
+
+
+def test_backlash_is_separate_from_shifted_geometric_tooth_thickness():
+    p = SpurSetParams.with_defaults(
+        2.0, 17, 43, profile_shift_1=0.2, backlash=0.12
+    )
+    geo = compute_set(p)
+    for member in (geo.pinion, geo.gear):
+        assert member.geometric_tooth_thickness - member.reference_tooth_thickness == pytest.approx(
+            0.12 / 2.0, abs=1e-12
+        )
+        assert member.normal_geometric_tooth_thickness - member.normal_tooth_thickness == pytest.approx(
+            0.12 / 2.0, abs=1e-12
+        )
+    assert sum(
+        member.reference_tooth_thickness for member in (geo.pinion, geo.gear)
+    ) == pytest.approx(
+        sum(
+            member.geometric_tooth_thickness
+            for member in (geo.pinion, geo.gear)
+        ) - p.backlash,
+        abs=1e-12,
+    )
+
+
+def test_internal_profile_shift_is_stored_but_not_yet_applied():
     p = SpurSetParams.with_defaults(
         2.0,
         18,
@@ -158,15 +348,11 @@ def test_internal_profile_shift_combination_uses_ring_minus_pinion():
         profile_shift_2=0.35,
     )
     geo = compute_set(p)
-    expected_inv = inv(p.alpha_t) + (
-        2.0 * (p.profile_shift_2 - p.profile_shift_1)
-        * math.tan(p.alpha_n) / (p.z2 - p.z1)
-    )
     assert p.profile_shift_combination == pytest.approx(0.2)
-    assert inv(geo.working_pressure_angle) == pytest.approx(expected_inv, abs=1e-12)
-    assert geo.working_centre_distance == pytest.approx(
-        geo.gear.working_r - geo.pinion.working_r
-    )
+    assert geo.pinion.profile_shift == p.profile_shift_1
+    assert geo.gear.profile_shift == p.profile_shift_2
+    assert geo.working_pressure_angle == geo.reference_pressure_angle
+    assert geo.working_centre_distance == geo.reference_centre_distance
 
 
 def test_old_json_without_iso_fields_loads_with_legacy_defaults(tmp_path):

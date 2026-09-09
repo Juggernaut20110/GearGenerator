@@ -25,9 +25,10 @@ gear differs from a straight one only in that those two are larger:
     alpha_t = atan(tan(alpha_n) / cos(beta))
 
 Proportions are the plain ISO ones on the **normal** module - addendum 1.0 m_n,
-dedendum 1.25 m_n - because that is what a cutter of a given normal module
-produces. Note the asymmetry this creates and do not tidy it away: the depths
-are normal quantities, the radii they are measured from are transverse ones.
+dedendum 1.25 m_n in the default rack. For the supported external straight
+path, profile shift changes those member-specific depths and the reference
+tooth thickness; the legacy helical/internal paths retain their existing
+standard proportions until their dedicated implementation phases.
 
 The twist, and why the gear is wound the other way
 --------------------------------------------------
@@ -117,6 +118,10 @@ class SpurMemberGeometry:
     root_r: float               # LARGEST radius of the teeth if internal
     addendum: float
     dedendum: float
+    geometric_tooth_thickness: float  # s_t before deliberate backlash thinning
+    reference_tooth_thickness: float  # s_t after the compatibility backlash split
+    normal_geometric_tooth_thickness: float  # s_n before backlash
+    normal_tooth_thickness: float           # s_n after backlash
     virtual_teeth: float        # z / cos(beta)**3, the equivalent spur gear
     twist: float                # total rotation over the face width, radians
     psi0: float                 # angular half-thickness constant at the base
@@ -137,6 +142,16 @@ class SpurMemberGeometry:
     def working_pitch_r(self) -> float:
         """Clear-name alias for ``working_r`` (d_w / 2)."""
         return self.working_r
+
+    @property
+    def tooth_thickness(self) -> float:
+        """Compatibility alias for actual transverse reference thickness s_t."""
+        return self.reference_tooth_thickness
+
+    @property
+    def transverse_tooth_thickness(self) -> float:
+        """Clear-name alias for actual transverse reference thickness s_t."""
+        return self.reference_tooth_thickness
 
     @property
     def reference_d(self) -> float:
@@ -224,6 +239,13 @@ class SpurSetGeometry:
         return self.axial_contact_ratio
 
     @property
+    def centre_distance_modification(self) -> float:
+        """Centre-distance modification y = (a_w - a) / m_n."""
+        return (
+            self.working_centre_distance - self.reference_centre_distance
+        ) / self.params.module
+
+    @property
     def total_contact_ratio(self) -> float:
         return self.transverse_contact_ratio + self.axial_contact_ratio
 
@@ -244,20 +266,26 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     working_pressure_angle, working_centre_distance = _working_geometry(
         p, reference_centre_distance, alpha_t
     )
+    profile_shifted_external = not p.internal and abs(p.beta) <= 1e-12
 
-    addendum = ADDENDUM_FACTOR * m_n
-    dedendum = DEDENDUM_FACTOR * m_n
+    rack_addendum = (
+        p.basic_rack_addendum_factor if profile_shifted_external else ADDENDUM_FACTOR
+    )
+    rack_dedendum = (
+        p.basic_rack_dedendum_factor if profile_shifted_external else DEDENDUM_FACTOR
+    )
 
     # Circular tooth thickness at the pitch circle, measured in the transverse
     # plane. Backlash is taken off the tooth, which is the convention that keeps
     # the centre distance nominal.
-    tooth_thickness = math.pi * m_t / 2.0 - p.backlash / 2.0
+    standard_geometric_thickness = math.pi * m_t / 2.0
+    standard_tooth_thickness = standard_geometric_thickness - p.backlash / 2.0
 
     # The space width at the pitch circle - what is left of the pitch once the
     # tooth is taken out. An internal gear's space is generated from this the
     # way an external gear's tooth is generated from its thickness; see
     # `involute.internal_flank_points`.
-    space_width = math.pi * m_t - tooth_thickness
+    space_width = math.pi * m_t - standard_tooth_thickness
 
     # The gear's hand. An external pair is cut with opposite hands and an
     # internal pair with the same one - see `SpurSetParams.hand`. Neither is a
@@ -273,14 +301,39 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     ):
         reference_r = m_t * z / 2.0
         base_r = reference_r * math.cos(alpha_t)
-        # The profile generator remains on the legacy/reference profile in
-        # this phase.  The separate working radius is nevertheless available
-        # for pair placement and future active-profile/contact work.
+        # The working circle is derived from the base circle and alpha_wt.  The
+        # legacy/reference profile is retained only on unsupported internal or
+        # helical paths; external straight profiles use the shifted dimensions
+        # and psi0 calculated below.
         working_r = (
             reference_r
             if working_pressure_angle == alpha_t
             else base_r / math.cos(working_pressure_angle)
         )
+
+        member_shift = p.profile_shift_2 if name == "gear" else p.profile_shift_1
+        if profile_shifted_external:
+            # ISO reference tooth thickness for an external straight gear:
+            # s_t = m_t * (pi/2 + 2*x_i*tan(alpha_n)).  Backlash is a separate
+            # deliberate reduction, split symmetrically as before.
+            if member_shift == 0.0:
+                geometric_thickness = standard_geometric_thickness
+            else:
+                geometric_thickness = m_t * (
+                    math.pi / 2.0 + 2.0 * member_shift * math.tan(p.alpha_n)
+                )
+            reference_tooth_thickness = geometric_thickness - p.backlash / 2.0
+            normal_geometric_thickness = geometric_thickness * math.cos(p.beta)
+            normal_tooth_thickness = reference_tooth_thickness * math.cos(p.beta)
+            addendum = m_n * (rack_addendum + member_shift)
+            dedendum = m_n * (rack_dedendum - member_shift)
+        else:
+            geometric_thickness = standard_geometric_thickness
+            reference_tooth_thickness = standard_tooth_thickness
+            normal_geometric_thickness = geometric_thickness * math.cos(p.beta)
+            normal_tooth_thickness = reference_tooth_thickness * math.cos(p.beta)
+            addendum = rack_addendum * m_n
+            dedendum = rack_dedendum * m_n
 
         if internal:
             # The teeth point inward, so the addendum comes off the pitch radius
@@ -299,7 +352,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
             # psi0 is the angular half-thickness of the tooth extrapolated back
             # to the base circle; half_pitch is half the angular pitch. Together
             # they are all the flank generator needs, and both are scale-free.
-            psi0 = tooth_thickness / (2.0 * reference_r) + inv(alpha_t)
+            psi0 = reference_tooth_thickness / (2.0 * reference_r) + inv(alpha_t)
 
         half_pitch = math.pi / z
 
@@ -315,6 +368,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 root_r=root_r,
                 addendum=addendum,
                 dedendum=dedendum,
+                geometric_tooth_thickness=geometric_thickness,
+                reference_tooth_thickness=reference_tooth_thickness,
+                normal_geometric_tooth_thickness=normal_geometric_thickness,
+                normal_tooth_thickness=normal_tooth_thickness,
                 virtual_teeth=z / math.cos(beta) ** 3,
                 # The + 0.0 turns the gear's -0.0 into 0.0 when there is no
                 # helix. Harmless arithmetically, but -0.0 prints as "-0.0000"
@@ -323,7 +380,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 psi0=psi0,
                 half_pitch=half_pitch,
                 internal=internal,
-                profile_shift=p.profile_shift_2 if name == "gear" else p.profile_shift_1,
+                profile_shift=member_shift,
             )
         )
 
@@ -339,9 +396,20 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         transverse_module=m_t,
         circular_pitch=math.pi * m_t,
         axial_pitch=(math.pi * m_n / sin_beta) if sin_beta > 1e-12 else math.inf,
-        whole_depth=WHOLE_DEPTH_FACTOR * m_n,
-        transverse_contact_ratio=transverse_contact_ratio(
-            pinion, gear, reference_centre_distance, alpha_t, math.pi * m_t
+        whole_depth=(rack_addendum + rack_dedendum) * m_n,
+        transverse_contact_ratio=(
+            transverse_contact_ratio(
+                pinion,
+                gear,
+                working_centre_distance,
+                working_pressure_angle,
+                math.pi * m_t,
+                base_pitch_angle=alpha_t,
+            )
+            if profile_shifted_external
+            else transverse_contact_ratio(
+                pinion, gear, reference_centre_distance, alpha_t, math.pi * m_t
+            )
         ),
         axial_contact_ratio=(
             p.face_width * sin_beta / (math.pi * m_n) if sin_beta > 1e-12 else 0.0
@@ -401,6 +469,13 @@ def _working_geometry(
         cosine = min(1.0, cosine)
         return math.acos(cosine), working_distance
 
+    # This task implements profile-shift geometry only for external straight
+    # pairs.  Keep the previously introduced fields inert on internal/helical
+    # paths until their sign and transverse/normal derivations receive their
+    # own independent implementation and tests.
+    if p.internal or abs(p.beta) > 1e-12:
+        return reference_pressure_angle, reference_centre_distance
+
     combination = p.profile_shift_combination
     if abs(combination) <= 1e-15:
         # Preserve the old zero-shift path exactly, including the reference
@@ -426,6 +501,8 @@ def transverse_contact_ratio(
     centre_distance: float,
     alpha_t: float,
     circular_pitch: float,
+    *,
+    base_pitch_angle: float | None = None,
 ) -> float:
     """How many tooth pairs are in contact on average, in the transverse plane.
 
@@ -435,7 +512,9 @@ def transverse_contact_ratio(
         external   g = sqrt(ra1^2 - rb1^2) + sqrt(ra2^2 - rb2^2) - a sin(alpha_t)
         internal   g = sqrt(ra1^2 - rb1^2) - sqrt(ra2^2 - rb2^2) + a sin(alpha_t)
 
-    and the base pitch it is divided by is `p_t * cos(alpha_t)`. Below 1.0 the
+    and the base pitch it is divided by is `p_t * cos(alpha_t)`. For a shifted
+    external pair, ``alpha_t`` is the working angle in the length-of-action
+    term while ``base_pitch_angle`` remains the reference angle. Below 1.0 the
     pair loses contact between teeth and cannot transmit continuous motion,
     which is why the validator treats that as an error rather than a warning.
 
@@ -477,7 +556,9 @@ def transverse_contact_ratio(
         length_of_action = (
             branch(pinion) + branch(gear) - centre_distance * math.sin(alpha_t)
         )
-    base_pitch = circular_pitch * math.cos(alpha_t)
+    if base_pitch_angle is None:
+        base_pitch_angle = alpha_t
+    base_pitch = circular_pitch * math.cos(base_pitch_angle)
     return max(0.0, length_of_action / base_pitch)
 
 

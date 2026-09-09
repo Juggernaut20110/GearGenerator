@@ -73,6 +73,10 @@ def test_ordinary_sets_pass_without_complaint(z1, z2):
         ({"hub_thickness": -1.0}, "hub_thickness"),
         ({"backlash": -0.1}, "backlash"),
         ({"fillet_factor": -0.1}, "fillet_factor"),
+        ({"basic_rack_addendum_factor": 0.0}, "basic_rack_addendum_factor"),
+        ({"basic_rack_clearance_factor": -0.1}, "basic_rack_clearance_factor"),
+        ({"basic_rack_root_radius_factor": -0.1}, "basic_rack_root_radius_factor"),
+        ({"root_geometry": "trochoid"}, "root_geometry"),
         ({"hand": "sideways"}, "hand"),
         ({"helix_angle": MAX_HELIX_ANGLE}, "helix_angle"),
         ({"helix_angle": 60.0}, "helix_angle"),
@@ -135,6 +139,14 @@ def test_contact_ratio_below_one_is_an_error():
 
 def test_the_anchor_pair_keeps_more_than_one_tooth_pair_engaged():
     assert compute_set(ANCHOR).transverse_contact_ratio > 1.1
+
+
+@pytest.mark.parametrize("shift_1,shift_2", [(0.2, 0.0), (-0.2, 0.0), (0.5, -0.5), (0.2, 0.3)])
+def test_scoped_external_straight_profile_shift_sets_remain_valid(shift_1, shift_2):
+    p = tweak(profile_shift_1=shift_1, profile_shift_2=shift_2)
+    result = validate(p)
+    assert result.ok
+    assert compute_set(p).transverse_contact_ratio > 1.0
 
 
 # --- helix overlap ---------------------------------------------------------
