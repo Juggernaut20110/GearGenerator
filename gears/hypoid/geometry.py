@@ -1797,6 +1797,50 @@ def _pinion_corresponding_wheel_cone_distance(
     )
 
 
+def _phase_trace_and_distance(
+    member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometry
+) -> tuple[CrownTrace | None, float]:
+    """Return the authoritative phase trace and its radius argument.
+
+    ``CrownTrace.spiral_angle_at`` clamps its inverse-trig argument so it is
+    useful for plotting, but that behavior is not acceptable for Method 1
+    construction: beyond the circle's radial domain it would silently invent
+    a constant end tangent.  Phase consumers call this guard before using the
+    trace, including construction-only loft sections.
+    """
+    if not math.isfinite(cone_dist) or cone_dist <= 0.0:
+        raise ValueError("hypoid phase cone distance must be finite and positive")
+
+    nonzero_offset_pinion = (
+        member.name == "pinion" and abs(geo.pitch_plane_offset) > 1e-12
+    )
+    trace_member = geo.gear if nonzero_offset_pinion else member
+    trace = _cutter_trace(trace_member, geo)
+    trace_dist = (
+        _pinion_corresponding_wheel_cone_distance(geo, cone_dist)
+        if nonzero_offset_pinion
+        else cone_dist
+    )
+    if not math.isfinite(trace_dist) or trace_dist <= 0.0:
+        raise ValueError(
+            f"hypoid {member.name} phase mapping produced an invalid "
+            f"cutter-trace distance at cone distance {cone_dist:.6g} mm"
+        )
+    if trace is not None:
+        lo = abs(trace.centre_distance - trace.cutter_radius)
+        hi = trace.centre_distance + trace.cutter_radius
+        tolerance = 1e-10 * max(1.0, hi)
+        if trace_dist < lo - tolerance or trace_dist > hi + tolerance:
+            raise ValueError(
+                f"hypoid {member.name} phase at cone distance "
+                f"{cone_dist:.6g} mm requires cutter-trace radius "
+                f"{trace_dist:.6g} mm outside valid domain "
+                f"[{lo:.6g}, {hi:.6g}] mm; a construction loft cannot "
+                "use a clamped cutter trace"
+            )
+    return trace, trace_dist
+
+
 def _method1_spiral_angle_at(
     member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometry
 ) -> float:
@@ -1817,18 +1861,18 @@ def _method1_spiral_angle_at(
     is not a claim that the Tredgold sections are a true generated or
     conjugate hypoid flank.
     """
-    trace = _cutter_trace(member, geo)
+    trace, trace_dist = _phase_trace_and_distance(member, cone_dist, geo)
     if member.name == "gear" or abs(geo.pitch_plane_offset) <= 1e-12:
         return (
-            trace.spiral_angle_at(cone_dist)
+            trace.spiral_angle_at(trace_dist)
             if trace is not None
             else member.mean_spiral_angle
         )
 
     # The non-zero-offset Method 1 pinion boundary is transported from the
     # wheel trace rather than from an unrelated circular arc on the pinion.
-    wheel_trace = _cutter_trace(geo.gear, geo)
-    wheel_dist = _pinion_corresponding_wheel_cone_distance(geo, cone_dist)
+    wheel_trace = trace
+    wheel_dist = trace_dist
     wheel_angle = (
         wheel_trace.spiral_angle_at(wheel_dist)
         if wheel_trace is not None
@@ -1869,21 +1913,37 @@ def _integrate_phase_tangent(
     and zero-offset paths use the exact ``CrownTrace.theta_at / sin(delta)``
     mapping directly.
     """
+    if not math.isfinite(start) or not math.isfinite(stop):
+        raise ValueError("hypoid phase integration bounds must be finite")
+    if start <= 0.0 or stop <= 0.0:
+        raise ValueError("hypoid phase integration bounds must be positive")
     if start == stop:
         return 0.0
     sin_delta = math.sin(member.pitch_angle)
-    if abs(sin_delta) < 1e-12:
+    if not math.isfinite(sin_delta) or abs(sin_delta) < 1e-12:
         raise ValueError("hypoid trace phase has a singular pitch angle")
 
     reverse = stop < start
     lo, hi = (stop, start) if reverse else (start, stop)
 
     def integrand(value: float) -> float:
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("hypoid phase integrand reached an invalid cone distance")
         beta = _method1_spiral_angle_at(member, value, geo)
-        return math.tan(beta) / (value * sin_delta)
+        if not math.isfinite(beta):
+            raise ValueError("hypoid phase integrand produced a non-finite spiral angle")
+        result = math.tan(beta) / (value * sin_delta)
+        if not math.isfinite(result):
+            raise ValueError(
+                f"hypoid phase integrand is non-finite at cone distance {value:.6g} mm"
+            )
+        return result
 
     def simpson(a, b, fa, fb, fc) -> float:
-        return (b - a) * (fa + 4.0 * fc + fb) / 6.0
+        result = (b - a) * (fa + 4.0 * fc + fb) / 6.0
+        if not math.isfinite(result):
+            raise ValueError("hypoid phase Simpson estimate is non-finite")
+        return result
 
     fa = integrand(lo)
     fb = integrand(hi)
@@ -1891,8 +1951,10 @@ def _integrate_phase_tangent(
     fm = integrand(mid)
     whole = simpson(lo, hi, fa, fb, fm)
     tolerance = PHASE_INTEGRATION_TOLERANCE_RAD * (1.0 + abs(whole))
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("hypoid phase integration tolerance is invalid")
 
-    def recurse(a, b, fa, fb, fc, whole, depth) -> float:
+    def recurse(a, b, fa, fb, fc, whole, depth, local_tolerance) -> float:
         mid = 0.5 * (a + b)
         left_mid = 0.5 * (a + mid)
         right_mid = 0.5 * (mid + b)
@@ -1901,23 +1963,44 @@ def _integrate_phase_tangent(
         left = simpson(a, mid, fa, fc, f_left_mid)
         right = simpson(mid, b, fc, fb, f_right_mid)
         refined = left + right
-        if (
-            depth <= 0
-            or abs(refined - whole) <= 15.0 * tolerance
-        ):
+        estimated_error = abs(refined - whole) / 15.0
+        if not math.isfinite(estimated_error):
+            raise ValueError("hypoid phase integration error estimate is non-finite")
+        if estimated_error <= local_tolerance:
             return refined + (refined - whole) / 15.0
+        if depth <= 0:
+            raise ValueError(
+                "hypoid phase integration did not converge within the "
+                f"requested error budget {local_tolerance:.3g} rad at "
+                f"maximum recursion depth {PHASE_INTEGRATION_MAX_DEPTH}"
+            )
+        child_tolerance = 0.5 * local_tolerance
         return (
-            recurse(a, mid, fa, fc, f_left_mid, left, depth - 1)
-            + recurse(mid, b, fc, fb, f_right_mid, right, depth - 1)
+            recurse(
+                a, mid, fa, fc, f_left_mid, left, depth - 1,
+                child_tolerance,
+            )
+            + recurse(
+                mid, b, fc, fb, f_right_mid, right, depth - 1,
+                child_tolerance,
+            )
         )
 
     result = recurse(
-        lo, hi, fa, fb, fm, whole, PHASE_INTEGRATION_MAX_DEPTH
+        lo, hi, fa, fb, fm, whole, PHASE_INTEGRATION_MAX_DEPTH, tolerance
     )
+    if not math.isfinite(result):
+        raise ValueError("hypoid phase integration returned a non-finite result")
     return -result if reverse else result
 
 
-def _phase(member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometry) -> float:
+def _phase(
+    member: HypoidMemberGeometry,
+    cone_dist: float,
+    geo: HypoidSetGeometry,
+    *,
+    construction_only: bool = False,
+) -> float:
     """Return the physical section rotation at cone distance ``A``.
 
     ``CrownTrace.theta_at(A)`` is an angle in the generating crown plane.  A
@@ -1945,20 +2028,54 @@ def _phase(member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometr
     final ``member_sense`` keeps the existing opposite local phase senses of a
     meshed pair; Method 1 member spiral fields are compared as magnitudes (or
     with this sense restored), not as the signs of the two local rotations.
-    """
-    if cone_dist <= 0.0:
-        raise ValueError("hypoid trace cone distance must be positive")
-    sin_delta = math.sin(member.pitch_angle)
-    if abs(sin_delta) < 1e-12:
-        return 0.0
 
-    trace = _cutter_trace(member, geo)
+    ``construction_only`` is used only for SOLIDWORKS terminal loft sections.
+    If such a section falls beyond the valid cutter arc, its phase is extended
+    from the nearest physical face boundary by that boundary's Method 1
+    tangent.  It never calls the clamping behavior of ``CrownTrace`` outside
+    the arc, and it does not move the physical Method 1 boundaries.
+    """
+    if not math.isfinite(cone_dist) or cone_dist <= 0.0:
+        raise ValueError("hypoid trace cone distance must be finite and positive")
+    sin_delta = math.sin(member.pitch_angle)
+    if not math.isfinite(sin_delta) or abs(sin_delta) < 1e-12:
+        raise ValueError("hypoid trace phase has a singular pitch angle")
+    outside_physical_face = (
+        cone_dist < member.tooth_face_inner_cone_distance
+        or cone_dist > member.tooth_face_outer_cone_distance
+    )
+    if construction_only and outside_physical_face:
+        try:
+            trace, trace_dist = _phase_trace_and_distance(member, cone_dist, geo)
+        except ValueError as exc:
+            if "outside valid domain" not in str(exc):
+                raise
+            boundary = (
+                member.tooth_face_inner_cone_distance
+                if cone_dist < member.tooth_face_inner_cone_distance
+                else member.tooth_face_outer_cone_distance
+            )
+            boundary_phase = _phase(member, boundary, geo)
+            boundary_beta = _method1_spiral_angle_at(member, boundary, geo)
+            slope = math.tan(boundary_beta) / (boundary * sin_delta)
+            member_sense = 1.0 if member.name == "pinion" else -1.0
+            extrapolated = boundary_phase + member_sense * slope * (
+                cone_dist - boundary
+            )
+            if not math.isfinite(extrapolated):
+                raise ValueError(
+                    "hypoid construction-only phase tangent extrapolation "
+                    "produced a non-finite result"
+                )
+            return extrapolated
+    else:
+        trace, trace_dist = _phase_trace_and_distance(member, cone_dist, geo)
     zero_offset = abs(geo.pitch_plane_offset) <= 1e-12
     if trace is not None and (member.name == "gear" or zero_offset):
         # The raw crown angle's cosine-rule orientation is opposite to the
         # signed CrownTrace tangent, so -trace.sign*theta/sin(delta) is the
         # physical cone phase.
-        phase_curve = -trace.sign * trace.theta_at(cone_dist) / sin_delta
+        phase_curve = -trace.sign * trace.theta_at(trace_dist) / sin_delta
     elif trace is None and zero_offset:
         # An absent cutter is the constant-angle idealisation.  Integrating
         # tan(beta)/A gives tan(beta) * log(A/R), still with the cone mapping.
@@ -2291,7 +2408,15 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
         if positive_drive
         else (left_flank, right_flank)
     )
-    phase = _phase(m, cone_dist, geo)
+    phase = _phase(
+        m,
+        cone_dist,
+        geo,
+        construction_only=(
+            cone_dist < m.tooth_face_inner_cone_distance
+            or cone_dist > m.tooth_face_outer_cone_distance
+        ),
+    )
     return HypoidSection(
         member=member, cone_dist=cone_dist, phase=phase,
         # ``to_cone_3d`` maps a Tredgold back-cone section.  Its local apex is

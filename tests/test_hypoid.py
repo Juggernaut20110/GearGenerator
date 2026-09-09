@@ -17,10 +17,15 @@ from gears.hypoid import preview
 from gears.hypoid.geometry import (
     _cutter_trace,
     _hypoid_flank_points,
+    _integrate_phase_tangent,
     _method1_spiral_angle_at,
+    _phase,
+    _phase_trace_and_distance,
+    _pinion_corresponding_wheel_cone_distance,
     blank_outline,
     compute_set,
     normal_to_transverse_pressure_angle,
+    PHASE_INTEGRATION_TOLERANCE_RAD,
     section_cone_bounds,
     section_cone_distances,
     tooth_space_section,
@@ -1101,6 +1106,146 @@ def test_member_traces_turn_in_opposite_senses_and_hand_mirrors_them():
     assert left.gear.mean_spiral_angle == pytest.approx(
         -right.gear.mean_spiral_angle
     )
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param(ANCHOR, id="anchor"),
+        pytest.param(replace(ANCHOR, offset=35.0), id="high-valid-offset"),
+        pytest.param(NON_ANCHOR_SECTION, id="small-valid-cutter"),
+    ],
+)
+def test_phase_integration_is_reversible_at_all_physical_face_boundaries(params):
+    geo = compute_set(params)
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        for distance in (
+            member.tooth_face_inner_cone_distance,
+            member.cone_distance,
+            member.tooth_face_outer_cone_distance,
+        ):
+            forward = _integrate_phase_tangent(
+                member, member.cone_distance, distance, geo
+            )
+            reverse = _integrate_phase_tangent(
+                member, distance, member.cone_distance, geo
+            )
+            assert math.isfinite(forward)
+            assert reverse == pytest.approx(-forward, abs=2e-12)
+
+
+def test_zero_offset_phase_integral_agrees_with_the_analytic_crown_trace():
+    geo = compute_set(replace(ANCHOR, offset=0.0))
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        trace = _cutter_trace(member, geo)
+        assert trace is not None
+        for distance in (
+            member.tooth_face_inner_cone_distance,
+            member.cone_distance,
+            member.tooth_face_outer_cone_distance,
+        ):
+            numerical = _integrate_phase_tangent(
+                member, member.cone_distance, distance, geo
+            )
+            analytic = -trace.sign * trace.theta_at(distance) / math.sin(
+                member.pitch_angle
+            )
+            assert numerical == pytest.approx(
+                analytic,
+                abs=4.0 * PHASE_INTEGRATION_TOLERANCE_RAD
+                * (1.0 + abs(analytic)),
+            )
+            assert _phase(member, distance, geo) == pytest.approx(
+                analytic if name == "pinion" else -analytic,
+                abs=1e-12,
+            )
+
+
+def test_phase_trace_domain_covers_existing_loft_extensions():
+    for params in (
+        ANCHOR,
+        replace(ANCHOR, offset=35.0),
+        NON_ANCHOR_SECTION,
+    ):
+        geo = compute_set(params)
+        for name in ("pinion", "gear"):
+            member = geo.member(name)
+            bounds = section_cone_bounds(geo, name)
+            trace = _cutter_trace(geo.gear if name == "pinion" and abs(geo.pitch_plane_offset) > 1e-12 else member, geo)
+            assert trace is not None
+            for distance in (bounds.loft_inner, bounds.loft_outer):
+                checked_trace, trace_distance = _phase_trace_and_distance(
+                    member, distance, geo
+                )
+                assert checked_trace == trace
+                assert trace.reaches(trace_distance, trace_distance)
+
+
+def test_out_of_domain_loft_extension_uses_documented_construction_tangent():
+    # This valid Method 1 design needs a little more blank clearance than its
+    # wheel trace's circular arc provides on the pinion heel.  The physical
+    # face remains on the valid arc; only the construction-only terminal
+    # section uses the explicit boundary-tangent extension.
+    geo = compute_set(replace(ANCHOR, offset=5.0, cutter_radius=40.0))
+    bounds = section_cone_bounds(geo, "pinion")
+    saw_out_of_domain = False
+    for distance in (bounds.loft_inner, bounds.loft_outer):
+        try:
+            _phase_trace_and_distance(geo.pinion, distance, geo)
+        except ValueError as exc:
+            assert "outside valid domain" in str(exc)
+            saw_out_of_domain = True
+            with pytest.raises(ValueError, match="outside valid domain"):
+                _phase(geo.pinion, distance, geo)
+            section = tooth_space_section(geo, "pinion", distance)
+            assert math.isfinite(section.phase)
+    assert saw_out_of_domain
+
+
+def test_out_of_domain_phase_is_rejected_instead_of_clamped():
+    geo = compute_set(ANCHOR)
+    trace = _cutter_trace(geo.gear, geo)
+    assert trace is not None
+    bad_gear_distance = trace.centre_distance + trace.cutter_radius + 1.0
+    with pytest.raises(ValueError, match="outside valid domain"):
+        _method1_spiral_angle_at(geo.gear, bad_gear_distance, geo)
+    with pytest.raises(ValueError, match="outside valid domain"):
+        _phase(geo.gear, bad_gear_distance, geo)
+    construction_section = tooth_space_section(geo, "gear", bad_gear_distance)
+    assert math.isfinite(construction_section.phase)
+
+    bad_pinion_distance = geo.pinion.cone_distance + 1.0
+    while (
+        _pinion_corresponding_wheel_cone_distance(geo, bad_pinion_distance)
+        <= trace.centre_distance + trace.cutter_radius
+    ):
+        bad_pinion_distance *= 2.0
+    with pytest.raises(ValueError, match="outside valid domain"):
+        _integrate_phase_tangent(
+            geo.pinion, geo.pinion.cone_distance, bad_pinion_distance, geo
+        )
+
+
+def test_phase_integration_rejects_nonconvergence_at_maximum_depth(monkeypatch):
+    import gears.hypoid.geometry as hypoid_geometry
+
+    geo = compute_set(ANCHOR)
+    monkeypatch.setattr(hypoid_geometry, "PHASE_INTEGRATION_MAX_DEPTH", 0)
+    with pytest.raises(ValueError, match="did not converge"):
+        _integrate_phase_tangent(
+            geo.pinion,
+            geo.pinion.tooth_face_inner_cone_distance,
+            geo.pinion.tooth_face_outer_cone_distance,
+            geo,
+        )
+
+
+def test_phase_integration_rejects_nonfinite_bounds():
+    geo = compute_set(ANCHOR)
+    with pytest.raises(ValueError, match="finite"):
+        _integrate_phase_tangent(geo.pinion, math.nan, geo.pinion.cone_distance, geo)
 
 
 def _actual_3d_trace_spiral_angle(geo, member, cone_dist):

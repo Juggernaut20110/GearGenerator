@@ -508,6 +508,13 @@ sections may extend beyond those physical boundaries solely so a SOLIDWORKS
 loft cut clears the blank. Assembly placement leaves the solved mean pitch
 points coincident at zero backlash.
 
+The circular cutter trace is only defined on its circle's radial domain. Phase
+queries outside that domain are rejected for physical geometry. If a
+construction-only terminal loft must go farther, its phase is extended by a
+documented first-order tangent from the nearest physical tooth-face boundary;
+the clamped inverse-trigonometric trace is never used there, and the physical
+Method 1 face limits are unchanged.
+
 Tooth thickness is balanced across the pair in the normal plane. The Method 1
 thickness factor transfers thickness from the wheel to the pinion instead of
 being added to both members; the two normal thicknesses sum to one normal pitch
