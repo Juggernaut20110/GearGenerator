@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 
 import pytest
 
@@ -65,6 +66,185 @@ def test_anchor_transverse_conversions(helical):
     assert math.degrees(helical.transverse_pressure_angle) == pytest.approx(
         20.6469, abs=1e-4
     )
+
+
+def test_straight_gear_keeps_normal_and_transverse_module_equal(geo):
+    assert geo.params.module == geo.transverse_module
+    assert geo.params.module == geo.params.transverse_module
+
+
+def test_reference_and_working_quantities_are_distinctly_named_in_the_default_case(
+    geo,
+):
+    assert geo.reference_centre_distance == geo.working_centre_distance
+    assert geo.centre_distance == geo.working_centre_distance
+    assert geo.reference_pressure_angle == geo.transverse_pressure_angle
+    assert geo.working_pressure_angle == geo.reference_pressure_angle
+
+    for member in (geo.pinion, geo.gear):
+        assert member.reference_r == member.working_r
+        assert member.reference_d == pytest.approx(2.0 * member.reference_r)
+        assert member.working_d == pytest.approx(2.0 * member.working_r)
+        assert member.base_d == pytest.approx(2.0 * member.base_r)
+        assert member.tip_d == pytest.approx(2.0 * member.tip_r)
+        assert member.root_d == pytest.approx(2.0 * member.root_r)
+        assert member.pitch_r == member.reference_r
+
+
+def test_zero_profile_shift_is_the_exact_legacy_geometry_case():
+    legacy = compute_set(SpurSetParams.with_defaults(2.0, 17, 43))
+    explicit = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            profile_shift_1=0.0,
+            profile_shift_2=0.0,
+            basic_rack_addendum_factor=1.0,
+            basic_rack_clearance_factor=0.25,
+            basic_rack_root_radius_factor=0.38,
+            working_centre_distance=None,
+            root_geometry="legacy",
+        )
+    )
+
+    assert explicit == legacy
+    for member in ("pinion", "gear"):
+        assert tooth_space_section(explicit, member).loop_2d == tooth_space_section(
+            legacy, member
+        ).loop_2d
+
+
+def test_profile_shift_and_basic_rack_coefficients_are_represented():
+    p = SpurSetParams.with_defaults(
+        2.0,
+        17,
+        43,
+        profile_shift_1=0.2,
+        profile_shift_2=-0.1,
+        basic_rack_addendum_factor=1.05,
+        basic_rack_clearance_factor=0.3,
+        basic_rack_root_radius_factor=0.4,
+        root_geometry="rack_generated",
+    )
+    assert p.profile_shift_1 == 0.2
+    assert p.profile_shift_2 == -0.1
+    assert p.profile_shift_combination == pytest.approx(0.1)
+    assert p.basic_rack_dedendum_factor == pytest.approx(1.35)
+    assert p.h_aP_star == p.basic_rack_addendum_factor
+    assert p.h_fP_star == p.basic_rack_dedendum_factor
+    assert p.c_P_star == p.basic_rack_clearance_factor
+    assert p.rho_fP_star == p.basic_rack_root_radius_factor
+
+    geo = compute_set(p)
+    expected_inv = inv(p.alpha_t) + (
+        2.0 * p.profile_shift_combination * math.tan(p.alpha_n) / (p.z1 + p.z2)
+    )
+    assert inv(geo.working_pressure_angle) == pytest.approx(expected_inv, abs=1e-12)
+    assert geo.pinion.profile_shift == p.profile_shift_1
+    assert geo.gear.profile_shift == p.profile_shift_2
+    # The profile-shift data is available, while the tooth-space generator is
+    # intentionally still the legacy approximation in this foundation phase.
+    assert tooth_space_section(geo, "pinion").filleted
+
+
+def test_internal_profile_shift_combination_uses_ring_minus_pinion():
+    p = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        60,
+        internal=True,
+        profile_shift_1=0.15,
+        profile_shift_2=0.35,
+    )
+    geo = compute_set(p)
+    expected_inv = inv(p.alpha_t) + (
+        2.0 * (p.profile_shift_2 - p.profile_shift_1)
+        * math.tan(p.alpha_n) / (p.z2 - p.z1)
+    )
+    assert p.profile_shift_combination == pytest.approx(0.2)
+    assert inv(geo.working_pressure_angle) == pytest.approx(expected_inv, abs=1e-12)
+    assert geo.working_centre_distance == pytest.approx(
+        geo.gear.working_r - geo.pinion.working_r
+    )
+
+
+def test_old_json_without_iso_fields_loads_with_legacy_defaults(tmp_path):
+    path = tmp_path / "old-spur.json"
+    path.write_text(
+        json.dumps(
+            {
+                "module": 2.0,
+                "z1": 17,
+                "z2": 43,
+                "face_width": 20.0,
+                "bore": 8.5,
+                "hub_thickness": 5.0,
+                "pressure_angle": 20.0,
+                "helix_angle": 0.0,
+                "hand": "right",
+                "internal": False,
+                "fillet_factor": 0.2,
+                "backlash": 0.0,
+                "rim_thickness": 5.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = SpurSetParams.from_json(path)
+    assert loaded.profile_shift_1 == 0.0
+    assert loaded.profile_shift_2 == 0.0
+    assert loaded.basic_rack_addendum_factor == 1.0
+    assert loaded.basic_rack_clearance_factor == 0.25
+    assert loaded.basic_rack_root_radius_factor == 0.38
+    assert loaded.basic_rack_dedendum_factor == 1.25
+    assert loaded.working_centre_distance is None
+    assert loaded.root_geometry == "legacy"
+    assert compute_set(loaded) == compute_set(
+        SpurSetParams.with_defaults(2.0, 17, 43)
+    )
+
+
+def test_json_round_trip_writes_canonical_iso_field_names(tmp_path):
+    params = SpurSetParams.with_defaults(
+        2.0,
+        17,
+        43,
+        profile_shift_1=0.1,
+        profile_shift_2=0.2,
+        basic_rack_addendum_factor=1.1,
+    )
+    path = tmp_path / "new-spur.json"
+    params.to_json(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+
+    assert raw["profile_shift_1"] == pytest.approx(0.1)
+    assert raw["profile_shift_2"] == pytest.approx(0.2)
+    assert "x1" not in raw
+    assert SpurSetParams.from_json(path) == params
+
+
+def test_transitional_json_profile_shift_aliases_are_migrated(tmp_path):
+    path = tmp_path / "transitional-spur.json"
+    path.write_text(
+        json.dumps(
+            {
+                "module": 2.0,
+                "z1": 17,
+                "z2": 43,
+                "face_width": 20.0,
+                "bore": 8.5,
+                "hub_thickness": 5.0,
+                "x1": 0.1,
+                "x2": -0.2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = SpurSetParams.from_json(path)
+    assert loaded.profile_shift_1 == pytest.approx(0.1)
+    assert loaded.profile_shift_2 == pytest.approx(-0.2)
 
 
 @pytest.mark.parametrize("beta", BETAS)

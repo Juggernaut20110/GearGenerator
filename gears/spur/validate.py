@@ -18,13 +18,14 @@ from ..validate import (
     Issue,
     ValidationResult,
 )
+from ..involute import inv
 from .geometry import (
     WHOLE_DEPTH_FACTOR,
     compute_set,
     min_internal_teeth,
     undercut_limit,
 )
-from .params import SpurSetParams
+from .params import ROOT_GEOMETRY_MODES, SpurSetParams
 
 __all__ = ["Issue", "ValidationResult", "validate"]
 
@@ -94,6 +95,30 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
         r.error("backlash", "cannot be negative")
     if p.fillet_factor < 0:
         r.error("fillet_factor", "cannot be negative")
+    if not math.isfinite(p.profile_shift_1):
+        r.error("profile_shift_1", "must be finite")
+    if not math.isfinite(p.profile_shift_2):
+        r.error("profile_shift_2", "must be finite")
+    if not math.isfinite(p.basic_rack_addendum_factor):
+        r.error("basic_rack_addendum_factor", "must be finite")
+    elif p.basic_rack_addendum_factor <= 0:
+        r.error("basic_rack_addendum_factor", "must be greater than zero")
+    if not math.isfinite(p.basic_rack_clearance_factor):
+        r.error("basic_rack_clearance_factor", "must be finite")
+    elif p.basic_rack_clearance_factor < 0:
+        r.error("basic_rack_clearance_factor", "cannot be negative")
+    if not math.isfinite(p.basic_rack_root_radius_factor):
+        r.error("basic_rack_root_radius_factor", "must be finite")
+    elif p.basic_rack_root_radius_factor < 0:
+        r.error("basic_rack_root_radius_factor", "cannot be negative")
+    if p.root_geometry not in ROOT_GEOMETRY_MODES:
+        choices = ", ".join(ROOT_GEOMETRY_MODES)
+        r.error("root_geometry", f"must be one of {choices}")
+    if p.working_centre_distance is not None:
+        if not math.isfinite(p.working_centre_distance):
+            r.error("working_centre_distance", "must be finite")
+        elif p.working_centre_distance <= 0:
+            r.error("working_centre_distance", "must be greater than zero")
 
 
 def validate(p: SpurSetParams) -> ValidationResult:
@@ -103,7 +128,32 @@ def validate(p: SpurSetParams) -> ValidationResult:
     if not result.ok:
         return result
 
-    geo = compute_set(p)
+    try:
+        geo = compute_set(p)
+    except ValueError as exc:
+        result.error("working_centre_distance", str(exc))
+        return result
+
+    # An explicit working distance and the two x_i values are two descriptions
+    # of the same pair condition.  Keep them from silently disagreeing.  The
+    # inverse-involute relation is intentionally written here rather than
+    # copied into params.py, where it would be an unvalidated input property.
+    if p.working_centre_distance is not None:
+        q = p.z2 - p.z1 if p.internal else p.z1 + p.z2
+        implied_shift = q * (
+            inv(geo.working_pressure_angle) - inv(geo.reference_pressure_angle)
+        ) / (2.0 * math.tan(p.alpha_n))
+        if not math.isclose(
+            implied_shift,
+            p.profile_shift_combination,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            result.error(
+                "working_centre_distance",
+                f"implies profile-shift combination {implied_shift:.6g}, "
+                f"but x combination is {p.profile_shift_combination:.6g}",
+            )
     whole_depth = WHOLE_DEPTH_FACTOR * p.module
 
     # --- ratio -------------------------------------------------------------

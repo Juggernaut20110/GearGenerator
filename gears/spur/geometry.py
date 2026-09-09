@@ -56,14 +56,18 @@ from ..involute import (
     min_internal_tip_radius,
     tooth_space_loop,
 )
-from .params import SpurSetParams
+from .params import (
+    BASIC_RACK_ADDENDUM_FACTOR,
+    BASIC_RACK_CLEARANCE_FACTOR,
+    SpurSetParams,
+)
 
 Point2 = tuple[float, float]
 Point3 = tuple[float, float, float]
 
 # ISO standard proportions, as multiples of the NORMAL module.
-ADDENDUM_FACTOR = 1.00
-DEDENDUM_FACTOR = 1.25
+ADDENDUM_FACTOR = BASIC_RACK_ADDENDUM_FACTOR
+DEDENDUM_FACTOR = ADDENDUM_FACTOR + BASIC_RACK_CLEARANCE_FACTOR
 WHOLE_DEPTH_FACTOR = ADDENDUM_FACTOR + DEDENDUM_FACTOR
 
 # How far past each end of the face width the loft sections are pushed.
@@ -106,8 +110,9 @@ class SpurMemberGeometry:
     name: str
     z: int
     beta: float                 # signed helix angle, radians; this member's hand
-    pitch_r: float
-    base_r: float
+    reference_r: float          # d / 2, ISO reference-circle radius
+    base_r: float               # d_b / 2, ISO base-circle radius
+    working_r: float            # d_w / 2, ISO working pitch-circle radius
     tip_r: float                # SMALLEST radius of the teeth if internal
     root_r: float               # LARGEST radius of the teeth if internal
     addendum: float
@@ -117,6 +122,46 @@ class SpurMemberGeometry:
     psi0: float                 # angular half-thickness constant at the base
     half_pitch: float           # pi / z
     internal: bool = False      # a ring gear: teeth pointing inward
+    profile_shift: float = 0.0  # x_i, dimensionless ISO profile shift
+
+    @property
+    def pitch_r(self) -> float:
+        """Deprecated compatibility alias for ``reference_r`` (d / 2).
+
+        This name has historically meant the reference pitch circle.  It must
+        not be repurposed for ``working_r``.
+        """
+        return self.reference_r
+
+    @property
+    def working_pitch_r(self) -> float:
+        """Clear-name alias for ``working_r`` (d_w / 2)."""
+        return self.working_r
+
+    @property
+    def reference_d(self) -> float:
+        """Reference diameter d = 2 * reference_r, in millimetres."""
+        return 2.0 * self.reference_r
+
+    @property
+    def working_d(self) -> float:
+        """Working pitch diameter d_w = 2 * working_r, in millimetres."""
+        return 2.0 * self.working_r
+
+    @property
+    def base_d(self) -> float:
+        """Base diameter d_b = 2 * base_r, in millimetres."""
+        return 2.0 * self.base_r
+
+    @property
+    def tip_d(self) -> float:
+        """Nominal physical tip diameter d_a = 2 * tip_r, in millimetres."""
+        return 2.0 * self.tip_r
+
+    @property
+    def root_d(self) -> float:
+        """Nominal physical root diameter d_f = 2 * root_r, in millimetres."""
+        return 2.0 * self.root_r
 
     @property
     def hand(self) -> str:
@@ -150,9 +195,11 @@ class SpurMemberGeometry:
 @dataclass(frozen=True)
 class SpurSetGeometry:
     params: SpurSetParams
-    centre_distance: float
+    reference_centre_distance: float  # a, from reference diameters
+    working_centre_distance: float    # a_w, from working pitch circles
+    reference_pressure_angle: float   # alpha_t, transverse reference angle
+    working_pressure_angle: float     # alpha_wt, transverse working angle
     transverse_module: float
-    transverse_pressure_angle: float
     circular_pitch: float           # transverse, at the pitch circle
     axial_pitch: float              # inf for straight teeth
     whole_depth: float
@@ -160,6 +207,21 @@ class SpurSetGeometry:
     axial_contact_ratio: float
     pinion: SpurMemberGeometry
     gear: SpurMemberGeometry
+
+    @property
+    def centre_distance(self) -> float:
+        """Compatibility alias for the working centre distance a_w."""
+        return self.working_centre_distance
+
+    @property
+    def transverse_pressure_angle(self) -> float:
+        """Compatibility alias for the transverse reference angle alpha_t."""
+        return self.reference_pressure_angle
+
+    @property
+    def overlap_ratio(self) -> float:
+        """ISO-named alias for the axial overlap ratio epsilon_beta."""
+        return self.axial_contact_ratio
 
     @property
     def total_contact_ratio(self) -> float:
@@ -178,6 +240,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     m_n = p.module
     m_t = p.transverse_module
     alpha_t = p.alpha_t
+    reference_centre_distance = p.reference_centre_distance
+    working_pressure_angle, working_centre_distance = _working_geometry(
+        p, reference_centre_distance, alpha_t
+    )
 
     addendum = ADDENDUM_FACTOR * m_n
     dedendum = DEDENDUM_FACTOR * m_n
@@ -205,27 +271,35 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         ("pinion", p.z1, p.beta, False),
         ("gear", p.z2, gear_beta, p.internal),
     ):
-        pitch_r = m_t * z / 2.0
-        base_r = pitch_r * math.cos(alpha_t)
+        reference_r = m_t * z / 2.0
+        base_r = reference_r * math.cos(alpha_t)
+        # The profile generator remains on the legacy/reference profile in
+        # this phase.  The separate working radius is nevertheless available
+        # for pair placement and future active-profile/contact work.
+        working_r = (
+            reference_r
+            if working_pressure_angle == alpha_t
+            else base_r / math.cos(working_pressure_angle)
+        )
 
         if internal:
             # The teeth point inward, so the addendum comes off the pitch radius
             # and the dedendum is added to it. Everything downstream keeps
             # calling the innermost radius the tip, because that is what it is -
             # the end of the tooth.
-            tip_r = pitch_r - addendum
-            root_r = pitch_r + dedendum
+            tip_r = reference_r - addendum
+            root_r = reference_r + dedendum
             # The SPACE half-width extrapolated to the base circle, not the
             # tooth's. That single substitution is what turns the external
             # generator into the internal one.
-            psi0 = space_width / (2.0 * pitch_r) + inv(alpha_t)
+            psi0 = space_width / (2.0 * reference_r) + inv(alpha_t)
         else:
-            tip_r = pitch_r + addendum
-            root_r = pitch_r - dedendum
+            tip_r = reference_r + addendum
+            root_r = reference_r - dedendum
             # psi0 is the angular half-thickness of the tooth extrapolated back
             # to the base circle; half_pitch is half the angular pitch. Together
             # they are all the flank generator needs, and both are scale-free.
-            psi0 = tooth_thickness / (2.0 * pitch_r) + inv(alpha_t)
+            psi0 = tooth_thickness / (2.0 * reference_r) + inv(alpha_t)
 
         half_pitch = math.pi / z
 
@@ -234,8 +308,9 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 name=name,
                 z=z,
                 beta=beta,
-                pitch_r=pitch_r,
+                reference_r=reference_r,
                 base_r=base_r,
+                working_r=working_r,
                 tip_r=tip_r,
                 root_r=root_r,
                 addendum=addendum,
@@ -244,27 +319,29 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 # The + 0.0 turns the gear's -0.0 into 0.0 when there is no
                 # helix. Harmless arithmetically, but -0.0 prints as "-0.0000"
                 # in the report and reads as a real, tiny, negative twist.
-                twist=p.face_width * math.tan(beta) / pitch_r + 0.0,
+                twist=p.face_width * math.tan(beta) / reference_r + 0.0,
                 psi0=psi0,
                 half_pitch=half_pitch,
                 internal=internal,
+                profile_shift=p.profile_shift_2 if name == "gear" else p.profile_shift_1,
             )
         )
 
     pinion, gear = members
-    centre_distance = p.centre_distance
     sin_beta = abs(math.sin(p.beta))
 
     return SpurSetGeometry(
         params=p,
-        centre_distance=centre_distance,
+        reference_centre_distance=reference_centre_distance,
+        working_centre_distance=working_centre_distance,
+        reference_pressure_angle=alpha_t,
+        working_pressure_angle=working_pressure_angle,
         transverse_module=m_t,
-        transverse_pressure_angle=alpha_t,
         circular_pitch=math.pi * m_t,
         axial_pitch=(math.pi * m_n / sin_beta) if sin_beta > 1e-12 else math.inf,
         whole_depth=WHOLE_DEPTH_FACTOR * m_n,
         transverse_contact_ratio=transverse_contact_ratio(
-            pinion, gear, centre_distance, alpha_t, math.pi * m_t
+            pinion, gear, reference_centre_distance, alpha_t, math.pi * m_t
         ),
         axial_contact_ratio=(
             p.face_width * sin_beta / (math.pi * m_n) if sin_beta > 1e-12 else 0.0
@@ -272,6 +349,75 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         pinion=pinion,
         gear=gear,
     )
+
+
+def _inverse_involute(value: float) -> float:
+    """Return alpha in [0, pi/2) for ``inv(alpha) == value``.
+
+    The working-pressure-angle equation is monotone on the physical domain.
+    A bounded bisection keeps this foundation independent of numerical/scipy
+    dependencies and gives a clear error for a non-physical requested shift.
+    """
+    if value < -1e-14:
+        raise ValueError("working involute is below the physical alpha = 0 domain")
+    if abs(value) <= 1e-14:
+        return 0.0
+
+    lo = 0.0
+    hi = math.nextafter(math.pi / 2.0, 0.0)
+    if inv(hi) < value:
+        raise ValueError("working involute is outside the physical alpha domain")
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if inv(mid) < value:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _working_geometry(
+    p: SpurSetParams,
+    reference_centre_distance: float,
+    reference_pressure_angle: float,
+) -> tuple[float, float]:
+    """Resolve ``(alpha_wt, a_w)`` without changing tooth-space generation.
+
+    With no explicit working distance, this uses the verified ISO-aligned
+    involute relation ``inv(alpha_wt) = inv(alpha_t) +
+    2*X*tan(alpha_n)/q`` and its corresponding base-circle distance.  An
+    explicit working distance is treated as authoritative for this derived
+    pair view; validation can compare it with the requested shifts.
+    """
+    if p.working_centre_distance is not None:
+        working_distance = p.working_centre_distance
+        if working_distance <= 0.0:
+            raise ValueError("working centre distance must be greater than zero")
+        cosine = (
+            working_distance / reference_centre_distance
+        ) * math.cos(reference_pressure_angle)
+        if cosine <= 0.0 or cosine > 1.0 + 1e-12:
+            raise ValueError("working centre distance gives a non-physical pressure angle")
+        cosine = min(1.0, cosine)
+        return math.acos(cosine), working_distance
+
+    combination = p.profile_shift_combination
+    if abs(combination) <= 1e-15:
+        # Preserve the old zero-shift path exactly, including the reference
+        # pressure angle and nominal centre-distance floating-point values.
+        return reference_pressure_angle, reference_centre_distance
+
+    q = p.z2 - p.z1 if p.internal else p.z1 + p.z2
+    target = inv(reference_pressure_angle) + (
+        2.0 * combination * math.tan(p.alpha_n) / q
+    )
+    working_pressure_angle = _inverse_involute(target)
+    working_distance = (
+        reference_centre_distance
+        * math.cos(reference_pressure_angle)
+        / math.cos(working_pressure_angle)
+    )
+    return working_pressure_angle, working_distance
 
 
 def transverse_contact_ratio(

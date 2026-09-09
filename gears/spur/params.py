@@ -31,9 +31,28 @@ from dataclasses import dataclass
 from ..params_io import JsonParams
 
 
+# Basic-rack coefficients.  These are dimensionless ISO quantities; the
+# actual lengths are obtained by multiplying by the normal module m_n.
+#
+# The root-radius value is carried by the data model now, but the legacy root
+# generator deliberately continues to use ``fillet_factor`` until the
+# rack-generated profile phase is implemented.
+BASIC_RACK_ADDENDUM_FACTOR = 1.0       # h_aP*
+BASIC_RACK_CLEARANCE_FACTOR = 0.25     # c_P*
+BASIC_RACK_ROOT_RADIUS_FACTOR = 0.38   # rho_fP*
+ROOT_GEOMETRY_MODES = ("legacy", "rack_generated")
+
+
 @dataclass(frozen=True)
 class SpurSetParams(JsonParams):
-    """The seven editable inputs, plus two form factors kept out of the GUI."""
+    """User inputs for an external or internal spur/helical gear pair.
+
+    The profile-shift and basic-rack fields are additive ISO 21771/ISO 53
+    data-model inputs.  ``root_geometry="legacy"`` remains the default so
+    existing presets and tooth-space sections retain their previous shape;
+    the rack-generated root mode is reserved for a later profile-generation
+    phase.
+    """
 
     module: float               # mm, NORMAL module
     z1: int                     # pinion tooth count
@@ -76,6 +95,30 @@ class SpurSetParams(JsonParams):
     # external pair, which has no rim - its blank ends at the tip circle.
     rim_thickness: float = 5.0
 
+    # ISO 21771 profile-shift coefficients x_1 and x_2.  They are
+    # dimensionless and are measured in units of the normal module.  The
+    # physical positive-radius convention used by this repository is kept;
+    # internal ISO signed-count conversion belongs at the geometry boundary.
+    profile_shift_1: float = 0.0
+    profile_shift_2: float = 0.0
+
+    # ISO 53 basic-rack coefficients.  The dedendum coefficient is derived as
+    # h_fP* = h_aP* + c_P* so one source of truth cannot drift from the other.
+    basic_rack_addendum_factor: float = BASIC_RACK_ADDENDUM_FACTOR  # h_aP*
+    basic_rack_clearance_factor: float = BASIC_RACK_CLEARANCE_FACTOR  # c_P*
+    basic_rack_root_radius_factor: float = BASIC_RACK_ROOT_RADIUS_FACTOR  # rho_fP*
+
+    # Optional working centre distance a_w.  None means the working distance
+    # is derived from x_1+x_2 externally or x_2-x_1 internally.  It is
+    # represented here as an input so a later validator can detect a conflict
+    # between an explicit a_w and the two profile-shift coefficients.
+    working_centre_distance: float | None = None
+
+    # ``legacy`` preserves the existing radial-below-base/root-fillet
+    # approximation.  ``rack_generated`` is a reserved, explicit opt-in name
+    # for the future rack/cutter-envelope implementation.
+    root_geometry: str = "legacy"
+
     # --- radian and transverse accessors, so downstream code never repeats them ---
 
     @property
@@ -91,29 +134,105 @@ class SpurSetParams(JsonParams):
 
     @property
     def transverse_module(self) -> float:
-        return self.module / math.cos(self.beta)
+        """Transverse module m_t = m_n / cos(beta), in millimetres."""
+        return normal_to_transverse_module(self.module, self.beta)
 
     @property
     def alpha_t(self) -> float:
-        """Transverse pressure angle in radians - the involute's own angle."""
-        return math.atan2(math.tan(self.alpha_n), math.cos(self.beta))
+        """Reference transverse pressure angle alpha_t, in radians."""
+        return normal_to_transverse_pressure_angle(self.alpha_n, self.beta)
+
+    @property
+    def reference_pressure_angle(self) -> float:
+        """Clear-name alias for the transverse reference pressure angle alpha_t."""
+        return self.alpha_t
 
     @property
     def ratio(self) -> float:
         return self.z2 / self.z1
 
     @property
+    def reference_centre_distance(self) -> float:
+        """Reference centre distance a, in millimetres.
+
+        This is fixed by the reference diameters d = m_t * |z|.  It is not a
+        working distance when profile shift or an explicit working distance is
+        present.
+        """
+        counts = self.z2 - self.z1 if self.internal else self.z1 + self.z2
+        return self.transverse_module * counts / 2.0
+
+    @property
+    def profile_shift_combination(self) -> float:
+        """The pair's ISO working shift combination X.
+
+        External pairs use X = x_1 + x_2.  With the repository's positive
+        ring tooth count, internal pairs use X = x_2 - x_1.
+        """
+        return (
+            self.profile_shift_2 - self.profile_shift_1
+            if self.internal
+            else self.profile_shift_1 + self.profile_shift_2
+        )
+
+    @property
+    def basic_rack_dedendum_factor(self) -> float:
+        """Basic-rack dedendum coefficient h_fP* = h_aP* + c_P*."""
+        return self.basic_rack_addendum_factor + self.basic_rack_clearance_factor
+
+    @property
+    def h_aP_star(self) -> float:
+        """ISO symbol alias for ``basic_rack_addendum_factor``."""
+        return self.basic_rack_addendum_factor
+
+    @property
+    def h_fP_star(self) -> float:
+        """ISO symbol alias for the derived basic-rack dedendum h_fP*."""
+        return self.basic_rack_dedendum_factor
+
+    @property
+    def c_P_star(self) -> float:
+        """ISO symbol alias for ``basic_rack_clearance_factor``."""
+        return self.basic_rack_clearance_factor
+
+    @property
+    def rho_fP_star(self) -> float:
+        """ISO symbol alias for ``basic_rack_root_radius_factor``."""
+        return self.basic_rack_root_radius_factor
+
+    @property
     def centre_distance(self) -> float:
-        """Standard centre distance, mm. No profile shift, so this is exact.
+        """Compatibility alias for :attr:`reference_centre_distance`.
 
         The **difference** of the tooth counts for an internal pair, not the
         sum. The pinion runs inside the ring, so moving teeth from one to the
         other brings the axes together instead of pushing them apart, and at
         z1 = z2 the two axes coincide - which is why the validator wants a
         healthy gap between the counts.
+
+        ``SpurSetGeometry.centre_distance`` is the working-distance alias;
+        this parameter-level property is retained as the old reference-only
+        quantity because parameters do not contain derived member radii.
         """
-        counts = self.z2 - self.z1 if self.internal else self.z1 + self.z2
-        return self.transverse_module * counts / 2.0
+        return self.reference_centre_distance
+
+    @classmethod
+    def _migrate_json_data(cls, data: dict):
+        """Map short/transitional ISO spellings to canonical JSON names."""
+        migrated = dict(data)
+        aliases = {
+            "profile_shift1": "profile_shift_1",
+            "profile_shift2": "profile_shift_2",
+            "x1": "profile_shift_1",
+            "x2": "profile_shift_2",
+            "h_aP_star": "basic_rack_addendum_factor",
+            "c_P_star": "basic_rack_clearance_factor",
+            "rho_fP_star": "basic_rack_root_radius_factor",
+        }
+        for old_name, new_name in aliases.items():
+            if new_name not in migrated and old_name in migrated:
+                migrated[new_name] = migrated[old_name]
+        return migrated
 
     @classmethod
     def with_defaults(cls, module: float, z1: int, z2: int, **overrides):
@@ -146,3 +265,13 @@ class SpurSetParams(JsonParams):
         }
         defaults.update(overrides)
         return cls(module=module, z1=z1, z2=z2, **defaults)
+
+
+def normal_to_transverse_module(module: float, beta: float) -> float:
+    """Convert normal module m_n to transverse module m_t."""
+    return module / math.cos(beta)
+
+
+def normal_to_transverse_pressure_angle(alpha_n: float, beta: float) -> float:
+    """Convert normal pressure angle alpha_n to transverse alpha_t."""
+    return math.atan2(math.tan(alpha_n), math.cos(beta))
