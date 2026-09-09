@@ -22,6 +22,7 @@ from gears.hypoid.geometry import (
     _phase,
     _phase_trace_and_distance,
     _pinion_corresponding_wheel_cone_distance,
+    HypoidTredgoldUndercutError,
     blank_outline,
     compute_set,
     normal_to_transverse_pressure_angle,
@@ -100,6 +101,86 @@ NON_ANCHOR_FACE_RATIO = HypoidSetParams.with_defaults(
     2.5, 19, 47, offset=7.5, face_width=12.0,
     spiral_angle=32.0, cutter_radius=45.0, shaft_angle=80.0,
 )
+
+
+LOW_COUNT_HIGH_SPIRAL = HypoidSetParams.with_defaults(
+    2.0, 6, 12, offset=4.8, face_width=2.88,
+    spiral_angle=50.0, cutter_radius=9.0, bore=2.0,
+)
+
+LOW_COUNT_UNDERCUT = HypoidSetParams.with_defaults(
+    2.0, 6, 12, offset=5.76, face_width=2.88,
+    pressure_angle=22.0, spiral_angle=50.0, cutter_radius=9.0,
+    bore=2.0, gear_mean_addendum_factor=0.8, thickness_factor=0.94,
+)
+
+
+def _assert_simple_loop(points, tolerance):
+    """Reject collapsed edges and non-adjacent intersections in a 2-D loop."""
+    assert len(points) >= 3
+    for first, second in zip(points, [*points[1:], points[0]]):
+        assert math.dist(first, second) > tolerance
+
+    def cross(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (
+            b[1] - a[1]
+        ) * (c[0] - a[0])
+
+    def on_segment(a, b, point):
+        return (
+            min(a[0], b[0]) - tolerance <= point[0] <= max(a[0], b[0]) + tolerance
+            and min(a[1], b[1]) - tolerance <= point[1] <= max(a[1], b[1]) + tolerance
+        )
+
+    def intersects(a, b, c, d):
+        scale = max(
+            math.dist(a, b), math.dist(c, d),
+            math.dist(a, c), math.dist(a, d),
+            math.dist(b, c), math.dist(b, d), 1.0,
+        )
+        epsilon = tolerance * scale
+        ab_c, ab_d = cross(a, b, c), cross(a, b, d)
+        cd_a, cd_b = cross(c, d, a), cross(c, d, b)
+        if (
+            abs(ab_c) <= epsilon and on_segment(a, b, c)
+            or abs(ab_d) <= epsilon and on_segment(a, b, d)
+            or abs(cd_a) <= epsilon and on_segment(c, d, a)
+            or abs(cd_b) <= epsilon and on_segment(c, d, b)
+        ):
+            return True
+        return (ab_c > epsilon) != (ab_d > epsilon) and (
+            cd_a > epsilon
+        ) != (cd_b > epsilon)
+
+    count = len(points)
+    for first in range(count):
+        a, b = points[first], points[(first + 1) % count]
+        for second in range(first + 1, count):
+            if second in (first, (first - 1) % count, (first + 1) % count):
+                continue
+            c, d = points[second], points[(second + 1) % count]
+            assert not intersects(a, b, c, d), (
+                f"loop edges {first}/{second} intersect"
+            )
+
+
+def _assert_physical_section_topology(section, module):
+    tolerance = max(1e-8, 1e-6 * module)
+    negative_root = section.segments["fillet_neg"] or section.segments["flank_neg"]
+    positive_root = section.segments["fillet_pos"] or section.segments["flank_pos"]
+    left_root_angle = math.atan2(negative_root[0][1], negative_root[0][0])
+    right_root_angle = math.atan2(positive_root[-1][1], positive_root[-1][0])
+    angle_tolerance = tolerance / max(section.r_root, 1e-12)
+    assert left_root_angle < -angle_tolerance
+    assert right_root_angle > angle_tolerance
+    assert all(point[1] < -tolerance for point in section.segments["flank_neg"])
+    assert all(point[1] > tolerance for point in section.segments["flank_pos"])
+    assert all(
+        math.dist(first, second) > tolerance
+        for segment in section.segments.values()
+        for first, second in zip(segment, segment[1:])
+    )
+    _assert_simple_loop(section.loop_2d, tolerance)
 
 
 def _wheel_face_overlap_ratio_formula(geo):
@@ -477,7 +558,7 @@ def test_longitudinal_face_limits_are_separate_from_loft_extensions():
 
 @pytest.mark.parametrize(
     "offset,cutter_radius",
-    [(5.0, 40.0), (-10.0, 120.0)],
+    [(15.0, 45.0), (-10.0, 120.0)],
 )
 def test_longitudinal_boundaries_follow_method_1_for_other_offsets_and_cutters(
     offset, cutter_radius
@@ -506,6 +587,93 @@ def test_longitudinal_boundaries_follow_method_1_for_other_offsets_and_cutters(
         bounds = section_cone_bounds(geo, member.name)
         assert bounds.calculation_point == pytest.approx(member.cone_distance, abs=1e-12)
         assert bounds.tooth_face_inner <= bounds.calculation_point <= bounds.tooth_face_outer
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+@pytest.mark.parametrize("offset", [5.76, -5.76])
+def test_physical_tredgold_undercut_is_rejected_for_low_count_generated_flanks(
+    hand, offset
+):
+    geo = compute_set(replace(LOW_COUNT_UNDERCUT, hand=hand, offset=offset))
+    outer = geo.pinion.tooth_face_outer_cone_distance
+
+    with pytest.raises(
+        HypoidTredgoldUndercutError,
+        match="undercut/trochoid geometry not represented",
+    ) as caught:
+        tooth_space_section(geo, "pinion", outer)
+
+    assert "physical tooth face" in str(caught.value)
+    assert "coast" in str(caught.value)
+    verdict = validate(replace(LOW_COUNT_UNDERCUT, hand=hand, offset=offset))
+    assert not verdict.ok
+    assert any(
+        "undercut/trochoid geometry not represented" in issue.message
+        for issue in verdict.errors
+    )
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_legacy_synthetic_root_lead_case_is_rejected_as_physical_undercut(hand):
+    params = replace(ANCHOR, hand=hand, offset=5.0, cutter_radius=40.0)
+    geo = compute_set(params)
+
+    with pytest.raises(
+        HypoidTredgoldUndercutError,
+        match="undercut/trochoid geometry not represented",
+    ) as caught:
+        tooth_space_section(
+            geo, "pinion", geo.pinion.tooth_face_outer_cone_distance
+        )
+    assert "physical tooth face" in str(caught.value)
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+@pytest.mark.parametrize("offset_sign", [1.0, -1.0])
+@pytest.mark.parametrize(
+    "label,params",
+    [
+        ("anchor-high-spiral", replace(ANCHOR, spiral_angle=60.0)),
+        ("low-count-high-spiral", LOW_COUNT_HIGH_SPIRAL),
+    ],
+)
+def test_physical_tredgold_sections_have_clear_simple_root_topology(
+    label, params, offset_sign, hand
+):
+    del label
+    geo = compute_set(
+        replace(params, hand=hand, offset=abs(params.offset) * offset_sign)
+    )
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        for distance in (
+            member.tooth_face_inner_cone_distance,
+            member.cone_distance,
+            member.tooth_face_outer_cone_distance,
+        ):
+            section = tooth_space_section(geo, name, distance)
+            _assert_physical_section_topology(section, params.module)
+            assert section.drive_flank
+            assert section.coast_flank
+            assert math.isfinite(section.drive_transverse_pressure_angle)
+            assert math.isfinite(section.coast_transverse_pressure_angle)
+            assert section.drive_transverse_pressure_angle == pytest.approx(
+                normal_to_transverse_pressure_angle(
+                    member.generated_drive_normal_pressure_angle,
+                    section.spiral_angle,
+                ),
+                abs=1e-12,
+            )
+            assert section.coast_transverse_pressure_angle == pytest.approx(
+                normal_to_transverse_pressure_angle(
+                    member.generated_coast_normal_pressure_angle,
+                    section.spiral_angle,
+                ),
+                abs=1e-12,
+            )
+            assert section.drive_transverse_pressure_angle != pytest.approx(
+                section.coast_transverse_pressure_angle, abs=1e-12
+            )
 
 
 def test_cutter_radius_changes_longitudinal_geometry_at_fixed_offset():
@@ -1129,7 +1297,10 @@ def test_member_traces_turn_in_opposite_senses_and_hand_mirrors_them():
     "params",
     [
         pytest.param(ANCHOR, id="anchor"),
-        pytest.param(replace(ANCHOR, offset=35.0), id="high-valid-offset"),
+        pytest.param(
+            replace(ANCHOR, cutter_radius=45.0),
+            id="high-offset-small-cutter",
+        ),
         pytest.param(NON_ANCHOR_SECTION, id="small-valid-cutter"),
     ],
 )
@@ -1183,8 +1354,8 @@ def test_zero_offset_phase_integral_agrees_with_the_analytic_crown_trace():
 def test_phase_trace_domain_covers_existing_loft_extensions():
     for params in (
         ANCHOR,
-        replace(ANCHOR, offset=35.0),
         NON_ANCHOR_SECTION,
+        replace(ANCHOR, offset=15.0, cutter_radius=45.0),
     ):
         geo = compute_set(params)
         for name in ("pinion", "gear"):
@@ -1193,11 +1364,23 @@ def test_phase_trace_domain_covers_existing_loft_extensions():
             trace = _cutter_trace(geo.gear if name == "pinion" and abs(geo.pitch_plane_offset) > 1e-12 else member, geo)
             assert trace is not None
             for distance in (bounds.loft_inner, bounds.loft_outer):
-                checked_trace, trace_distance = _phase_trace_and_distance(
-                    member, distance, geo
-                )
-                assert checked_trace == trace
-                assert trace.reaches(trace_distance, trace_distance)
+                try:
+                    checked_trace, trace_distance = _phase_trace_and_distance(
+                        member, distance, geo
+                    )
+                except ValueError as exc:
+                    # A construction station may be outside the circular
+                    # cutter arc, but it must use the explicit phase tangent
+                    # strategy rather than a clamped cutter trace.
+                    assert "outside valid domain" in str(exc)
+                    assert distance < bounds.tooth_face_inner or distance > bounds.tooth_face_outer
+                    with pytest.raises(ValueError, match="outside valid domain"):
+                        _phase(member, distance, geo)
+                    construction = tooth_space_section(geo, name, distance)
+                    assert math.isfinite(construction.phase)
+                else:
+                    assert checked_trace == trace
+                    assert trace.reaches(trace_distance, trace_distance)
 
 
 def test_out_of_domain_loft_extension_uses_documented_construction_tangent():
@@ -1205,7 +1388,7 @@ def test_out_of_domain_loft_extension_uses_documented_construction_tangent():
     # wheel trace's circular arc provides on the pinion heel.  The physical
     # face remains on the valid arc; only the construction-only terminal
     # section uses the explicit boundary-tangent extension.
-    geo = compute_set(replace(ANCHOR, offset=5.0, cutter_radius=40.0))
+    geo = compute_set(replace(ANCHOR, cutter_radius=45.0))
     bounds = section_cone_bounds(geo, "pinion")
     saw_out_of_domain = False
     for distance in (bounds.loft_inner, bounds.loft_outer):
@@ -1218,6 +1401,8 @@ def test_out_of_domain_loft_extension_uses_documented_construction_tangent():
                 _phase(geo.pinion, distance, geo)
             section = tooth_space_section(geo, "pinion", distance)
             assert math.isfinite(section.phase)
+            assert distance > geo.pinion.tooth_face_outer_cone_distance
+            assert section.segments["root"]
     assert saw_out_of_domain
 
 
@@ -1226,8 +1411,38 @@ def test_section_count_accepts_out_of_domain_construction_extension():
     # only at a terminal SOLIDWORKS clearance section.  Section sizing is a
     # construction concern too, so it must use the same explicit tangent
     # extension as the actual loft section builder.
-    geo = compute_set(replace(ANCHOR, offset=5.0, cutter_radius=40.0))
+    geo = compute_set(replace(ANCHOR, cutter_radius=45.0))
     assert section_count(geo, "pinion") >= 2
+
+
+def test_construction_only_undercut_reuses_a_physical_profile(monkeypatch):
+    import gears.hypoid.geometry as hypoid_geometry
+
+    geo = compute_set(ANCHOR)
+    bounds = section_cone_bounds(geo, "pinion")
+    physical = tooth_space_section(
+        geo, "pinion", geo.pinion.tooth_face_outer_cone_distance
+    )
+    original = hypoid_geometry._hypoid_flank_points
+
+    def reject_construction_flanks(*args, **kwargs):
+        if kwargs.get("construction_only"):
+            raise HypoidTredgoldUndercutError(
+                "forced construction-only undercut"
+            )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        hypoid_geometry, "_hypoid_flank_points", reject_construction_flanks
+    )
+    extension = tooth_space_section(geo, "pinion", bounds.loft_outer)
+
+    assert extension.cone_dist == pytest.approx(bounds.loft_outer)
+    assert extension.loop_2d == physical.loop_2d
+    assert extension.segments == physical.segments
+    assert extension.phase != pytest.approx(physical.phase)
+    assert extension.cone_apex_z != pytest.approx(physical.cone_apex_z)
+    _assert_physical_section_topology(extension, ANCHOR.module)
 
 
 def test_out_of_domain_phase_is_rejected_instead_of_clamped():

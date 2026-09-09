@@ -2,6 +2,7 @@
 
 from .geometry import (
     HypoidSection,
+    HypoidTredgoldUndercutError,
     HypoidSetGeometry,
     HypoidMethod1Geometry,
     HypoidMemberGeometry,
@@ -19,7 +20,8 @@ from .params import HypoidSetParams
 from .validate import validate
 
 __all__ = [
-    "HypoidMemberGeometry", "HypoidMethod1Geometry", "HypoidSection", "HypoidSectionBounds",
+    "HypoidMemberGeometry", "HypoidMethod1Geometry", "HypoidSection",
+    "HypoidTredgoldUndercutError", "HypoidSectionBounds",
     "HypoidSetGeometry",
     "HypoidThicknessGeometry",
     "HypoidSetParams", "blank_outline", "compute_set",

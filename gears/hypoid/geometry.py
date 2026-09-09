@@ -31,6 +31,20 @@ METHOD1_DERIVATIVE_STEP_RAD = 1e-6
 # integration accuracy, not a geometry/calibration factor.
 PHASE_INTEGRATION_TOLERANCE_RAD = 1e-11
 PHASE_INTEGRATION_MAX_DEPTH = 20
+# A root-side flank must have a real transverse clearance from the tooth-space
+# centreline.  This is a geometric tolerance expressed as a fraction of the
+# local developed pitch, not the former arbitrary 1e-9-radian lead.
+TREDGOLD_CENTERLINE_CLEARANCE_FACTOR = 1e-6
+
+
+class HypoidTredgoldUndercutError(ValueError):
+    """The independent Tredgold involute needs an unsupported undercut.
+
+    Below the base circle this model has only the ordinary radial
+    approximation.  Once that approximation reaches the tooth-space
+    centreline, a real flank would need cutter-dependent trochoidal/undercut
+    geometry that the hypoid model deliberately does not calculate.
+    """
 
 
 @dataclass(frozen=True)
@@ -2128,6 +2142,17 @@ def _reflect_flank(points: list[Point2]) -> list[Point2]:
     return [(x, -y) for x, y in points]
 
 
+def _remove_consecutive_duplicates(points: list[Point2]) -> list[Point2]:
+    """Remove exact repeated vertices without changing a section's shape."""
+    if not points:
+        return []
+    distinct = [points[0]]
+    for point in points[1:]:
+        if point != distinct[-1]:
+            distinct.append(point)
+    return distinct
+
+
 def _hypoid_root_fillet(
     flank: list[Point2], r_root: float, rho: float, *, negative: bool,
     strict: bool = False,
@@ -2159,8 +2184,11 @@ def _hypoid_root_fillet(
         return flank, []
     trimmed, arc = result
     if negative:
-        return _reflect_flank(trimmed), _reflect_flank(arc)
-    return trimmed, arc
+        return (
+            _remove_consecutive_duplicates(_reflect_flank(trimmed)),
+            _remove_consecutive_duplicates(_reflect_flank(arc)),
+        )
+    return _remove_consecutive_duplicates(trimmed), _remove_consecutive_duplicates(arc)
 
 
 def hypoid_tooth_space_loop(
@@ -2273,12 +2301,18 @@ def _hypoid_flank_points(
     spiral_angle: float,
     normal_tooth_thickness: float,
     n_flank: int,
+    *,
+    flank_name: str = "flank",
+    construction_only: bool = False,
 ) -> list[Point2]:
     """Build one transverse-equivalent Tredgold involute.
 
     The Method 1 angle is normal to the local spiral tooth trace, while this
     involute lives in the developed back-cone plane.  Convert the angle and the
-    local normal tooth thickness before constructing the planar profile.
+    local normal tooth thickness before constructing the planar profile.  When
+    the root lies below the base circle, the radial portion is accepted only
+    if it stays on its own side of the tooth-space centreline.  A crossing is
+    an unsupported undercut/trochoid requirement.
     """
     scale = cone_dist / max(member.cone_distance, 1e-9)
     pitch = member.virtual_pitch_r * scale
@@ -2310,30 +2344,47 @@ def _hypoid_flank_points(
     points = involute.flank_points(
         base, root, tip, psi0, half_pitch, n_flank
     )
-    if points[0][1] >= 0.0:
-        return points
-
-    # At unusually large local transverse angles the standard radial
-    # below-base simplification can extrapolate through the section centreline
-    # even though the involute above the base circle returns to the requested
-    # positive side.  Retain the involute and replace only that below-base
-    # transition with a tiny positive root lead; the true trochoid is already
-    # outside this Tredgold approximation.  This keeps loft-only and physical
-    # sections constructible without changing the pitch-circle involute.
-    for index in range(1, len(points)):
-        previous, current = points[index - 1], points[index]
-        if current[1] >= 0.0:
-            fraction = -previous[1] / (current[1] - previous[1])
-            crossing = (
-                previous[0] + fraction * (current[0] - previous[0]),
-                0.0,
-            )
-            root_lead = involute.polar(root, 1e-9)
-            return [root_lead, crossing, *points[index + 1:]]
-    raise ValueError(
-        f"{member.name} generated transverse involute does not reach its "
-        "requested flank side"
+    if any(
+        not math.isfinite(value)
+        for point in points
+        for value in point
+    ):
+        raise ValueError(
+            f"{member.name} generated {flank_name} flank contains a non-finite point"
+        )
+    # Below the base circle `flank_points` is intentionally only a radial
+    # approximation.  Its root-side angle is valid only while it remains on
+    # the requested positive side of this half-space.  If it reaches the
+    # centreline, the missing geometry is an undercut/trochoid, not a harmless
+    # short lead that can be invented for a CAD loop.
+    root_clearance = max(
+        1e-8,
+        TREDGOLD_CENTERLINE_CLEARANCE_FACTOR * pitch,
     )
+    root_angle = math.atan2(points[0][1], points[0][0])
+    root_angle_tolerance = root_clearance / max(root, 1e-12)
+    if (
+        any(point[1] <= root_clearance for point in points)
+        or root_angle <= root_angle_tolerance
+    ):
+        location = (
+            "construction-only loft extension"
+            if construction_only
+            else "physical tooth face"
+        )
+        raise HypoidTredgoldUndercutError(
+            f"{member.name} {location} {flank_name} transverse Tredgold "
+            "flank reaches/crosses the tooth-space centreline; "
+            "the section requires undercut/trochoid geometry not represented "
+            "by the approximation"
+        )
+    # ``involute.flank_points`` includes the base-circle point both as the
+    # radial approximation endpoint and as the first sampled involute point.
+    # Keep one copy so a section segment never contains a zero-length CAD edge.
+    distinct = _remove_consecutive_duplicates(points)
+    if len(distinct) < 2:
+        raise ValueError(f"{member.name} generated {flank_name} flank is degenerate")
+    return distinct
 
 
 def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | None = None,
@@ -2347,7 +2398,10 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     involute is built.  The normal tooth thickness is scaled with cone distance
     and converted to local transverse thickness in the same section.  The
     resulting pair remains an approximation rather than a true cutter-envelope
-    hypoid surface.
+    hypoid surface. A construction-only terminal station that cannot retain a
+    valid flank profile reuses the nearest valid physical section profile and
+    extends only its placement/phase. That fallback is clearance geometry, not
+    an added physical tooth-face claim.
     """
     m = geo.member(member)
     if cone_dist is None:
@@ -2402,24 +2456,61 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
     pitch = m.virtual_pitch_r * scale
     positive_base = pitch * math.cos(positive_transverse_angle)
     negative_base = pitch * math.cos(negative_transverse_angle)
-    positive_flank = _hypoid_flank_points(
-        m,
-        cone_dist,
-        positive_normal_angle,
-        spiral_angle,
-        normal_tooth_thickness,
-        n_flank,
+    construction_only = (
+        cone_dist < m.tooth_face_inner_cone_distance
+        or cone_dist > m.tooth_face_outer_cone_distance
     )
-    negative_flank = _reflect_flank(
-        _hypoid_flank_points(
+    try:
+        positive_flank = _hypoid_flank_points(
             m,
             cone_dist,
-            negative_normal_angle,
+            positive_normal_angle,
             spiral_angle,
             normal_tooth_thickness,
             n_flank,
+            flank_name="drive" if positive_drive else "coast",
+            construction_only=construction_only,
         )
-    )
+        negative_flank = _reflect_flank(
+            _hypoid_flank_points(
+                m,
+                cone_dist,
+                negative_normal_angle,
+                spiral_angle,
+                normal_tooth_thickness,
+                n_flank,
+                flank_name="coast" if positive_drive else "drive",
+                construction_only=construction_only,
+            )
+        )
+    except HypoidTredgoldUndercutError:
+        if not construction_only:
+            raise
+        # A terminal loft station is not physical tooth geometry.  If its
+        # profile would need unsupported undercut, freeze the nearest valid
+        # physical Tredgold profile and extend only its placement/phase.  This
+        # changes the clearance strategy without inventing a root or changing
+        # the Method 1 face boundaries; a physical boundary that itself needs
+        # undercut still raises the original geometry error.
+        boundary = (
+            m.tooth_face_inner_cone_distance
+            if cone_dist < m.tooth_face_inner_cone_distance
+            else m.tooth_face_outer_cone_distance
+        )
+        boundary_section = tooth_space_section(
+            geo,
+            member,
+            boundary,
+            split_cap=split_cap,
+            n_flank=n_flank,
+        )
+        phase = _phase(m, cone_dist, geo, construction_only=True)
+        return replace(
+            boundary_section,
+            cone_dist=cone_dist,
+            phase=phase,
+            cone_apex_z=cone_dist / max(math.cos(m.pitch_angle), 1e-9),
+        )
     segments, loop, _, left_flank, right_flank = hypoid_tooth_space_loop(
         negative_flank,
         positive_flank,
@@ -2434,15 +2525,7 @@ def tooth_space_section(geo: HypoidSetGeometry, member: str, cone_dist: float | 
         if positive_drive
         else (left_flank, right_flank)
     )
-    phase = _phase(
-        m,
-        cone_dist,
-        geo,
-        construction_only=(
-            cone_dist < m.tooth_face_inner_cone_distance
-            or cone_dist > m.tooth_face_outer_cone_distance
-        ),
-    )
+    phase = _phase(m, cone_dist, geo, construction_only=construction_only)
     return HypoidSection(
         member=member, cone_dist=cone_dist, phase=phase,
         # ``to_cone_3d`` maps a Tredgold back-cone section.  Its local apex is
