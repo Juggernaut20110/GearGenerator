@@ -51,10 +51,6 @@ class HypoidSetParams(JsonParams):
     # backlash allowance j_et2, measured at the wheel outer pitch cone.
     backlash: float = 0.0
     min_root_thickness: float = 0.5
-    # Approximate circular tooth-root fillet in the developed Tredgold
-    # section, mm.  None preserves the historical module-based default while
-    # making it independent of structural blank backing thickness.
-    root_fillet_radius: float | None = None
 
     # ISO Method 1 data-type-I factors.  These are intentionally editable in
     # JSON/API use but are not put in the first GUI pass.
@@ -67,6 +63,12 @@ class HypoidSetParams(JsonParams):
     thickness_factor: float = 0.10    # k_t
     gear_addendum_angle: float = 1.0  # Method 1 theta_a2, degrees
     gear_dedendum_angle: float = 4.0  # Method 1 theta_f2, degrees
+
+    # Kept after the pre-existing fields so positional construction of the
+    # advanced Method 1 inputs remains compatible.  This is an approximate
+    # circular tooth-root fillet in the developed Tredgold section, not cutter
+    # blade geometry.  None selects the documented module-based default.
+    root_fillet_radius: float | None = None
 
     @property
     def alpha(self) -> float:

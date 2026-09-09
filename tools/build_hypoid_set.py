@@ -33,6 +33,10 @@ def main(argv=None) -> int:
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
     ap.add_argument(
+        "--root-fillet-radius", type=float,
+        help="approximate Tredgold tooth-root fillet radius in mm (default: 0.1 module)",
+    )
+    ap.add_argument(
         "--backlash", type=float, default=0.0,
         help="outer transverse backlash at the wheel outer cone, mm",
     )
@@ -55,6 +59,8 @@ def main(argv=None) -> int:
         overrides["bore"] = args.bore
     if args.hub is not None:
         overrides["hub_thickness"] = args.hub
+    if args.root_fillet_radius is not None:
+        overrides["root_fillet_radius"] = args.root_fillet_radius
     p = HypoidSetParams.with_defaults(args.module, args.z1, args.z2, **overrides)
     verdict = validate(p)
     for issue in verdict.warnings:

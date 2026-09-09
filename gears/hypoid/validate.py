@@ -103,12 +103,21 @@ def validate(p: HypoidSetParams) -> ValidationResult:
                 )
             ]
         except ValueError as exc:
+            field = (
+                "root_fillet_radius"
+                if "root fillet" in str(exc).lower()
+                else member.name
+            )
             result.error(
-                member.name,
+                field,
                 "Tredgold tooth-space approximation failed: " + str(exc),
             )
         else:
-            if any(not section.filleted for section in sections):
+            if (
+                p.root_fillet_radius is None
+                and p.effective_root_fillet_radius > 0.0
+                and any(not section.filleted for section in sections)
+            ):
                 result.warn(
                     member.name,
                     "the requested approximate root fillet does not fit every "

@@ -981,9 +981,25 @@ def test_excessive_explicit_root_fillet_is_rejected():
         replace(ANCHOR, root_fillet_radius=5.0 * ANCHOR.module)
     )
     assert not result.ok
+    assert any(issue.field == "root_fillet_radius" for issue in result.errors)
     assert any(
         "root fillet" in issue.message.lower()
         for issue in result.errors
+    )
+
+
+def test_old_hypoid_preset_without_root_fillet_radius_keeps_default(tmp_path):
+    import json
+
+    old = dict(ANCHOR.__dict__)
+    old.pop("root_fillet_radius")
+    path = tmp_path / "old-hypoid.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+    restored = HypoidSetParams.from_json(path)
+
+    assert restored.root_fillet_radius is None
+    assert restored.effective_root_fillet_radius == pytest.approx(
+        0.1 * restored.module
     )
 
 

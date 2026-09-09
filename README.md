@@ -528,8 +528,9 @@ blank. The approximate Tredgold tooth-space builder has a separate
 default is `0.1 * module`; the radius is fitted independently to both drive and
 coast flanks. An explicitly supplied oversized value is rejected; the
 module-based default warns and leaves an affected construction section sharp
-when the independent flank geometry has no room for a circular blend. It is
-not the cutter-head
+when the independent flank geometry has no room for a circular blend. The
+standalone SOLIDWORKS builder exposes the same value as
+`--root-fillet-radius`. It is not the cutter-head
 `cutter_radius`, nor a cutter blade-edge radius. A true hypoid root fillet
 requires cutter blade and machine geometry that this implementation does not
 model, so this circular transition must not be interpreted as a generated
