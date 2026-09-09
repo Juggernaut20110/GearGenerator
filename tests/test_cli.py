@@ -32,6 +32,28 @@ def test_spur_is_selected_by_type(capsys):
     assert "cone" not in out
 
 
+def test_spur_profile_shift_flags_reach_the_iso_report(capsys):
+    code, out, err = run(
+        ["--type", "spur", "--x1", "0.3", "--x2", "-0.1"] + ANCHOR,
+        capsys,
+    )
+
+    assert code == 0
+    assert "ERROR" not in err
+    for label in (
+        "profile shift x1",
+        "profile shift x2",
+        "reference diameter d",
+        "base diameter d_b",
+        "working centre distance a_w",
+        "working pitch diameter d_w",
+        "epsilon_gamma",
+    ):
+        assert label in out
+    assert "0.3000" in out
+    assert "-0.1000" in out
+
+
 @pytest.mark.parametrize("gear_type", ["bevel", "spur"])
 def test_every_type_prints_the_same_three_sections(gear_type, capsys):
     _, out, _ = run(["--type", gear_type] + ANCHOR, capsys)

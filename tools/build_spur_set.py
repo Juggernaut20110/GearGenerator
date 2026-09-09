@@ -53,6 +53,14 @@ def main(argv=None) -> int:
     ap.add_argument("--hub", type=float)
     ap.add_argument("--backlash", type=float)
     ap.add_argument(
+        "--x1", type=float, default=0.0,
+        help="pinion profile-shift coefficient x1 (normal-module units)",
+    )
+    ap.add_argument(
+        "--x2", type=float, default=0.0,
+        help="gear/ring profile-shift coefficient x2 (normal-module units)",
+    )
+    ap.add_argument(
         "--internal", action="store_true", help="z2 is an internal ring gear"
     )
     ap.add_argument("--rim", type=float, help="ring rim thickness, mm")
@@ -69,6 +77,8 @@ def main(argv=None) -> int:
         "helix_angle": args.beta,
         "hand": args.hand,
         "internal": args.internal,
+        "profile_shift_1": args.x1,
+        "profile_shift_2": args.x2,
     }
     for key, value in (
         ("face_width", args.face_width),

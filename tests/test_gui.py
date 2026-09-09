@@ -8,6 +8,7 @@ and scene build, and that the Build button follows the validation state.
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -19,6 +20,7 @@ from gears.spur import preview as spur_preview     # noqa: E402
 from gears.spur.params import SpurSetParams        # noqa: E402
 from gears.gui import (                            # noqa: E402
     BEVEL_FIELDS as FIELDS,
+    SPUR_FIELDS,
     App,
     KINDS,
     _bevel_result_lines,
@@ -296,6 +298,43 @@ def test_presets_round_trip_through_json(app, tmp_path):
         if field.optional:
             continue
         assert app.vars[field.attr].get() != ""
+
+
+def test_spur_profile_shift_inputs_reach_geometry(app):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    set_input(app, "profile_shift_1", "0.3")
+    set_input(app, "profile_shift_2", "-0.1")
+
+    assert app._params.profile_shift_1 == pytest.approx(0.3)
+    assert app._params.profile_shift_2 == pytest.approx(-0.1)
+    assert app._geo.pinion.profile_shift == pytest.approx(0.3)
+    assert app._geo.gear.profile_shift == pytest.approx(-0.1)
+    assert {field.attr for field in SPUR_FIELDS} >= {
+        "profile_shift_1", "profile_shift_2"
+    }
+
+
+def test_spur_profile_shift_inputs_round_trip_through_json(app, tmp_path):
+    app.kind_key.set("spur")
+    app.on_kind_change()
+    set_input(app, "profile_shift_1", "0.4")
+    set_input(app, "profile_shift_2", "0.2")
+    path = tmp_path / "shifted-spur.json"
+    app._params.to_json(path)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["profile_shift_1"] == pytest.approx(0.4)
+    assert raw["profile_shift_2"] == pytest.approx(0.2)
+
+    set_input(app, "profile_shift_1", "0")
+    set_input(app, "profile_shift_2", "0")
+    app.load_preset(path)
+
+    assert app._params.profile_shift_1 == pytest.approx(0.4)
+    assert app._params.profile_shift_2 == pytest.approx(0.2)
+    assert app.vars["profile_shift_1"].get() == "0.4"
+    assert app.vars["profile_shift_2"].get() == "0.2"
 
 
 def test_a_blank_optional_field_reads_back_as_none(app):

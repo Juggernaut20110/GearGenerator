@@ -37,6 +37,14 @@ def main(argv=None) -> int:
     ap.add_argument("--bore", type=float)
     ap.add_argument("--hub", type=float)
     ap.add_argument("--backlash", type=float)
+    ap.add_argument(
+        "--x1", type=float, default=0.0,
+        help="pinion profile-shift coefficient x1 (normal-module units)",
+    )
+    ap.add_argument(
+        "--x2", type=float, default=0.0,
+        help="gear profile-shift coefficient x2 (normal-module units)",
+    )
     ap.add_argument("--member", choices=("pinion", "gear"), default="pinion")
     ap.add_argument("--save", help="path to save the part to")
     ap.add_argument("--close", action="store_true", help="close the part afterwards")
@@ -46,6 +54,8 @@ def main(argv=None) -> int:
         "pressure_angle": args.alpha,
         "helix_angle": args.beta,
         "hand": args.hand,
+        "profile_shift_1": args.x1,
+        "profile_shift_2": args.x2,
     }
     for key, value in (
         ("face_width", args.face_width),

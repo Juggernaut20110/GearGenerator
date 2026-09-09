@@ -588,6 +588,60 @@ The Method 1 solver is deliberately bounded and reports non-convergence as a
 validation error. This keeps an impossible offset from reaching the loft or the
 SOLIDWORKS assembly builder.
 
+## ISO 21771 Cylindrical Involute Geometry
+
+The spur implementation uses the concepts and equations of ISO 21771-1:2024
+for cylindrical involute geometry, together with the standard basic-rack data
+from ISO 53:1998. This is an engineering implementation, not a claim of full
+ISO certification or conformity assessment.
+
+The ordinary spur workflow uses the standard reference system and the default
+basic rack: `h_aP* = 1.0`, `c_P* = 0.25`, `h_fP* = 1.25`, and
+`rho_fP* = 0.38`. The normal module `m_n` and normal pressure angle
+`alpha_n` are the cutter quantities. For a helical gear they are converted to
+the transverse plane as
+
+```
+m_t = m_n / cos(beta)
+alpha_t = atan(tan(alpha_n) / cos(beta))
+```
+
+The optional profile-shift coefficients `x1` and `x2` are dimensionless and
+measured in normal-module units. Positive external profile shift moves the
+reference tooth form outward: it increases reference tooth thickness and
+addendum while reducing dedendum; negative shift does the reverse. The two
+coefficients also determine the pair's working centre-distance modification.
+
+Reference circles remain distinct from working circles. In particular,
+`d = m_t z` is the reference diameter, `d_b = d cos(alpha_t)` is the base
+diameter, and `d_w` and `a_w` are the working pitch diameter and working centre
+distance. The report labels these separately, along with the working
+transverse pressure angle `alpha_wt`. External and internal pairs are
+supported, with the internal ring using its explicit tooth-space geometry;
+straight and helical pairs are supported with the repository's external
+opposite-hand and internal same-hand conventions.
+
+Backlash is the user-facing circular backlash at the applicable reference
+pitch circle. It is subtracted once from the pair by splitting it between the
+two member thicknesses; it is not added to the centre distance. This deliberate
+tooth-thinning allowance is kept separate from the geometric tooth thickness
+created by profile shift.
+
+Above the base circle the flank is an analytical involute. The default
+`root_geometry="legacy"` mode retains the existing radial-below-base and
+root-fillet approximation for compatibility. External straight gears can opt
+into `root_geometry="rack_generated"`, which uses the analytical rolling
+envelope of the rounded ISO 53 rack corner for the generated root/undercut.
+Internal and helical members retain their explicitly limited legacy root path
+until separate cutter-generation equations are verified. CAD output samples
+the analytical sections for DXF, preview, and SOLIDWORKS construction.
+
+Limitations remain: this code has not been audited for every ISO 21771
+conformity requirement, and exact cutter interference, trimming, and all
+operating contact limits are not claimed for every internal/helical/root-mode
+combination. The validator reports conservative warnings where an exact
+engineering check is not implemented.
+
 ## The spur geometry, in brief
 
 Read the module docstring in [gears/spur/geometry.py](gears/spur/geometry.py).
@@ -620,11 +674,12 @@ same-hand helices would cross instead of meshing. What has to match between them
 is the **axial pitch**, not the twist angle; the twists differ because the radii
 do, and there is a test that says so.
 
-**Undercut is reported, never designed around.** With no profile shift in the
-parameter set there is nothing the geometry can do about it, and the model will
-not even *show* it — the root below the base circle is drawn as a radial line,
-not the trochoid a real cutter leaves — so a part that undercuts in reality
-comes out of here looking sound. The warning says exactly that.
+**Undercut is reported, never designed around.** The validator uses the
+profile-shifted rack criterion. The default `legacy` root mode preserves the
+compatibility radial/root-fillet approximation; external straight gears using
+`root_geometry="rack_generated"` show the analytical rack-generated envelope.
+Internal and helical members retain their explicitly documented legacy path
+until separate cutter geometry is verified.
 
 Two measurements worth keeping, both the opposite of the bevel case. A standard
 spur tooth does **not** point on its own: 6 teeth at 25° still keeps 0.58 mm of
