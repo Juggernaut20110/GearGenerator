@@ -1,6 +1,7 @@
 """Pure-Python acceptance tests for the ISO Method 1 hypoid support."""
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -24,6 +25,7 @@ from gears.hypoid.mesh import (
 )
 from gears.hypoid.params import HypoidSetParams
 from gears.hypoid.validate import validate
+from gears.bevel.geometry import to_cone_3d
 from gears.placement import apply, rot_y
 
 
@@ -713,6 +715,78 @@ def test_member_traces_turn_in_opposite_senses_and_hand_mirrors_them():
     )
 
 
+def _actual_3d_trace_spiral_angle(geo, member, cone_dist):
+    """Numerically measure the pitch-trace tangent through production geometry."""
+    m = geo.member(member)
+
+    def point(distance):
+        section = tooth_space_section(geo, member, distance)
+        # The developed virtual pitch point is the point used by the
+        # longitudinal trace.  Passing it through both production functions is
+        # important: this measures the phase that the loft receives, rather
+        # than measuring a private phase helper in isolation.
+        radius = m.virtual_pitch_r * distance / m.cone_distance
+        return to_cone_3d(
+            radius, 0.0, m.pitch_angle, section.cone_apex_z, section.phase
+        )
+
+    h = 1e-4
+    before, after = point(cone_dist - h), point(cone_dist + h)
+    tangent = tuple((after[i] - before[i]) / (2.0 * h) for i in range(3))
+    current = point(cone_dist)
+    azimuth = math.atan2(current[1], current[0])
+    circumferential = (-math.sin(azimuth), math.cos(azimuth), 0.0)
+    generator = (
+        math.sin(m.pitch_angle) * math.cos(azimuth),
+        math.sin(m.pitch_angle) * math.sin(azimuth),
+        math.cos(m.pitch_angle),
+    )
+    tangent_component = sum(tangent[i] * circumferential[i] for i in range(3))
+    generator_component = sum(tangent[i] * generator[i] for i in range(3))
+    return math.atan2(tangent_component, generator_component)
+
+
+@pytest.mark.parametrize(
+    "label, params",
+    [
+        ("anchor", ANCHOR),
+        (
+            "positive_offset",
+            HypoidSetParams.with_defaults(
+                2.0, 17, 43, offset=6.0, face_width=8.0,
+                spiral_angle=35.0, cutter_radius=30.0,
+            ),
+        ),
+        ("negative_offset", replace(ANCHOR, offset=-15.0)),
+        ("zero_offset", replace(ANCHOR, offset=0.0)),
+        ("left_hand", replace(ANCHOR, hand="left")),
+    ],
+)
+def test_actual_3d_trace_reproduces_method1_mean_and_face_spirals(label, params):
+    """The phase supplied to each Tredgold section has the Method 1 slope.
+
+    The two local production phases have opposite rotational senses, so the
+    signed 3D slope is ``+member`` on the pinion and ``-member`` on the wheel.
+    The reported Method 1 spiral angles are the corresponding hand-signed
+    magnitudes; both forms are asserted here at the calculation point and at
+    the physical inner/outer tooth-face boundaries.
+    """
+    geo = compute_set(params)
+    for name in ("pinion", "gear"):
+        member = geo.member(name)
+        expected_sense = 1.0 if name == "pinion" else -1.0
+        for distance, expected in (
+            (member.tooth_face_inner_cone_distance, member.inner_spiral_angle),
+            (member.cone_distance, member.mean_spiral_angle),
+            (member.tooth_face_outer_cone_distance, member.outer_spiral_angle),
+        ):
+            actual = _actual_3d_trace_spiral_angle(geo, name, distance)
+            assert actual == pytest.approx(
+                expected_sense * expected, abs=2e-6
+            ), f"{label} {name} at A={distance}"
+            assert abs(actual) == pytest.approx(abs(expected), abs=2e-6)
+
+
 def test_cutter_radius_changes_off_mean_loft_sections():
     smaller = compute_set(ANCHOR)
     larger = compute_set(
@@ -801,39 +875,6 @@ def test_method_1_reports_a_non_convergent_curvature_design():
     result = validate(invalid)
     assert not result.ok
     assert any(issue.field == "cutter_radius" for issue in result.errors)
-
-
-def test_member_trace_tangents_agree_in_the_skew_axis_frame():
-    geo = compute_set(ANCHOR)
-    theta1, theta2 = contact_azimuths(geo)
-
-    def point(member, cone_dist, theta):
-        m = geo.member(member)
-        phase = tooth_space_section(geo, member, cone_dist).phase
-        local = (
-            cone_dist * math.sin(m.pitch_angle) * math.cos(theta + phase),
-            cone_dist * math.sin(m.pitch_angle) * math.sin(theta + phase),
-            cone_dist * math.cos(m.pitch_angle),
-        )
-        if member == "pinion":
-            return local
-        rotated = apply(rot_y(geo.params.sigma), local)
-        translation = gear_translation(geo)
-        return tuple(rotated[i] + translation[i] for i in range(3))
-
-    def tangent(member, theta):
-        mean = geo.member(member).cone_distance
-        h = 1e-4
-        before, after = point(member, mean - h, theta), point(member, mean + h, theta)
-        vector = tuple((after[i] - before[i]) / (2.0 * h) for i in range(3))
-        length = math.sqrt(sum(value * value for value in vector))
-        return tuple(value / length for value in vector)
-
-    pinion_tangent = tangent("pinion", theta1)
-    gear_tangent = tangent("gear", theta2)
-    assert sum(pinion_tangent[i] * gear_tangent[i] for i in range(3)) == (
-        pytest.approx(1.0, abs=1e-10)
-    )
 
 
 def test_invalid_offset_and_cutter_are_reported():

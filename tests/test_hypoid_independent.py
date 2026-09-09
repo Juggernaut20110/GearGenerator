@@ -476,36 +476,6 @@ def test_mean_cutter_trace_has_the_requested_tangent_at_each_member_calculation_
         )
 
 
-def test_member_trace_tangents_are_common_at_the_mean_contact_point():
-    geo = compute_set(ANCHOR)
-    theta1, theta2 = contact_azimuths(geo)
-
-    def point(member: str, cone_distance: float, theta: float):
-        m = geo.member(member)
-        phase = tooth_space_section(geo, member, cone_distance).phase
-        local = (
-            cone_distance * math.sin(m.pitch_angle) * math.cos(theta + phase),
-            cone_distance * math.sin(m.pitch_angle) * math.sin(theta + phase),
-            cone_distance * math.cos(m.pitch_angle),
-        )
-        if member == "pinion":
-            return local
-        return apply(rot_y(geo.params.sigma), local)
-
-    def tangent(member: str, theta: float):
-        mean = geo.member(member).cone_distance
-        h = 1e-4
-        before = point(member, mean - h, theta)
-        after = point(member, mean + h, theta)
-        return _unit(tuple(after[i] - before[i] for i in range(3)))
-
-    pinion_tangent = tangent("pinion", theta1)
-    gear_tangent = tangent("gear", theta2)
-    assert sum(pinion_tangent[i] * gear_tangent[i] for i in range(3)) == pytest.approx(
-        1.0, abs=1e-10
-    )
-
-
 def test_pitch_surface_mesh_probe_has_no_obvious_pitch_cone_penetration():
     """Sample a ratio-driven mesh without claiming full flank conjugacy.
 

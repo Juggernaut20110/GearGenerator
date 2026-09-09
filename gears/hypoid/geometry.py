@@ -26,6 +26,11 @@ METHOD1_MAX_ITERATIONS = 80
 METHOD1_PRELIMINARY_WHEEL_FACTOR = 1.2
 METHOD1_CURVATURE_TOLERANCE_MM = 1e-9
 METHOD1_DERIVATIVE_STEP_RAD = 1e-6
+# Numerical tolerance for the one-dimensional phase integral used to transport
+# the Method 1 pinion trace through a non-zero hypoid offset.  This is an
+# integration accuracy, not a geometry/calibration factor.
+PHASE_INTEGRATION_TOLERANCE_RAD = 1e-11
+PHASE_INTEGRATION_MAX_DEPTH = 20
 
 
 @dataclass(frozen=True)
@@ -1554,77 +1559,17 @@ def compute_set(p: HypoidSetParams) -> HypoidSetGeometry:
     )
 
 
-def _gear_section_phase_tangent(geo: HypoidSetGeometry) -> float:
-    """Wheel phase tangent that shares the pinion trace at mean contact.
-
-    ``mean_spiral_angle`` remains the Method 1 manufacturing dimension.  The
-    Tredgold/conical tooth approximation needs a slightly different wheel
-    section phase: resolve the pinion trace tangent into the wheel's generator
-    and circumferential directions in the assembled skew-axis frame.  This
-    removes the first-order trace mismatch that otherwise makes the lofts cross
-    through one another despite agreeing at the mean pitch point.
-    """
-    a, b, p = geo.pinion, geo.gear, geo.params
-    theta1, theta2 = contact_azimuths(geo)
-
-    def generator(delta: float, theta: float) -> tuple[float, float, float]:
-        return (
-            math.sin(delta) * math.cos(theta),
-            math.sin(delta) * math.sin(theta),
-            math.cos(delta),
-        )
-
-    def tangent(theta: float) -> tuple[float, float, float]:
-        return -math.sin(theta), math.cos(theta), 0.0
-
-    def wheel_frame(vector) -> tuple[float, float, float]:
-        c, s = math.cos(p.sigma), math.sin(p.sigma)
-        x, y, z = vector
-        return c * x + s * z, y, -s * x + c * z
-
-    g1, e1 = generator(a.pitch_angle, theta1), tangent(theta1)
-    pinion_trace = tuple(
-        g1[i] + math.sin(a.pitch_angle) * math.tan(a.mean_spiral_angle) * e1[i]
-        for i in range(3)
-    )
-    wheel_generator = wheel_frame(generator(b.pitch_angle, theta2))
-    # The wheel phase has the opposite sign, hence -e_theta is the second
-    # basis direction used here.
-    wheel_tangent = tuple(-value for value in wheel_frame(tangent(theta2)))
-
-    aa = sum(value * value for value in wheel_generator)
-    bb = sum(value * value for value in wheel_tangent)
-    ab = sum(wheel_generator[i] * wheel_tangent[i] for i in range(3))
-    av = sum(wheel_generator[i] * pinion_trace[i] for i in range(3))
-    bv = sum(wheel_tangent[i] * pinion_trace[i] for i in range(3))
-    determinant = aa * bb - ab * ab
-    if abs(determinant) < 1e-12:
-        raise ValueError("hypoid contact trace is singular")
-    generator_scale = (av * bb - bv * ab) / determinant
-    tangent_scale = (bv * aa - av * ab) / determinant
-    if abs(generator_scale) < 1e-12 or abs(math.sin(b.pitch_angle)) < 1e-12:
-        raise ValueError("hypoid wheel contact trace has no finite section phase")
-    return tangent_scale / generator_scale / math.sin(b.pitch_angle)
-
-
-def _phase_tangent(member: HypoidMemberGeometry, geo: HypoidSetGeometry) -> float:
-    return (
-        _gear_section_phase_tangent(geo)
-        if member.name == "gear"
-        else math.tan(member.mean_spiral_angle)
-    )
-
-
 def _cutter_trace(
     member: HypoidMemberGeometry, geo: HypoidSetGeometry
 ) -> CrownTrace | None:
     """Return the circular cutter trace in the member's own mean geometry.
 
-    The cutter radius is a lengthwise curvature radius, so each member's arc
-    is placed at that member's Method 1 calculation point and mean spiral
-    angle.  The skew-axis contact calculation may still supply a first-order
-    phase scale, but it must not replace the physical mean geometry used to
-    determine the arc curvature.
+    The cutter radius is a lengthwise curvature radius, so the circular arc is
+    placed at the requested member's Method 1 calculation point and mean
+    spiral angle.  For a non-zero-offset pinion, the production phase uses the
+    wheel trace transported through the Method 1 offset construction; this
+    helper still returns the member-local arc for the bevel-like zero-offset
+    case and for diagnostics.
     """
     radius = geo.params.cutter_radius
     if radius is None:
@@ -1639,34 +1584,212 @@ def _cutter_trace(
     )
 
 
-def _phase(member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometry) -> float:
-    # The phase is zero at the mean cone distance and rolls in opposite senses
-    # on the pair.  With a finite cutter, use the circular arc's exact change
-    # in trace angle rather than its tangent at the mean.
-    span = cone_dist - member.cone_distance
-    mate_sign = -1.0 if member.name == "gear" else 1.0
-    phase_tangent = _phase_tangent(member, geo)
+def _pinion_corresponding_wheel_cone_distance(
+    geo: HypoidSetGeometry, cone_dist: float
+) -> float:
+    """Return the Method 1 wheel distance corresponding to pinion ``A``.
+
+    If ``t = A - R1`` and ``zeta_mp`` is the signed mean pitch-plane offset
+    angle, ISO's boundary construction (formulas 174/175) gives
+
+        B(A)^2 = R2^2 + t^2 + 2 R2 t cos(|zeta_mp|).
+
+    At the pinion mean point this is ``B(R1) = R2``.  The sign of the physical
+    hypoid offset is deliberately absent: it mirrors the skew assembly but
+    does not change the member's Method 1 spiral magnitudes.
+    """
+    pinion, gear = geo.pinion, geo.gear
+    t = cone_dist - pinion.cone_distance
+    return math.sqrt(
+        gear.cone_distance ** 2
+        + t ** 2
+        + 2.0 * gear.cone_distance * t
+        * math.cos(abs(geo.method1.pinion_offset_angle_pitch))
+    )
+
+
+def _method1_spiral_angle_at(
+    member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometry
+) -> float:
+    """Return the signed Method 1 longitudinal angle at physical ``A``.
+
+    The wheel uses its circular ``CrownTrace`` directly.  For a zero-offset
+    pair the pinion has the same independent trace.  For a non-zero-offset
+    pair, the Method 1 face construction evaluates the wheel cutter trace at
+    the corresponding wheel distance ``B(A)`` and adds the local offset
+    angle::
+
+        beta_1(A) = beta_2(B(A))
+                    + hand * asin(|pitch_plane_offset| / B(A)).
+
+    This is the continuous form of the same relation used by
+    ``_method1_boundary_spirals`` for the inner and outer physical faces.  It
+    describes the Method 1 longitudinal trace used by this approximation; it
+    is not a claim that the Tredgold sections are a true generated or
+    conjugate hypoid flank.
+    """
     trace = _cutter_trace(member, geo)
-    if trace is None:
-        phase_curve = span * phase_tangent / max(cone_dist, 1e-9)
+    if member.name == "gear" or abs(geo.pitch_plane_offset) <= 1e-12:
+        return (
+            trace.spiral_angle_at(cone_dist)
+            if trace is not None
+            else member.mean_spiral_angle
+        )
+
+    # The non-zero-offset Method 1 pinion boundary is transported from the
+    # wheel trace rather than from an unrelated circular arc on the pinion.
+    wheel_trace = _cutter_trace(geo.gear, geo)
+    wheel_dist = _pinion_corresponding_wheel_cone_distance(geo, cone_dist)
+    wheel_angle = (
+        wheel_trace.spiral_angle_at(wheel_dist)
+        if wheel_trace is not None
+        else geo.gear.mean_spiral_angle
+    )
+    offset_ratio = abs(geo.pitch_plane_offset) / wheel_dist
+    if offset_ratio >= 1.0:
+        raise ValueError("hypoid Method 1 pinion trace offset is singular")
+    hand = 1.0 if geo.params.hand == "right" else -1.0
+    return wheel_angle + hand * math.asin(offset_ratio)
+
+
+def _integrate_phase_tangent(
+    member: HypoidMemberGeometry,
+    start: float,
+    stop: float,
+    geo: HypoidSetGeometry,
+) -> float:
+    """Integrate the physical cone phase from ``start`` to ``stop``.
+
+    Let the pitch-cone point be
+
+        P(A) = A (sin(delta) cos(phi), sin(delta) sin(phi), cos(delta)).
+
+    Its generator and circumferential components give
+
+        tan(beta_actual) = A sin(delta) d(phi)/dA.
+
+    ``phi`` is the phase passed to ``to_cone_3d`` (apart from a constant
+    profile azimuth), so the required physical phase is therefore
+
+        phi(A) - phi(R) = integral_R^A
+            tan(beta_method1(u)) / (u sin(delta)) du.
+
+    This quadrature is only needed for a non-zero-offset pinion, where the
+    Method 1 offset transport makes ``beta_method1(A)`` no longer the tangent
+    of one circular crown arc in the pinion's own cone parameter.  The wheel
+    and zero-offset paths use the exact ``CrownTrace.theta_at / sin(delta)``
+    mapping directly.
+    """
+    if start == stop:
+        return 0.0
+    sin_delta = math.sin(member.pitch_angle)
+    if abs(sin_delta) < 1e-12:
+        raise ValueError("hypoid trace phase has a singular pitch angle")
+
+    reverse = stop < start
+    lo, hi = (stop, start) if reverse else (start, stop)
+
+    def integrand(value: float) -> float:
+        beta = _method1_spiral_angle_at(member, value, geo)
+        return math.tan(beta) / (value * sin_delta)
+
+    def simpson(a, b, fa, fb, fc) -> float:
+        return (b - a) * (fa + 4.0 * fc + fb) / 6.0
+
+    fa = integrand(lo)
+    fb = integrand(hi)
+    mid = 0.5 * (lo + hi)
+    fm = integrand(mid)
+    whole = simpson(lo, hi, fa, fb, fm)
+    tolerance = PHASE_INTEGRATION_TOLERANCE_RAD * (1.0 + abs(whole))
+
+    def recurse(a, b, fa, fb, fc, whole, depth) -> float:
+        mid = 0.5 * (a + b)
+        left_mid = 0.5 * (a + mid)
+        right_mid = 0.5 * (mid + b)
+        f_left_mid = integrand(left_mid)
+        f_right_mid = integrand(right_mid)
+        left = simpson(a, mid, fa, fc, f_left_mid)
+        right = simpson(mid, b, fc, fb, f_right_mid)
+        refined = left + right
+        if (
+            depth <= 0
+            or abs(refined - whole) <= 15.0 * tolerance
+        ):
+            return refined + (refined - whole) / 15.0
+        return (
+            recurse(a, mid, fa, fc, f_left_mid, left, depth - 1)
+            + recurse(mid, b, fc, fb, f_right_mid, right, depth - 1)
+        )
+
+    result = recurse(
+        lo, hi, fa, fb, fm, whole, PHASE_INTEGRATION_MAX_DEPTH
+    )
+    return -result if reverse else result
+
+
+def _phase(member: HypoidMemberGeometry, cone_dist: float, geo: HypoidSetGeometry) -> float:
+    """Return the physical section rotation at cone distance ``A``.
+
+    ``CrownTrace.theta_at(A)`` is an angle in the generating crown plane.  A
+    point at crown radius ``A`` maps to circumferential radius
+    ``A * sin(delta)`` on a member's pitch cone.  Preserving the swept arc
+    length requires
+
+        (A sin(delta)) d(phi) = A d(theta_crown),
+        hence d(phi) = d(theta_crown) / sin(delta).
+
+    The phase here is the physical ``phi`` added by ``to_cone_3d``; it must not
+    be treated as another back-cone-development angle.  On the cosine-rule
+    branch used by ``CrownTrace``, differentiating the raw angle gives
+
+        d(-trace.sign * theta_at) / dA = tan(beta_trace(A)) / A.
+
+    That signed orientation is why the circular-arc phase below has the
+    leading ``-trace.sign``; it also handles a Zerol trace whose tangent
+    changes sign across the face.
+
+    For a non-zero-offset pinion, Method 1 gives a member-specific local
+    spiral angle through the corresponding wheel distance and offset angle.
+    `_integrate_phase_tangent` enforces the same cone differential equation so
+    both physical pinion face boundaries retain their Method 1 values.  The
+    final ``member_sense`` keeps the existing opposite local phase senses of a
+    meshed pair; Method 1 member spiral fields are compared as magnitudes (or
+    with this sense restored), not as the signs of the two local rotations.
+    """
+    if cone_dist <= 0.0:
+        raise ValueError("hypoid trace cone distance must be positive")
+    sin_delta = math.sin(member.pitch_angle)
+    if abs(sin_delta) < 1e-12:
+        return 0.0
+
+    trace = _cutter_trace(member, geo)
+    zero_offset = abs(geo.pitch_plane_offset) <= 1e-12
+    if trace is not None and (member.name == "gear" or zero_offset):
+        # The raw crown angle's cosine-rule orientation is opposite to the
+        # signed CrownTrace tangent, so -trace.sign*theta/sin(delta) is the
+        # physical cone phase.
+        phase_curve = -trace.sign * trace.theta_at(cone_dist) / sin_delta
+    elif trace is None and zero_offset:
+        # An absent cutter is the constant-angle idealisation.  Integrating
+        # tan(beta)/A gives tan(beta) * log(A/R), still with the cone mapping.
+        phase_curve = (
+            math.tan(member.mean_spiral_angle)
+            * math.log(cone_dist / member.cone_distance)
+            / sin_delta
+        )
     else:
-        mean_tangent = math.tan(member.mean_spiral_angle)
-        if abs(mean_tangent) > 1e-12:
-            # The resolved skew-frame tangent is a first-order placement
-            # correction.  Apply its dimensionless scale to the physical
-            # cutter arc; do not use it to relocate the arc itself.
-            phase_scale = phase_tangent / mean_tangent
-        else:
-            phase_scale = 1.0
-        if abs(member.mean_spiral_angle) > 1e-12:
-            trace_sign = math.copysign(1.0, member.mean_spiral_angle)
-        else:
-            # At zero mean spiral the tangent has no sign.  The hand still
-            # chooses which side of the circular cutter arc the Zerol trace
-            # bends toward.
-            trace_sign = 1.0 if geo.params.hand == "right" else -1.0
-        phase_curve = -trace_sign * trace.theta_at(cone_dist) * phase_scale
-    return mate_sign * phase_curve
+        phase_curve = _integrate_phase_tangent(
+            member, member.cone_distance, cone_dist, geo
+        )
+
+    # The production pair intentionally traverses the common trace in
+    # opposite local rotational senses, as the bevel production path does.
+    # ``phase_curve`` is oriented by the signed Method 1 spiral tangent.  Keep
+    # the existing opposite local phase senses of the hypoid pair: the pinion
+    # receives the curve directly and the wheel receives its negative.
+    member_sense = 1.0 if member.name == "pinion" else -1.0
+    return member_sense * phase_curve
 
 
 def _reflect_flank(points: list[Point2]) -> list[Point2]:

@@ -7,13 +7,16 @@ back-cone/Tredgold section loft against two explicit trace-transport
 references:
 
 ``raw-crown``
-    The circular ``CrownTrace`` angle used directly as the longitudinal phase.
-    This is the reference that the pinion path currently follows.
+    The circular ``CrownTrace`` angle used directly as the longitudinal phase,
+    without the pitch-cone development factor.  This is the unscaled phase
+    used by the original hypoid path.
 
 ``developed-cone``
     The ``CrownTrace`` documentation's cone-development mapping, in which the
     crown-plane angle is divided by ``sin(pitch_angle)`` before it is used as
-    real cone phase.
+    real cone phase.  For a non-zero-offset pinion, the production path also
+    applies the Method 1 wheel-to-pinion offset transport, so this remains an
+    explicit circular-trace reference rather than an exact production target.
 
 Neither reference is a true generated hypoid flank.  A true envelope also
 needs the inside/outside blade geometry, cutter-head motion and machine
