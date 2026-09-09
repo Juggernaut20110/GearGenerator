@@ -116,7 +116,6 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
     if (
         p.working_centre_distance is not None
         and not p.internal
-        and abs(p.beta) <= 1e-12
     ):
         if not math.isfinite(p.working_centre_distance):
             r.error("working_centre_distance", "must be finite")
@@ -144,7 +143,6 @@ def validate(p: SpurSetParams) -> ValidationResult:
     if (
         p.working_centre_distance is not None
         and not p.internal
-        and abs(p.beta) <= 1e-12
     ):
         q = p.z2 - p.z1 if p.internal else p.z1 + p.z2
         implied_shift = q * (

@@ -189,6 +189,41 @@ def _independent_shifted_values(module, teeth, shift, alpha, backlash):
     }
 
 
+def _independent_helical_shifted_values(
+    normal_module, teeth, shift, alpha_n, beta, backlash=0.0
+):
+    """Return ISO helical values using only normal/transverse equations.
+
+    This deliberately does not call ``SpurSetParams`` conversion properties or
+    any geometry helper.  Profile shift x is normal, while the involute and
+    reference tooth thickness used by the transverse section are transverse.
+    """
+    transverse_module = normal_module / math.cos(beta)
+    alpha_t = math.atan2(math.tan(alpha_n), math.cos(beta))
+    reference_r = transverse_module * teeth / 2.0
+    base_r = reference_r * math.cos(alpha_t)
+    normal_geometric_thickness = normal_module * (
+        math.pi / 2.0 + 2.0 * shift * math.tan(alpha_n)
+    )
+    geometric_thickness = normal_geometric_thickness / math.cos(beta)
+    reference_thickness = geometric_thickness - backlash / 2.0
+    normal_thickness = reference_thickness * math.cos(beta)
+    tip_r = reference_r + normal_module * (1.0 + shift)
+    root_r = reference_r - normal_module * (1.25 - shift)
+    psi0 = reference_thickness / (2.0 * reference_r) + _reference_inv(alpha_t)
+    return {
+        "reference_r": reference_r,
+        "base_r": base_r,
+        "tip_r": tip_r,
+        "root_r": root_r,
+        "geometric_thickness": geometric_thickness,
+        "reference_thickness": reference_thickness,
+        "normal_geometric_thickness": normal_geometric_thickness,
+        "normal_thickness": normal_thickness,
+        "psi0": psi0,
+    }
+
+
 SHIFT_CASES = (
     ("zero", 0.0, 0.0),
     ("positive_pinion", 0.2, 0.0),
@@ -278,6 +313,192 @@ def test_external_straight_profile_shift_geometry_against_independent_equations(
     expected_action -= expected_working_distance * math.sin(expected_working_angle)
     expected_contact = expected_action / expected_contact_denominator
     assert geo.transverse_contact_ratio == pytest.approx(expected_contact, abs=1e-12)
+
+
+HELICAL_SHIFT_CASES = (
+    ("zero", 0.0, 0.0),
+    ("balanced_individual", 0.3, -0.3),
+    ("positive_total", 0.4, 0.2),
+)
+
+
+@pytest.mark.parametrize("beta_deg", [0.0, 15.0, 30.0])
+@pytest.mark.parametrize("case,shift_1,shift_2", HELICAL_SHIFT_CASES)
+def test_external_helical_profile_shift_geometry_against_independent_equations(
+    beta_deg, case, shift_1, shift_2
+):
+    """Independent ISO normal/transverse equations cover the full pair view."""
+    normal_module = 2.0
+    z1, z2 = 17, 43
+    alpha_n = math.radians(20.0)
+    beta = math.radians(beta_deg)
+    p = SpurSetParams.with_defaults(
+        normal_module,
+        z1,
+        z2,
+        helix_angle=beta_deg,
+        profile_shift_1=shift_1,
+        profile_shift_2=shift_2,
+    )
+    geo = compute_set(p)
+
+    # These are written directly from the normal/transverse definitions.
+    expected_m_t = normal_module / math.cos(beta)
+    expected_alpha_t = math.atan2(math.tan(alpha_n), math.cos(beta))
+    expected_reference_distance = expected_m_t * (z1 + z2) / 2.0
+    expected_working_inv = _reference_inv(expected_alpha_t) + (
+        2.0 * (shift_1 + shift_2) * math.tan(alpha_n) / (z1 + z2)
+    )
+    expected_working_angle = _inverse_reference_inv(expected_working_inv)
+    expected_working_distance = (
+        expected_reference_distance
+        * math.cos(expected_alpha_t)
+        / math.cos(expected_working_angle)
+    )
+
+    assert geo.transverse_module == pytest.approx(expected_m_t, abs=1e-12)
+    assert geo.reference_pressure_angle == pytest.approx(expected_alpha_t, abs=1e-12)
+    assert geo.reference_centre_distance == pytest.approx(
+        expected_reference_distance, abs=1e-12
+    )
+    assert geo.working_pressure_angle == pytest.approx(
+        expected_working_angle, abs=1e-12
+    )
+    assert geo.working_centre_distance == pytest.approx(
+        expected_working_distance, abs=1e-12
+    )
+
+    expected_members = (
+        _independent_helical_shifted_values(
+            normal_module, z1, shift_1, alpha_n, beta
+        ),
+        _independent_helical_shifted_values(
+            normal_module, z2, shift_2, alpha_n, beta
+        ),
+    )
+    expected_action = 0.0
+    for member, expected in zip((geo.pinion, geo.gear), expected_members):
+        assert member.reference_d == pytest.approx(2.0 * expected["reference_r"])
+        assert member.base_d == pytest.approx(2.0 * expected["base_r"])
+        assert member.tip_d == pytest.approx(2.0 * expected["tip_r"])
+        assert member.root_d == pytest.approx(2.0 * expected["root_r"])
+        assert member.geometric_tooth_thickness == pytest.approx(
+            expected["geometric_thickness"], abs=1e-12
+        )
+        assert member.reference_tooth_thickness == pytest.approx(
+            expected["reference_thickness"], abs=1e-12
+        )
+        assert top_land(member.pitch_r, member.base_r, member.psi0) == pytest.approx(
+            expected["reference_thickness"], abs=1e-12
+        )
+        assert member.normal_geometric_tooth_thickness == pytest.approx(
+            expected["normal_geometric_thickness"], abs=1e-12
+        )
+        assert member.normal_tooth_thickness == pytest.approx(
+            expected["normal_thickness"], abs=1e-12
+        )
+        assert member.psi0 == pytest.approx(expected["psi0"], abs=1e-12)
+        assert member.working_r == pytest.approx(
+            expected["base_r"] / math.cos(expected_working_angle), abs=1e-12
+        )
+        expected_action += math.sqrt(
+            max(0.0, expected["tip_r"] ** 2 - expected["base_r"] ** 2)
+        )
+
+    expected_action -= expected_working_distance * math.sin(expected_working_angle)
+    expected_contact = expected_action / (
+        math.pi * expected_m_t * math.cos(expected_alpha_t)
+    )
+    expected_overlap = p.face_width * abs(math.sin(beta)) / (math.pi * normal_module)
+    assert geo.transverse_contact_ratio == pytest.approx(expected_contact, abs=1e-12)
+    assert geo.axial_contact_ratio == pytest.approx(expected_overlap, abs=1e-12)
+    assert geo.total_contact_ratio == pytest.approx(
+        expected_contact + expected_overlap, abs=1e-12
+    )
+
+
+@pytest.mark.parametrize("beta_deg", [15.0, 30.0])
+def test_helical_profile_shift_uses_normal_module_and_pressure_angle(beta_deg):
+    """A transverse-module/angle substitution would produce a different tooth."""
+    normal_module = 2.0
+    shift = 0.25
+    alpha_n = math.radians(20.0)
+    beta = math.radians(beta_deg)
+    geo = compute_set(
+        SpurSetParams.with_defaults(
+            normal_module,
+            17,
+            43,
+            helix_angle=beta_deg,
+            profile_shift_1=shift,
+        )
+    )
+    expected_normal = normal_module * (
+        math.pi / 2.0 + 2.0 * shift * math.tan(alpha_n)
+    )
+    expected_transverse = expected_normal / math.cos(beta)
+    assert geo.pinion.normal_geometric_tooth_thickness == pytest.approx(
+        expected_normal, abs=1e-12
+    )
+    assert geo.pinion.geometric_tooth_thickness == pytest.approx(
+        expected_transverse, abs=1e-12
+    )
+    assert geo.pinion.geometric_tooth_thickness != pytest.approx(
+        (normal_module / math.cos(beta))
+        * (math.pi / 2.0 + 2.0 * shift * math.tan(geo.params.alpha_t)),
+        abs=1e-8,
+    )
+
+
+def test_helical_profile_shift_converges_to_straight_profile_shift():
+    straight = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 17, 43, profile_shift_1=0.4, profile_shift_2=0.2
+        )
+    )
+    nearly_straight = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            helix_angle=math.degrees(1e-7),
+            face_width=20.0,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+
+    assert nearly_straight.transverse_module == pytest.approx(
+        straight.transverse_module, abs=1e-13
+    )
+    assert nearly_straight.reference_pressure_angle == pytest.approx(
+        straight.reference_pressure_angle, abs=1e-13
+    )
+    assert nearly_straight.working_pressure_angle == pytest.approx(
+        straight.working_pressure_angle, abs=1e-13
+    )
+    assert nearly_straight.working_centre_distance == pytest.approx(
+        straight.working_centre_distance, abs=1e-11
+    )
+    assert nearly_straight.transverse_contact_ratio == pytest.approx(
+        straight.transverse_contact_ratio, abs=1e-11
+    )
+    for straight_member, helical_member in zip(
+        (straight.pinion, straight.gear), (nearly_straight.pinion, nearly_straight.gear)
+    ):
+        for field in (
+            "reference_r",
+            "base_r",
+            "tip_r",
+            "root_r",
+            "geometric_tooth_thickness",
+            "reference_tooth_thickness",
+            "psi0",
+        ):
+            assert getattr(helical_member, field) == pytest.approx(
+                getattr(straight_member, field), abs=1e-11
+            )
+    assert nearly_straight.axial_contact_ratio < 1e-6
 
 
 def test_profile_shift_changes_actual_involute_space_orientation():

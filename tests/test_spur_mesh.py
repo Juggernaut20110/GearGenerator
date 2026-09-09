@@ -75,6 +75,31 @@ def test_a_shifted_external_pair_is_placed_at_the_working_distance():
     )
 
 
+@pytest.mark.parametrize("beta", [15.0, 30.0])
+def test_a_shifted_helical_pair_keeps_hand_twist_and_working_placement(beta):
+    geo = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            17,
+            43,
+            helix_angle=beta,
+            profile_shift_1=0.4,
+            profile_shift_2=0.2,
+        )
+    )
+    assert mesh.gear_translation(geo) == pytest.approx(
+        (geo.working_centre_distance, 0.0, 0.0)
+    )
+    assert geo.pinion.beta == pytest.approx(geo.params.beta)
+    assert geo.gear.beta == pytest.approx(-geo.params.beta)
+    assert geo.pinion.twist == pytest.approx(
+        geo.params.face_width * math.tan(geo.pinion.beta) / geo.pinion.reference_r
+    )
+    assert geo.gear.twist == pytest.approx(
+        geo.params.face_width * math.tan(geo.gear.beta) / geo.gear.reference_r
+    )
+
+
 # --- clocking --------------------------------------------------------------
 
 

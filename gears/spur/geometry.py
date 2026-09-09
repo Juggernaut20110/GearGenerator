@@ -25,10 +25,11 @@ gear differs from a straight one only in that those two are larger:
     alpha_t = atan(tan(alpha_n) / cos(beta))
 
 Proportions are the plain ISO ones on the **normal** module - addendum 1.0 m_n,
-dedendum 1.25 m_n in the default rack. For the supported external straight
-path, profile shift changes those member-specific depths and the reference
-tooth thickness; the legacy helical/internal paths retain their existing
-standard proportions until their dedicated implementation phases.
+dedendum 1.25 m_n in the default rack. For an external pair, profile shift
+changes those member-specific depths and the reference tooth thickness. In a
+helical pair the tooth thickness is first calculated in the normal plane and
+then projected into the transverse plane; the involute still consumes the
+transverse result.
 
 The twist, and why the gear is wound the other way
 --------------------------------------------------
@@ -266,7 +267,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     working_pressure_angle, working_centre_distance = _working_geometry(
         p, reference_centre_distance, alpha_t
     )
-    profile_shifted_external = not p.internal and abs(p.beta) <= 1e-12
+    # Profile shift is supported for external straight and helical pairs.  The
+    # coefficients x_i are normal quantities; the transverse tooth thickness
+    # below is their projection into the plane in which the involute is built.
+    profile_shifted_external = not p.internal
 
     rack_addendum = (
         p.basic_rack_addendum_factor if profile_shifted_external else ADDENDUM_FACTOR
@@ -302,9 +306,8 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         reference_r = m_t * z / 2.0
         base_r = reference_r * math.cos(alpha_t)
         # The working circle is derived from the base circle and alpha_wt.  The
-        # legacy/reference profile is retained only on unsupported internal or
-        # helical paths; external straight profiles use the shifted dimensions
-        # and psi0 calculated below.
+        # reference circle remains d/2 even when profile shift changes the
+        # working centre distance.
         working_r = (
             reference_r
             if working_pressure_angle == alpha_t
@@ -313,9 +316,11 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
 
         member_shift = p.profile_shift_2 if name == "gear" else p.profile_shift_1
         if profile_shifted_external:
-            # ISO reference tooth thickness for an external straight gear:
-            # s_t = m_t * (pi/2 + 2*x_i*tan(alpha_n)).  Backlash is a separate
-            # deliberate reduction, split symmetrically as before.
+            # ISO reference tooth thickness for an external gear.  Profile
+            # shift x_i is defined in the normal system, so the normal form is
+            # s_n = m_n * (pi/2 + 2*x_i*tan(alpha_n)); the involute needs its
+            # transverse projection s_t = s_n / cos(beta).  Backlash is a
+            # separate deliberate reduction, split symmetrically as before.
             if member_shift == 0.0:
                 geometric_thickness = standard_geometric_thickness
             else:
@@ -461,19 +466,23 @@ def _working_geometry(
         working_distance = p.working_centre_distance
         if working_distance <= 0.0:
             raise ValueError("working centre distance must be greater than zero")
+        # The base-circle distance is invariant: a_w*cos(alpha_wt) equals
+        # a*cos(alpha_t).  Therefore the requested working distance gives
+        # cos(alpha_wt) = a*cos(alpha_t)/a_w.
         cosine = (
-            working_distance / reference_centre_distance
+            reference_centre_distance / working_distance
         ) * math.cos(reference_pressure_angle)
         if cosine <= 0.0 or cosine > 1.0 + 1e-12:
             raise ValueError("working centre distance gives a non-physical pressure angle")
         cosine = min(1.0, cosine)
         return math.acos(cosine), working_distance
 
-    # This task implements profile-shift geometry only for external straight
-    # pairs.  Keep the previously introduced fields inert on internal/helical
-    # paths until their sign and transverse/normal derivations receive their
-    # own independent implementation and tests.
-    if p.internal or abs(p.beta) > 1e-12:
+    # Internal pairs retain their pre-profile-shift working geometry until the
+    # internal sign convention and contact equations receive their own phase.
+    # External straight and helical pairs use the same ISO normal profile-shift
+    # combination; beta enters only through the reference transverse angle and
+    # module.
+    if p.internal:
         return reference_pressure_angle, reference_centre_distance
 
     combination = p.profile_shift_combination

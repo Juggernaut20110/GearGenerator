@@ -149,6 +149,41 @@ def test_scoped_external_straight_profile_shift_sets_remain_valid(shift_1, shift
     assert compute_set(p).transverse_contact_ratio > 1.0
 
 
+@pytest.mark.parametrize("beta", [15.0, 30.0])
+@pytest.mark.parametrize("shift_1,shift_2", [(0.3, -0.3), (0.4, 0.2)])
+def test_external_helical_profile_shift_sets_remain_valid(beta, shift_1, shift_2):
+    p = SpurSetParams.with_defaults(
+        2.0,
+        17,
+        43,
+        helix_angle=beta,
+        profile_shift_1=shift_1,
+        profile_shift_2=shift_2,
+    )
+    result = validate(p)
+    assert result.ok
+    assert compute_set(p).transverse_contact_ratio > 1.0
+
+
+def test_explicit_helical_working_distance_is_checked_against_profile_shift():
+    shifted = SpurSetParams.with_defaults(
+        2.0,
+        17,
+        43,
+        helix_angle=15.0,
+        profile_shift_1=0.4,
+        profile_shift_2=0.2,
+    )
+    expected_distance = compute_set(shifted).working_centre_distance
+    pinned = tweak(shifted, working_centre_distance=expected_distance)
+    assert validate(pinned).ok
+
+    conflicting = tweak(
+        shifted, working_centre_distance=shifted.reference_centre_distance
+    )
+    assert "working_centre_distance" in fields_with_errors(conflicting)
+
+
 # --- helix overlap ---------------------------------------------------------
 
 
