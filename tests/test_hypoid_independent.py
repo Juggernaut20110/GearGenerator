@@ -24,9 +24,15 @@ from gears.hypoid.geometry import (
     section_cone_distances,
     tooth_space_section,
 )
-from gears.hypoid.mesh import contact_azimuths, gear_translation
+from gears.hypoid.mesh import (
+    contact_azimuths,
+    gear_mate_ratio,
+    gear_translation,
+    skew_axis_distance,
+)
 from gears.hypoid.params import HypoidSetParams
 from gears.placement import angular_velocity_ratio, apply, rot_y, rot_z
+from gears.bevel.geometry import to_cone_3d
 
 
 ANCHOR = HypoidSetParams.with_defaults(
@@ -76,6 +82,14 @@ def _params(spec: dict, **changes) -> HypoidSetParams:
     z1 = values.pop("z1")
     z2 = values.pop("z2")
     return HypoidSetParams.with_defaults(module, z1, z2, **values)
+
+
+CONTACT_CASES = (
+    pytest.param(ANCHOR, id="anchor"),
+    pytest.param(_params(DESIGN_A), id="positive-offset"),
+    pytest.param(_params(DESIGN_B), id="negative-offset"),
+    pytest.param(replace(ANCHOR, offset=0.0), id="zero-offset"),
+)
 
 
 def _finite_positive(*values: float) -> bool:
@@ -139,6 +153,85 @@ def _world_contact_point(geo, member: str, theta: float):
 def _unit(vector):
     length = math.sqrt(sum(value * value for value in vector))
     return tuple(value / length for value in vector)
+
+
+def _pitch_trace_point_at_contact(geo, member: str, cone_distance: float):
+    """Map the contact generator through the production section path."""
+    theta1, theta2 = contact_azimuths(geo)
+    m = geo.member(member)
+    theta = theta1 if member == "pinion" else theta2
+    developed_radius = m.virtual_pitch_r * cone_distance / m.cone_distance
+    # `to_cone_3d` divides a developed polar angle by cos(delta).  Supply the
+    # developed angle that lands on the requested physical contact azimuth.
+    developed_theta = theta * math.cos(m.pitch_angle)
+    section = tooth_space_section(geo, member, cone_distance)
+    local = to_cone_3d(
+        developed_radius * math.cos(developed_theta),
+        developed_radius * math.sin(developed_theta),
+        m.pitch_angle,
+        section.cone_apex_z,
+        section.phase,
+    )
+    if member == "pinion":
+        return local
+    rotated = apply(rot_y(geo.params.sigma), local)
+    translation = gear_translation(geo)
+    return tuple(rotated[i] + translation[i] for i in range(3))
+
+
+def _pitch_trace_tangent_at_contact(geo, member: str):
+    m = geo.member(member)
+    h = 1e-4
+    before = _pitch_trace_point_at_contact(geo, member, m.cone_distance - h)
+    after = _pitch_trace_point_at_contact(geo, member, m.cone_distance + h)
+    return _unit(tuple(after[i] - before[i] for i in range(3)))
+
+
+def _common_pitch_normals(geo):
+    theta1, theta2 = contact_azimuths(geo)
+    d1, d2, sigma = (
+        geo.pinion.pitch_angle,
+        geo.gear.pitch_angle,
+        geo.params.sigma,
+    )
+    axis1 = (0.0, 0.0, 1.0)
+    axis2 = (math.sin(sigma), 0.0, math.cos(sigma))
+    radial1 = (math.cos(theta1), math.sin(theta1), 0.0)
+    radial_x2 = (math.cos(sigma), 0.0, -math.sin(sigma))
+    radial2 = (
+        math.cos(theta2) * radial_x2[0],
+        math.sin(theta2),
+        math.cos(theta2) * radial_x2[2],
+    )
+    normal1 = tuple(
+        math.cos(d1) * radial1[i] - math.sin(d1) * axis1[i]
+        for i in range(3)
+    )
+    normal2 = tuple(
+        -math.cos(d2) * radial2[i] + math.sin(d2) * axis2[i]
+        for i in range(3)
+    )
+    return normal1, normal2
+
+
+def _trace_angle_from_tangent(geo, member: str, tangent):
+    theta1, theta2 = contact_azimuths(geo)
+    m = geo.member(member)
+    theta = theta1 if member == "pinion" else theta2
+    generator = (
+        math.sin(m.pitch_angle) * math.cos(theta),
+        math.sin(m.pitch_angle) * math.sin(theta),
+        math.cos(m.pitch_angle),
+    )
+    circumferential = (-math.sin(theta), math.cos(theta), 0.0)
+    if member == "gear":
+        rotation = rot_y(geo.params.sigma)
+        generator = apply(rotation, generator)
+        circumferential = apply(rotation, circumferential)
+    return math.atan2(
+        sum(tangent[i] * circumferential[i] for i in range(3)),
+        sum(tangent[i] * generator[i] for i in range(3)),
+    )
 
 
 def test_published_method1_anchor_is_checked_against_fixed_values():
@@ -292,6 +385,15 @@ def test_positive_and_negative_offsets_have_signed_only_changes():
             "outer_root_radius",
         ):
             assert getattr(left, field) == pytest.approx(getattr(right, field), abs=1e-11)
+        for fraction in (0.0, 0.5, 1.0):
+            distance = left.tooth_face_inner_cone_distance + fraction * (
+                left.tooth_face_outer_cone_distance
+                - left.tooth_face_inner_cone_distance
+            )
+            assert tooth_space_section(positive, name, distance).phase == pytest.approx(
+                tooth_space_section(negative, name, distance).phase,
+                abs=1e-11,
+            )
 
 
 def test_right_and_left_hand_geometry_is_a_mirror_with_same_magnitudes():
@@ -418,19 +520,81 @@ def test_pitch_points_coincide_after_independent_skew_placement():
     assert pinion_point == pytest.approx(gear_point, abs=1e-9)
 
 
+@pytest.mark.parametrize("params", CONTACT_CASES)
+def test_contact_azimuths_keep_pitch_contact_and_requested_axis_offset(params):
+    """The contact solver constrains pitch surfaces, not tooth-trace tangents."""
+    geo = compute_set(params)
+    theta1, theta2 = contact_azimuths(geo)
+    pinion_point = _world_contact_point(geo, "pinion", theta1)
+    gear_point = _world_contact_point(geo, "gear", theta2)
+    assert pinion_point == pytest.approx(gear_point, abs=1e-9)
+
+    translation = gear_translation(geo)
+    axis1 = (0.0, 0.0, 1.0)
+    axis2 = (math.sin(geo.params.sigma), 0.0, math.cos(geo.params.sigma))
+    assert skew_axis_distance(
+        (0.0, 0.0, 0.0), axis1, translation, axis2
+    ) == pytest.approx(
+        abs(params.offset),
+        # At zero offset the two axes intersect and the selected common
+        # normal is a limiting direction; the closed-form placement retains
+        # only a few micrometres of double-precision residual.
+        abs=5e-6 if abs(params.offset) <= 1e-12 else 1e-9,
+    )
+
+    normal1, normal2 = _common_pitch_normals(geo)
+    assert normal1 == pytest.approx(normal2, abs=1e-10)
+    for member in ("pinion", "gear"):
+        tangent = _pitch_trace_tangent_at_contact(geo, member)
+        assert sum(tangent[i] * normal1[i] for i in range(3)) == pytest.approx(
+            0.0, abs=2e-7
+        )
+
+
+@pytest.mark.parametrize("params", CONTACT_CASES)
+def test_member_trace_tangents_are_independent_method1_directions(params):
+    """Different trace angles are valid even though both lie in one tangent plane."""
+    geo = compute_set(params)
+    pinion_tangent = _pitch_trace_tangent_at_contact(geo, "pinion")
+    gear_tangent = _pitch_trace_tangent_at_contact(geo, "gear")
+    pinion_angle = _trace_angle_from_tangent(geo, "pinion", pinion_tangent)
+    gear_angle = _trace_angle_from_tangent(geo, "gear", gear_tangent)
+
+    assert pinion_angle == pytest.approx(geo.pinion.mean_spiral_angle, abs=2e-6)
+    assert gear_angle == pytest.approx(-geo.gear.mean_spiral_angle, abs=2e-6)
+    if abs(params.offset) > 1e-12:
+        assert abs(abs(pinion_angle) - abs(gear_angle)) > math.radians(1.0)
+
+
+def test_anchor_traces_are_not_forced_to_have_a_common_world_tangent():
+    """The published pair's distinct Method 1 traces are not one tangent."""
+    geo = compute_set(ANCHOR)
+    pinion_tangent = _pitch_trace_tangent_at_contact(geo, "pinion")
+    gear_tangent = _pitch_trace_tangent_at_contact(geo, "gear")
+    assert pinion_tangent != pytest.approx(gear_tangent, abs=1e-3)
+
+
+@pytest.mark.parametrize("params", CONTACT_CASES)
+def test_hypoid_velocity_ratio_remains_the_tooth_count_ratio(params):
+    geo = compute_set(params)
+    expected = -params.z2 / params.z1
+    assert angular_velocity_ratio(params.z1, params.z2) == pytest.approx(expected)
+    assert geo.pinion.z * angular_velocity_ratio(
+        geo.pinion.z, geo.gear.z
+    ) + geo.gear.z == pytest.approx(0.0, abs=1e-12)
+    assert gear_mate_ratio(geo.pinion.z, geo.gear.z) == pytest.approx(
+        (float(geo.pinion.z), float(geo.gear.z)), abs=1e-12
+    )
+
+
 def test_shortest_distance_between_solved_shaft_axes_is_the_signed_offset_magnitude():
     geo = compute_set(ANCHOR)
     translation = gear_translation(geo)
     axis1 = (0.0, 0.0, 1.0)
     axis2 = (math.sin(geo.params.sigma), 0.0, math.cos(geo.params.sigma))
-    cross = (
-        axis1[1] * axis2[2] - axis1[2] * axis2[1],
-        axis1[2] * axis2[0] - axis1[0] * axis2[2],
-        axis1[0] * axis2[1] - axis1[1] * axis2[0],
-    )
-    cross_norm = math.sqrt(sum(value * value for value in cross))
-    distance = abs(sum(translation[i] * cross[i] for i in range(3))) / cross_norm
-    assert distance == pytest.approx(abs(ANCHOR.offset), abs=1e-9)
+    assert skew_axis_distance(
+        (0.0, 0.0, 0.0), axis1, translation, axis2
+    ) == pytest.approx(abs(ANCHOR.offset), abs=1e-9)
 
 
 @pytest.mark.parametrize("shaft_angle", [60.0, 90.0])

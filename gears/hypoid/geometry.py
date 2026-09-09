@@ -439,7 +439,27 @@ class HypoidSetGeometry:
 
 
 def contact_azimuths(geo: HypoidSetGeometry) -> tuple[float, float]:
-    """Local radial angles of the common mean pitch-surface normal."""
+    """Return radial angles for the common mean pitch-surface normal.
+
+    This solves the *macro* pitch-cone contact geometry, not the longitudinal
+    tooth trace.  With ``a1`` and ``a2`` the two shaft axes, and ``e1``/``e2``
+    the local radial directions at the returned angles, the oppositely
+    oriented cone normals are
+
+        n = cos(delta1) e1 - sin(delta1) a1
+          = -cos(delta2) e2 + sin(delta2) a2.
+
+    ``n`` is therefore the common pitch-surface normal.  A tooth trace tangent
+    is another tangent-plane direction; its circumferential/generator ratio
+    is set by that member's Method 1 spiral angle and is not required to equal
+    the other member's trace tangent.  The actual contact line and relative
+    sliding direction require the flank surfaces and motion; neither is
+    inferred by equating these trace tangents.
+
+    The sign of the selected normal's transverse component follows the signed
+    hypoid offset.  This chooses the mirrored member placement while leaving
+    the Method 1 dimensions unchanged.
+    """
     p = geo.params
     d1, d2, sigma = (
         geo.pinion.pitch_angle,
