@@ -1456,7 +1456,12 @@ def _method1_boundary_spirals(
 
     hand_sign = 1.0 if p.hand == "right" else -1.0
 
-    def trace_angle(mean_radius: float, mean_angle: float, radius: float) -> float:
+    def trace_angle(
+        mean_radius: float,
+        mean_angle: float,
+        radius: float,
+        boundary_name: str,
+    ) -> float:
         if p.cutter_radius is None:
             return mean_angle
         trace = CrownTrace.for_set(
@@ -1464,17 +1469,26 @@ def _method1_boundary_spirals(
         )
         if not trace.reaches(radius, radius):
             raise ValueError(
-                "cutter radius does not reach a Method 1 longitudinal boundary"
+                "cutter radius does not reach the "
+                f"{boundary_name} Method 1 longitudinal boundary"
             )
         return trace.spiral_angle_at(radius)
 
-    wheel_inner = trace_angle(R2, beta2, R2 - bi2)
-    wheel_outer = trace_angle(R2, beta2, R2 + be2)
-    wheel_at_pinion_inner = trace_angle(R2, beta2, Ri21)
-    wheel_at_pinion_outer = trace_angle(R2, beta2, Re21)
+    wheel_inner = trace_angle(R2, beta2, R2 - bi2, "wheel inner-face")
+    wheel_outer = trace_angle(R2, beta2, R2 + be2, "wheel outer-face")
+    wheel_at_pinion_inner = trace_angle(
+        R2, beta2, Ri21, "pinion inner-face correspondence"
+    )
+    wheel_at_pinion_outer = trace_angle(
+        R2, beta2, Re21, "pinion outer-face correspondence"
+    )
     if abs(pitch_plane_offset) <= 1e-12:
-        pinion_inner = trace_angle(R1, beta1, R1 - bi1)
-        pinion_outer = trace_angle(R1, beta1, R1 + be1)
+        pinion_inner = trace_angle(
+            R1, beta1, R1 - bi1, "pinion inner-face"
+        )
+        pinion_outer = trace_angle(
+            R1, beta1, R1 + be1, "pinion outer-face"
+        )
     else:
         inner_offset_ratio = abs(pitch_plane_offset) / Ri21
         outer_offset_ratio = abs(pitch_plane_offset) / Re21

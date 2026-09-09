@@ -1481,6 +1481,128 @@ def test_phase_trace_domain_covers_existing_loft_extensions():
                     assert trace.reaches(trace_distance, trace_distance)
 
 
+def _physical_face_trace_queries(geo):
+    """Return the production trace query at each physical face boundary."""
+    queries = []
+    for member in (geo.pinion, geo.gear):
+        for distance in (
+            member.tooth_face_inner_cone_distance,
+            member.tooth_face_outer_cone_distance,
+        ):
+            trace, trace_distance = _phase_trace_and_distance(
+                member, distance, geo
+            )
+            assert trace is not None
+            queries.append((member.name, distance, trace, trace_distance))
+            assert trace.reaches(trace_distance, trace_distance)
+    return queries
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+@pytest.mark.parametrize("offset", [15.0, -15.0])
+def test_validation_uses_method1_physical_trace_for_offset_pinion(hand, offset):
+    params = replace(ANCHOR, hand=hand, offset=offset)
+    geo = compute_set(params)
+    queries = _physical_face_trace_queries(geo)
+
+    for name, distance, trace, trace_distance in queries:
+        assert trace.reaches(trace_distance, trace_distance)
+        if name == "pinion":
+            local_trace = _cutter_trace(geo.pinion, geo)
+            assert trace == _cutter_trace(geo.gear, geo)
+            assert trace_distance != pytest.approx(distance, abs=1e-9)
+            # The pinion-local arc is diagnostic; the transported wheel arc
+            # is the one used by Method 1 and by the validation path.
+            assert local_trace != trace
+
+    result = validate(params)
+    assert result.ok
+    assert not any(issue.field == "cutter_radius" for issue in result.errors)
+
+
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_physical_trace_coverage_is_offset_sign_and_hand_invariant(hand):
+    positive = compute_set(replace(ANCHOR, hand=hand, offset=15.0))
+    negative = compute_set(replace(ANCHOR, hand=hand, offset=-15.0))
+    positive_queries = _physical_face_trace_queries(positive)
+    negative_queries = _physical_face_trace_queries(negative)
+
+    for positive_query, negative_query in zip(
+        positive_queries, negative_queries
+    ):
+        positive_name, positive_distance, positive_trace, positive_trace_distance = (
+            positive_query
+        )
+        negative_name, negative_distance, negative_trace, negative_trace_distance = (
+            negative_query
+        )
+        assert positive_name == negative_name
+        assert positive_distance == pytest.approx(negative_distance, abs=1e-12)
+        assert positive_trace_distance == pytest.approx(
+            negative_trace_distance, abs=1e-12
+        )
+        assert positive_trace.centre_distance == pytest.approx(
+            negative_trace.centre_distance, abs=1e-12
+        )
+        assert abs(
+            positive_trace.spiral_angle_at(positive_trace_distance)
+        ) == pytest.approx(
+            abs(negative_trace.spiral_angle_at(negative_trace_distance)),
+            abs=1e-12,
+        )
+
+
+def test_validation_does_not_reject_a_pinion_local_trace_mismatch():
+    # This computed Method 1 geometry has a wheel trace that covers both
+    # corresponding pinion boundaries, while the unrelated pinion-local arc
+    # does not cover the pinion's A coordinates.
+    params = replace(ANCHOR, cutter_radius=35.0, bore=0.0)
+    geo = compute_set(params)
+    pinion = geo.pinion
+    local_trace = _cutter_trace(pinion, geo)
+    assert not local_trace.reaches(
+        pinion.tooth_face_inner_cone_distance,
+        pinion.tooth_face_outer_cone_distance,
+    )
+    _physical_face_trace_queries(geo)
+
+    result = validate(params)
+    assert not any(issue.field == "cutter_radius" for issue in result.errors)
+
+
+def test_zero_offset_validation_uses_each_member_trace_directly():
+    geo = compute_set(replace(ANCHOR, offset=0.0))
+    for name, distance, trace, trace_distance in _physical_face_trace_queries(geo):
+        member = geo.member(name)
+        assert trace == _cutter_trace(member, geo)
+        assert trace_distance == pytest.approx(distance, abs=1e-12)
+    assert validate(replace(ANCHOR, offset=0.0)).ok
+
+
+@pytest.mark.parametrize(
+    "params",
+    [ANCHOR, NON_ANCHOR_SECTION, NON_ANCHOR_FACE_RATIO],
+    ids=["anchor", "17x43", "19x47"],
+)
+def test_valid_method1_sweep_accepts_all_physical_trace_queries(params):
+    geo = compute_set(params)
+    _physical_face_trace_queries(geo)
+    assert validate(params).ok
+
+
+def test_invalid_method1_trace_coverage_is_reported_as_cutter_radius():
+    # The curvature solve succeeds for this radius; the failure is the
+    # physical Method 1 cutter-arc boundary check itself.
+    params = replace(ANCHOR, cutter_radius=22.0)
+    result = validate(params)
+    assert not result.ok
+    assert any(
+        issue.field == "cutter_radius"
+        and "cutter radius does not reach" in issue.message
+        for issue in result.errors
+    )
+
+
 def test_out_of_domain_loft_extension_uses_documented_construction_tangent():
     # This valid Method 1 design needs a little more blank clearance than its
     # wheel trace's circular arc provides on the pinion heel.  The physical

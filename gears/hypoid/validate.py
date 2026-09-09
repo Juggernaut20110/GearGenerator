@@ -10,7 +10,7 @@ from ..validate import (
     MIN_TEETH,
     ValidationResult,
 )
-from .geometry import _cutter_trace, compute_set, tooth_space_section
+from .geometry import compute_set, tooth_space_section
 from .params import HypoidSetParams
 
 MAX_METHOD1_OFFSET_FRACTION = 0.25
@@ -72,7 +72,10 @@ def validate(p: HypoidSetParams) -> ValidationResult:
         geo = compute_set(p)
     except (ValueError, ArithmeticError) as exc:
         message = str(exc)
-        if p.cutter_radius is not None and "Method 1 curvature" in message:
+        if p.cutter_radius is not None and (
+            "Method 1 curvature" in message
+            or "cutter radius" in message
+        ):
             field = "cutter_radius"
         elif "tooth thickness" in message:
             field = "backlash"
@@ -124,21 +127,13 @@ def validate(p: HypoidSetParams) -> ValidationResult:
                     "face section; the affected transition remains sharp",
                 )
 
-    if p.cutter_radius is not None:
-        for member in (geo.pinion, geo.gear):
-            trace = _cutter_trace(member, geo)
-            inner = member.tooth_face_inner_cone_distance
-            outer = member.tooth_face_outer_cone_distance
-            if not trace.reaches(inner, outer):
-                lo = abs(trace.centre_distance - trace.cutter_radius)
-                hi = trace.centre_distance + trace.cutter_radius
-                result.error(
-                    "cutter_radius",
-                    f"a {trace.cutter_radius:.2f} mm cutter does not cover "
-                    f"the {member.name} Method 1 tooth face from "
-                    f"{inner:.2f} to {outer:.2f} mm; "
-                    f"its arc spans {lo:.2f} to {hi:.2f} mm",
-                )
+    # Physical cutter coverage is validated while compute_set() evaluates
+    # _method1_boundary_spirals().  That is the authoritative Method 1 path:
+    # it checks the wheel at its physical inner/outer distances, the wheel at
+    # both pinion-boundary correspondences for a non-zero offset, and the
+    # pinion's own distances for zero offset.  Do not repeat that check with
+    # _cutter_trace(member, geo): its member-local non-zero-offset pinion arc
+    # is diagnostic rather than the production trace.
 
     if p.cutter_radius is not None and p.cutter_radius < 0.25 * p.module:
         result.warn("cutter_radius", "a very small cutter produces a sharply varying spiral")
