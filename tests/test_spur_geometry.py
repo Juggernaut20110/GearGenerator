@@ -148,6 +148,217 @@ def test_profile_shift_and_basic_rack_coefficients_are_represented():
     assert tooth_space_section(geo, "pinion").filleted
 
 
+def _independent_rack_root_point(
+    reference_r, alpha, depth, rho, psi0, half_pitch, phi
+):
+    """One direct rack-envelope evaluation for the generated-root tests.
+
+    This intentionally duplicates the rolling/envelope equation in the test
+    rather than calling the production helper.  ``u`` is tangent to the rack,
+    ``v`` points away from the gear, and the inverted rack tooth has its tip at
+    ``v = -depth``.
+    """
+    tangent = math.tan(alpha)
+    centre_v = -depth + rho
+    centre_u = tangent * centre_v - rho / math.cos(alpha)
+    a = reference_r + centre_v
+    b = centre_u - reference_r * phi
+    c, s = math.cos(phi), math.sin(phi)
+    cx = c * a - s * b
+    cy = s * a + c * b
+    dcx = -s * a - c * b + s * reference_r
+    dcy = c * a - s * b - c * reference_r
+    speed = math.hypot(dcx, dcy)
+    raw = (cx + rho * dcy / speed, cy - rho * dcx / speed)
+    pitch_space_angle = half_pitch - psi0 + math.tan(alpha) - alpha
+    cp, sp = math.cos(pitch_space_angle), math.sin(pitch_space_angle)
+    return raw[0] * cp - raw[1] * sp, raw[0] * sp + raw[1] * cp
+
+
+def test_rack_generated_root_is_the_rolling_envelope_not_a_radial_flank():
+    p = SpurSetParams.with_defaults(
+        2.0, 12, 43, root_geometry="rack_generated"
+    )
+    geo = compute_set(p)
+    member = geo.pinion
+    section = tooth_space_section(geo, "pinion")
+    generated = section.segments["generated_root_pos"]
+
+    assert section.rack_generated
+    assert member.generated_root_r == pytest.approx(member.root_r, abs=1e-12)
+    assert section.generated_root_r == pytest.approx(member.root_r, abs=1e-12)
+
+    # The midpoint is independently evaluated from the transformed cutter
+    # corner.  It is not an interpolation through measured gear points.
+    alpha = math.acos(member.base_r / member.reference_r)
+    depth = member.dedendum
+    rho = p.basic_rack_root_radius_factor * p.module
+    centre_v = -depth + rho
+    centre_u = math.tan(alpha) * centre_v - rho / math.cos(alpha)
+    phi_root = centre_u / member.reference_r
+    tangent_v = centre_v - rho * math.sin(alpha)
+    phi_transition = tangent_v * (1.0 + math.tan(alpha) ** 2) / (
+        math.tan(alpha) * member.reference_r
+    )
+    i = len(generated) // 2
+    # The positive side is traversed from the tip back to the root, so its
+    # generated-root segment is transition-to-root.
+    phi = phi_transition + (phi_root - phi_transition) * i / (
+        len(generated) - 1
+    )
+    assert generated[i] == pytest.approx(
+        _independent_rack_root_point(
+            member.reference_r,
+            alpha,
+            depth,
+            rho,
+            member.psi0,
+            member.half_pitch,
+            phi,
+        ),
+        abs=1e-11,
+    )
+
+    # The old below-base construction held the flank at the base-circle ray;
+    # the generated root leaves that ray immediately and therefore detects the
+    # undercut/root form instead of hiding it behind a radial segment.
+    old_radial = (
+        member.root_r * math.cos(member.half_pitch - member.psi0 + inv(alpha)),
+        member.root_r * math.sin(member.half_pitch - member.psi0 + inv(alpha)),
+    )
+    assert math.dist(generated[0], old_radial) > 1e-3
+
+
+@pytest.mark.parametrize("shift", [-0.5, 0.0, 0.5])
+def test_rack_root_depth_and_angular_width_follow_profile_shift(shift):
+    p = SpurSetParams.with_defaults(
+        2.0, 12, 43, profile_shift_1=shift, root_geometry="rack_generated"
+    )
+    geo = compute_set(p)
+    section = tooth_space_section(geo, "pinion")
+    root = section.segments["generated_root_pos"][-1]
+    assert math.hypot(*root) == pytest.approx(
+        2.0 * (12 / 2.0 - (1.25 - shift)), abs=1e-12
+    )
+
+    # Positive shift moves the cutter away from the root: the generated curve
+    # is shallower and the space is narrower. Negative shift does the reverse.
+    angle = math.atan2(root[1], root[0])
+    zero_geo = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 12, 43, root_geometry="rack_generated"
+        )
+    )
+    zero_root = tooth_space_section(zero_geo, "pinion").segments[
+        "generated_root_pos"
+    ][-1]
+    zero_angle = math.atan2(zero_root[1], zero_root[0])
+    if shift < 0.0:
+        assert angle > zero_angle
+    elif shift > 0.0:
+        assert angle < zero_angle
+
+
+def test_rack_root_is_continuous_at_the_theoretical_undercut_boundary():
+    # Independent sharp-rack limit for a straight 20 degree gear:
+    # z_min = 2 / sin(alpha)^2.
+    limit = 2.0 / math.sin(math.radians(20.0)) ** 2
+    assert 17.0 < limit < 18.0
+
+    below = tooth_space_section(
+        compute_set(
+            SpurSetParams.with_defaults(2.0, 17, 43, root_geometry="rack_generated")
+        ),
+        "pinion",
+    )
+    above = tooth_space_section(
+        compute_set(
+            SpurSetParams.with_defaults(2.0, 18, 43, root_geometry="rack_generated")
+        ),
+        "pinion",
+    )
+    for section in (below, above):
+        root = section.segments["generated_root_pos"]
+        flank = section.segments["flank_pos"]
+        assert root[0] == pytest.approx(flank[-1], abs=1e-12)
+        assert math.dist(root[0], flank[-1]) < 1e-12
+        assert len(root) >= 9
+    assert below.segments["generated_root_pos"] != above.segments["generated_root_pos"]
+
+
+def test_rack_generated_mode_does_not_touch_internal_or_unverified_helical_roots():
+    internal = tooth_space_section(
+        compute_set(
+            SpurSetParams.with_defaults(
+                2.0, 18, 60, internal=True, root_geometry="rack_generated"
+            )
+        ),
+        "gear",
+    )
+    helical = tooth_space_section(
+        compute_set(
+            SpurSetParams.with_defaults(
+                2.0, 12, 43, helix_angle=15.0, root_geometry="rack_generated"
+            )
+        ),
+        "pinion",
+    )
+    assert not internal.rack_generated
+    assert not helical.rack_generated
+    assert internal.generated_root_r is None
+    assert helical.generated_root_r is None
+
+
+def _proper_segment_cross(a, b, c, d):
+    def side(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (
+            r[0] - p[0]
+        )
+
+    ab_c = side(a, b, c)
+    ab_d = side(a, b, d)
+    cd_a = side(c, d, a)
+    cd_b = side(c, d, b)
+    return ab_c * ab_d < -1e-10 and cd_a * cd_b < -1e-10
+
+
+@pytest.mark.parametrize("z", [8, 12, 17, 18, 30])
+def test_rack_generated_section_is_a_cad_safe_simple_loop(z):
+    geo = compute_set(
+        SpurSetParams.with_defaults(2.0, z, 43, root_geometry="rack_generated")
+    )
+    section = tooth_space_section(geo, "pinion")
+    loop = section.loop_2d
+
+    assert section.rack_generated
+    assert loop[0] != loop[-1]
+    area = 0.5 * sum(
+        loop[i][0] * loop[(i + 1) % len(loop)][1]
+        - loop[(i + 1) % len(loop)][0] * loop[i][1]
+        for i in range(len(loop))
+    )
+    assert area > 0.0
+    assert all(math.dist(a, b) > 1e-12 for a, b in zip(loop, loop[1:]))
+
+    n = len(loop)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j in (i - 1, i + 1) or (i == 0 and j == n - 1):
+                continue
+            assert not _proper_segment_cross(
+                loop[i], loop[(i + 1) % n], loop[j], loop[(j + 1) % n]
+            )
+
+    # Existing preview, DXF, and SOLIDWORKS consumers use these names.  The
+    # old names remain exact aliases while the new names identify the source.
+    assert section.segments["fillet_neg"] == section.segments[
+        "generated_root_neg"
+    ]
+    assert section.segments["fillet_pos"] == section.segments[
+        "generated_root_pos"
+    ]
+
+
 def _reference_inv(angle: float) -> float:
     """Independent copy of inv(alpha) for the shifted-pair fixtures."""
     return math.tan(angle) - angle

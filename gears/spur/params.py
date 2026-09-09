@@ -49,9 +49,11 @@ class SpurSetParams(JsonParams):
 
     The profile-shift and basic-rack fields are additive ISO 21771/ISO 53
     data-model inputs.  ``root_geometry="legacy"`` remains the default so
-    existing presets and tooth-space sections retain their previous shape;
-    the rack-generated root mode is reserved for a later profile-generation
-    phase.
+    existing presets and tooth-space sections retain their previous shape.
+    ``root_geometry="rack_generated"`` opts an external straight member into
+    the verified ISO 53 basic-rack root envelope; internal and helical members
+    retain the legacy path until their cutter sections are independently
+    verified.
     """
 
     module: float               # mm, NORMAL module
@@ -115,8 +117,10 @@ class SpurSetParams(JsonParams):
     working_centre_distance: float | None = None
 
     # ``legacy`` preserves the existing radial-below-base/root-fillet
-    # approximation.  ``rack_generated`` is a reserved, explicit opt-in name
-    # for the future rack/cutter-envelope implementation.
+    # approximation.  ``rack_generated`` is an explicit opt-in for the
+    # external straight-gear rack/cutter envelope.  It is intentionally not a
+    # silent default: the helical transverse projection and internal cutter
+    # have separate generation geometry that is not yet verified here.
     root_geometry: str = "legacy"
 
     # --- radian and transverse accessors, so downstream code never repeats them ---

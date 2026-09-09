@@ -156,6 +156,163 @@ def flank_points(
     return pts
 
 
+def rack_root_envelope(
+    reference_r: float,
+    r_base: float,
+    r_root: float,
+    psi0: float,
+    half_pitch: float,
+    cutter_tip_depth: float,
+    rack_root_radius: float,
+    n: int = 24,
+) -> tuple[list[Point2], float] | None:
+    """Return an external rack-generated root curve and its flank transition.
+
+    The returned points run from the nominal root circle to the transition
+    with the true involute.  The curve is the analytical envelope of the
+    *rounded tip of an inverted basic-rack tooth* as that rack rolls on the
+    gear reference circle.  Its last point is the point at which the rack
+    flank and its rounded tip are tangent; the caller joins that point to a
+    sampled involute.
+
+    ``cutter_tip_depth`` is measured from the gear reference circle towards
+    its centre.  For an external gear generated from the ISO 53 basic rack it
+    is the member dedendum, ``m_n (h_fP* - x)``.  The straight tip land then
+    envelopes the nominal root circle at ``reference_r - cutter_tip_depth``.
+    ``rack_root_radius`` is ``rho_fP`` in the same transverse section.
+
+    The rolling equations are written in a tangent rack frame.  If ``u`` is
+    tangent to the gear and ``v`` is outward from its centre, a fixed rack
+    point transforms to the gear frame as
+
+        (x, y) = Rot(phi) (reference_r + v, u - reference_r*phi).
+
+    A circle centre follows this motion.  The envelope point is the centre
+    offset by the radius along the normal to the centre trajectory.  This is
+    a direct envelope construction; no polynomial or spline is used as the
+    source geometry.  The returned polyline is only a CAD sampling of that
+    analytical curve.
+
+    This function deliberately covers the external straight-gear case only.
+    ISO 53 defines the rack in the normal section; a helical cutter's
+    transverse tip rounding is not the same circle after projection.  The
+    spur caller therefore uses this function only for ``beta == 0`` and
+    explicitly falls back to its legacy root approximation otherwise.
+
+    ``None`` means that the selected rack geometry cannot form a usable
+    transition (for example a non-positive radius or a tip circle inside the
+    transition).  That is a geometric fallback, not a cosmetic replacement.
+    """
+    if (
+        reference_r <= 0.0
+        or r_base <= 0.0
+        or r_root <= 0.0
+        or cutter_tip_depth <= 0.0
+        or rack_root_radius <= 0.0
+        or n < 2
+    ):
+        return None
+
+    # The straight rack flank is u = tan(alpha) * v.  alpha is obtained from
+    # the gear's reference and base circles, so the construction uses the
+    # same transverse involute that the flank generator uses.
+    ratio = r_base / reference_r
+    if ratio <= 0.0 or ratio > 1.0 + 1e-12:
+        return None
+    alpha = math.acos(min(1.0, ratio))
+    if alpha <= 1e-12 or alpha >= math.pi / 2.0:
+        return None
+
+    cos_alpha = math.cos(alpha)
+    tan_alpha = math.tan(alpha)
+    sec_alpha = 1.0 / cos_alpha
+    rho = rack_root_radius
+    depth = cutter_tip_depth
+
+    # The relevant corner is the one whose inverted cutter tooth extends to
+    # negative u from this flank.  The centre is rho above the cutter tip
+    # line and rho from the straight flank.
+    v_centre = -depth + rho
+    u_centre = tan_alpha * v_centre - rho * sec_alpha
+
+    # Tangency point of the rack rounding with its straight flank.  In the
+    # rack frame the unit normal to u - tan(alpha)v = 0 is
+    # (cos(alpha), -sin(alpha)).
+    v_touch = v_centre - rho * math.sin(alpha)
+
+    # The line-envelope condition is v = tan(alpha) R phi / (1+tan^2(alpha)).
+    phi_transition = v_touch * (1.0 + tan_alpha * tan_alpha) / (
+        tan_alpha * reference_r
+    )
+    # The tip-line envelope touches the rounded corner's bottom point when
+    # the rack tangent coordinate is R*phi.
+    phi_root = u_centre / reference_r
+    if phi_transition >= phi_root:
+        return None
+
+    generated_root_r = reference_r - depth
+    if abs(generated_root_r - r_root) > 1e-8 * max(1.0, reference_r):
+        # The member dimensions and the selected rack would describe two
+        # different root circles.  Do not silently produce a discontinuity.
+        return None
+
+    # The pitch-point flank is generated at angle zero in this rolling frame.
+    # Rotate the complete generated boundary to the requested tooth-space
+    # angle; this carries the profile-shifted tooth thickness into the root
+    # without inventing a second angular convention.
+    pitch_space_angle = (
+        half_pitch - psi0 + inv(alpha)
+    )
+    rotate_c, rotate_s = math.cos(pitch_space_angle), math.sin(pitch_space_angle)
+
+    def rotate(point: Point2) -> Point2:
+        x, y = point
+        return x * rotate_c - y * rotate_s, x * rotate_s + y * rotate_c
+
+    def envelope(phi: float) -> Point2:
+        c, s = math.cos(phi), math.sin(phi)
+        a = reference_r + v_centre
+        b = u_centre - reference_r * phi
+        cx = c * a - s * b
+        cy = s * a + c * b
+
+        # Derivative of Rot(phi) (a, u_centre - R*phi).
+        dcx = -s * a - c * b + s * reference_r
+        dcy = c * a - s * b - c * reference_r
+        speed = math.hypot(dcx, dcy)
+        if speed <= 1e-14:
+            raise ValueError("rack root envelope has a stationary tool corner")
+
+        # The minus side is the active side of this inverted cutter corner.
+        return cx + rho * dcy / speed, cy - rho * dcx / speed
+
+    try:
+        root_to_transition = [
+            rotate(
+                envelope(
+                    phi_root
+                    + (phi_transition - phi_root) * i / (n - 1)
+                )
+            )
+            for i in range(n)
+        ]
+    except ValueError:
+        return None
+
+    # These endpoint identities are exact for the construction.  Replacing
+    # only the first point removes harmless floating-point drift at the root
+    # arc; the involute endpoint is aligned by tooth_space_loop after it has
+    # generated the corresponding flank sample.
+    root_to_transition[0] = polar(
+        generated_root_r,
+        pitch_space_angle + phi_root,
+    )
+    transition_r = math.hypot(*root_to_transition[-1])
+    if transition_r <= r_root or not math.isfinite(transition_r):
+        return None
+    return root_to_transition, transition_r
+
+
 def internal_flank_points(
     r_base: float,
     r_root: float,
@@ -368,6 +525,7 @@ def tooth_space_loop(
     n_flank: int = FLANK_POINTS,
     split_cap: bool = False,
     internal: bool = False,
+    rack_root: tuple[list[Point2], float] | None = None,
 ) -> tuple[dict[str, list[Point2]], list[Point2], bool]:
     """One closed tooth-space boundary: named segments, flat loop, fillet flag.
 
@@ -392,19 +550,57 @@ def tooth_space_loop(
     because they name the tooth's own features, not radii: the root is where the
     fillet is, the cap is where the cut clears the blank, and both are true of
     a ring gear read from the material outward.
+
+    If ``rack_root`` is supplied for an external member, it is the output of
+    :func:`rack_root_envelope`: the ``fillet_*`` segments become compatibility
+    aliases for the named ``generated_root_*`` segments, while ``root`` stays
+    the circular tip-land envelope. Internal callers do not consume this
+    argument, which prevents the external rack construction from being
+    applied to a ring by accident.
     """
+    generated_root: list[Point2] = []
     if internal:
         # Tip to root, so reverse it: `root_fillet` and the loop assembly below
         # both want the flank to start at the root end.
         flank = internal_flank_points(r_base, r_root, r_tip, psi0, n_flank)[::-1]
+        fillet = root_fillet(flank, r_root, fillet_rho, internal=True)
+    elif rack_root is not None:
+        # The rack envelope already contains the root transition.  Generate
+        # only the true involute from that transition to the tip and retain
+        # the old segment names as compatibility aliases for CAD consumers.
+        generated_root, transition_r = rack_root
+        if r_tip <= transition_r + 1e-10:
+            # The requested tip does not leave room for the selected rack
+            # corner.  The caller may still build a useful section with the
+            # documented legacy approximation.
+            generated_root = []
+            flank = flank_points(
+                r_base, r_root, r_tip, psi0, half_pitch, n_flank
+            )
+            fillet = root_fillet(flank, r_root, fillet_rho, internal=False)
+        else:
+            flank = flank_points(
+                r_base, transition_r, r_tip, psi0, half_pitch, n_flank
+            )
+            if not flank:
+                generated_root = []
+                fillet = root_fillet(
+                    flank, r_root, fillet_rho, internal=False
+                )
+            else:
+                # Make the shared vertex literally identical in the sampled
+                # representation.  The analytical endpoints already agree;
+                # this avoids a CAD spline seeing a microscopic gap.
+                generated_root[-1] = flank[0]
+                fillet = None
     else:
         flank = flank_points(r_base, r_root, r_tip, psi0, half_pitch, n_flank)
+        fillet = root_fillet(flank, r_root, fillet_rho, internal=False)
 
-    fillet = root_fillet(flank, r_root, fillet_rho, internal=internal)
     if fillet is not None:
         flank, arc = fillet
     else:
-        arc = []
+        arc = generated_root
 
     # Mirror across the x axis for the other side of the space.
     def mirror(pts: list[Point2]) -> list[Point2]:
@@ -422,12 +618,14 @@ def tooth_space_loop(
         # Root to flank, matching the direction of travel round the loop; the
         # positive side runs the other way and so is reversed instead.
         "fillet_neg": mirror(arc) if arc else [],
+        "generated_root_neg": mirror(generated_root) if generated_root else [],
         "flank_neg": mirror(flank),
         "riser_neg": [mirror(flank)[-1], cap[0]],
         "cap": cap,
         "riser_pos": [cap[-1], flank[-1]],
         "flank_pos": flank[::-1],
         "fillet_pos": arc[::-1] if arc else [],
+        "generated_root_pos": generated_root[::-1] if generated_root else [],
         "root": root_arc[::-1],
     }
     order = [

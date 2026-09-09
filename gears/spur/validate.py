@@ -166,11 +166,12 @@ def validate(p: SpurSetParams) -> ValidationResult:
 
     # --- undercut ----------------------------------------------------------
     #
-    # Reported, not designed around. Without a profile shift there is nothing
-    # the geometry can do about it, and the model will not even *show* it: the
-    # root below the base circle is drawn as a radial line, not as the trochoid
-    # a real cutter leaves. So a part that undercuts in reality comes out of
-    # here looking sound, which is exactly why this warning has to be loud.
+    # Reported, not designed around. The legacy mode does not show the cutter
+    # envelope: its root below the base circle is a radial line, not the
+    # generated root a real cutter leaves. The explicit rack_generated mode
+    # does show that envelope for external straight gears, but the warning is
+    # still useful because it identifies a form-limited pinion and helical or
+    # internal members have separate generation/interference rules.
     # An internal member is exempt: undercut is what a rack cutter does to a
     # convex flank as it rolls past, and a ring gear's flank is concave. It is
     # cut by a shaper rather than a hob, and what limits it is the tip and
@@ -178,12 +179,17 @@ def validate(p: SpurSetParams) -> ValidationResult:
     z_min = undercut_limit(geo.transverse_pressure_angle, p.beta)
     for member in (geo.pinion, geo.gear):
         if not member.internal and member.z < z_min:
+            form_note = (
+                "the selected rack-generated root shows that form limit"
+                if member.generated_root_r is not None
+                else "the legacy root approximation does not show the generated undercut"
+            )
             result.warn(
                 "z1" if member.name == "pinion" else "z2",
                 f"{member.name} has {member.z} teeth, below the undercut limit of "
                 f"{z_min:.1f} for a {math.degrees(geo.transverse_pressure_angle):.1f} "
-                "degree transverse pressure angle; a real cutter would undercut "
-                "the flank near the root, which this model does not show",
+                f"degree transverse pressure angle; a real cutter would undercut "
+                f"the flank near the root, and {form_note}",
             )
 
     # --- contact ratio -----------------------------------------------------

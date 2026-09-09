@@ -58,6 +58,7 @@ from ..involute import (
     inv,
     max_tip_radius,
     min_internal_tip_radius,
+    rack_root_envelope,
     tooth_space_loop,
 )
 from .params import (
@@ -131,6 +132,7 @@ class SpurMemberGeometry:
     half_pitch: float           # pi / z
     internal: bool = False      # a ring gear: teeth pointing inward
     profile_shift: float = 0.0  # x_i, dimensionless ISO profile shift
+    generated_root_r: float | None = None  # d_fE / 2 when rack-generated
 
     @property
     def pitch_r(self) -> float:
@@ -180,6 +182,20 @@ class SpurMemberGeometry:
     def root_d(self) -> float:
         """Nominal physical root diameter d_f = 2 * root_r, in millimetres."""
         return 2.0 * self.root_r
+
+    @property
+    def generated_root_d(self) -> float | None:
+        """Generated/form root diameter d_fE = 2 * generated_root_r.
+
+        ``None`` means the selected profile is the legacy radial/root-fillet
+        approximation or that no verified generated-root construction applies
+        to this member.  It is intentionally separate from nominal ``root_d``.
+        """
+        return (
+            None
+            if self.generated_root_r is None
+            else 2.0 * self.generated_root_r
+        )
 
     @property
     def hand(self) -> str:
@@ -353,6 +369,24 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
             psi0 = reference_tooth_thickness / (2.0 * reference_r) + inv(alpha_t)
 
         half_pitch = math.pi / z
+        generated_root_r = None
+        if (
+            p.root_geometry == "rack_generated"
+            and not internal
+            and abs(beta) <= 1e-12
+        ):
+            generated = rack_root_envelope(
+                reference_r=reference_r,
+                r_base=base_r,
+                r_root=root_r,
+                psi0=psi0,
+                half_pitch=half_pitch,
+                cutter_tip_depth=dedendum,
+                rack_root_radius=p.basic_rack_root_radius_factor * m_n,
+                n=2,
+            )
+            if generated is not None and tip_r > generated[1] + 1e-10:
+                generated_root_r = math.hypot(*generated[0][0])
 
         members.append(
             SpurMemberGeometry(
@@ -379,6 +413,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 half_pitch=half_pitch,
                 internal=internal,
                 profile_shift=member_shift,
+                generated_root_r=generated_root_r,
             )
         )
 
@@ -591,11 +626,11 @@ def undercut_limit(alpha_t: float, beta: float) -> float:
     pressure angle, so a helical gear can carry fewer teeth before undercutting
     than a straight one of the same normal pressure angle.
 
-    Only reported, never designed around: with no profile shift in the parameter
-    set there is nothing the geometry can do about it, and the honest answer is
-    to say so. The generated root below the base circle is a radial line, not the
-    trochoid a real cutter leaves, so the model does not show the undercut even
-    when it happens.
+    This remains a conservative design warning. ``root_geometry="legacy"``
+    uses a radial below-base approximation and does not show the generated
+    undercut; the opt-in external straight rack-envelope mode does show its
+    cutter-limited root form. The limit itself is still reported rather than
+    used to silently alter the selected tooth geometry.
     """
     return 2.0 * math.cos(beta) / math.sin(alpha_t) ** 2
 
@@ -677,8 +712,14 @@ class ToothSpaceSection:
     r_tip: float
     r_cap: float
     filleted: bool
+    generated_root_r: float | None = None
     segments: dict[str, list[Point2]] = field(default_factory=dict)
     loop_2d: list[Point2] = field(default_factory=list)
+
+    @property
+    def rack_generated(self) -> bool:
+        """Whether this section contains the verified rack-root envelope."""
+        return bool(self.segments.get("generated_root_pos"))
 
     def loop_3d(self) -> list[Point3]:
         return [to_axial_3d(x, y, self.phase, self.z) for x, y in self.loop_2d]
@@ -755,11 +796,40 @@ def tooth_space_section(
         )
         r_cap = r_tip + CUT_OVERSHOOT_FACTOR * p.module
 
+    # ISO 53 defines the rack in its normal section.  The direct analytical
+    # envelope currently verified here is therefore limited to an external
+    # straight gear, where that section is also the transverse plane.  Internal
+    # and helical members deliberately retain the existing path until their
+    # cutter geometry has its own verified construction.
+    rack_root = None
+    generated_root_r = None
+    if (
+        p.root_geometry == "rack_generated"
+        and not m.internal
+        and abs(p.beta) <= 1e-12
+    ):
+        rack_root = rack_root_envelope(
+            reference_r=m.reference_r,
+            r_base=m.base_r,
+            r_root=m.root_r,
+            psi0=m.psi0,
+            half_pitch=m.half_pitch,
+            cutter_tip_depth=m.dedendum,
+            rack_root_radius=p.basic_rack_root_radius_factor * p.module,
+            n=max(24, n_flank // 2),
+        )
+        if rack_root is not None:
+            generated_root_r = rack_root[0][0]
+            generated_root_r = math.hypot(*generated_root_r)
+
     segments, loop, filleted = tooth_space_loop(
         m.base_r, m.root_r, r_tip, r_cap, m.psi0, m.half_pitch,
         p.fillet_factor * p.module, n_flank, split_cap=split_cap,
         internal=m.internal,
+        rack_root=rack_root,
     )
+    if not segments.get("generated_root_pos"):
+        generated_root_r = None
 
     return ToothSpaceSection(
         member=member,
@@ -769,6 +839,7 @@ def tooth_space_section(
         r_tip=r_tip,
         r_cap=r_cap,
         filleted=filleted,
+        generated_root_r=generated_root_r,
         segments=segments,
         loop_2d=loop,
     )
