@@ -73,8 +73,8 @@ geargen_tests -> geargen_core + geargen_preview + geargen_solidworks
 `geargen_preview` contains only value-oriented scene models and export. The
 Qt painter/widget adapter consumes those scenes without forcing `QPointF`,
 `QMatrix4x4`, `QString`, or QObject ownership into core. Likewise,
-`geargen_solidworks` currently exposes a backend/session boundary; the future
-Windows COM implementation will live behind it.
+`geargen_solidworks` is a Windows-only adapter over the late-bound COM ABI;
+its public request/result records contain no COM or Qt handles.
 
 ## Native module mapping
 
@@ -92,7 +92,9 @@ The first skeleton maps the conceptual modules as follows:
 | `preview.py` | `src/preview/scene2d` | Scene data is renderer-neutral. |
 | `preview3d.py` | `src/preview/scene3d` | Keep section sampling and camera math independent of Qt. |
 | DXF/CSV | `src/preview/export` | Export exactly the same named loops/points that the builder consumes. |
-| `sw/session.py` | `src/solidworks` | COM ownership, call checking, VARIANT/SAFEARRAY helpers and unit conversion end at this boundary. |
+| `sw/session.py`, `sw/common.py` | `src/solidworks/com.*`, `builder_common.*`, `solidworks.*` | RAII COM ownership, checked late-bound calls, VARIANT/SAFEARRAY helpers, sketch/dimension/equation/loft/pattern primitives, and unit conversion end at this boundary. |
+| `sw/*_part.py` | `src/solidworks/part_builder.*` | Recreate revolved blanks, generated 3D tooth-space curves, lofted cuts, offcut removal, and circular patterns for spur, bevel, and hypoid parts. |
+| `sw/*_assembly.py`, `assembly_common.py` | `src/solidworks/assembly_builder.*` | Transform-first component placement, family-specific mate order, gear ratios, hypoid offset constraints, planetary spanning-tree mates, rebuild, save, and interference reporting. |
 | `gui.py` | `src/gui` | Qt owns controls, event loop, workers and presentation; it calls core/preview interfaces. |
 
 The type-specific `.cpp` files implement the parameter records,
@@ -219,14 +221,17 @@ keep explicit:
 * COM is initialized and uninitialized on the same worker thread that calls
   SOLIDWORKS. The UI thread never receives a COM object.
 * A session owns visibility, `CommandInProgress`, document lifetime and
-  restoration of global sketch/dimension flags through RAII.
+  restoration of global sketch/dimension flags through RAII. `com::Apartment`,
+  `com::Ptr<T>`, `com::Bstr`, `com::Variant`, and `com::Dispatch` own their
+  corresponding Windows resources.
 * Late binding needs explicit SAFEARRAY/VARIANT construction, method/property
   disambiguation, checked return values, and by-reference error/status reads.
 * CAD units are SI metres/radians even though the core is mm/radians and the
   UI lengths are mm.
 * Parts are created from fully dimensioned blanks, tooth-space loft cuts and
   circular patterns. The guide curve and section sampling are geometry
-  decisions, not UI decisions.
+  decisions, not UI decisions. `part_builder.cpp` shares the common sequence
+  while retaining family-specific section and placement conventions.
 * Assembly components are placed by arithmetic transform first, unfixed, and
   constrained afterward. Mates verify the already-correct placement and
   provide articulation; they are not the primary placement solver.
@@ -237,11 +242,22 @@ keep explicit:
 The current GUI performs native geometry recomputation synchronously after a
 short debounce; the ported calculations are fast enough that introducing a
 worker would add interaction and lifetime complexity without a measured
-benefit. When family construction is implemented, the GUI will use a worker
-object/thread and queued value-only result messages for SOLIDWORKS. The real
-COM session will be constructed inside that worker. Build errors,
-measurements, paths and mate summaries cross the thread as copied
-records/strings only.
+benefit. The `Build in SOLIDWORKS` action is different: it starts a `QThread`
+worker, and `solidworks::build(BuildRequest)` constructs and destroys the
+COM apartment/session entirely on that worker. Only the copied
+`BuildResult`—errors, measurements, paths, mate summaries, and interference
+data—returns to the GUI through a queued invocation. The GUI never stores or
+touches a worker-created COM wrapper.
+
+The native adapter deliberately uses `IDispatch` late binding rather than a
+generated SOLIDWORKS type-library wrapper. This keeps ordinary builds free of
+the SOLIDWORKS SDK and lets the checked-in CMake project compile on a Windows
+machine with only the Windows SDK. The tradeoff is that the subset of enum
+values and method signatures used by the Python reference is maintained in
+`solidworks.hpp`, and live integration tests still require a compatible
+SOLIDWORKS installation, default part/assembly templates, and a license.
+`geargen_solidworks_tests` tests COM apartment and VARIANT/SAFEARRAY/BSTR
+marshalling without launching SOLIDWORKS.
 
 ## Planned port order
 
@@ -260,13 +276,15 @@ records/strings only.
    cone placement. **Complete on `feature/cpp-port`.**
 8. Port the hypoid Method 1 solver only after its numerical fixtures and
    contact/offset conventions are fixed. **Complete on `feature/cpp-port`.**
-9. Port SOLIDWORKS part primitives and one spur pair, using a live CAD seat;
-   then bevel, planetary and hypoid builders.
+9. **Complete:** port SOLIDWORKS COM session/RAII, shared part primitives,
+   spur/internal/helical, bevel, hypoid, and planetary part/assembly builders.
+   Live-seat body/mate verification remains an environment-dependent gate.
 10. **Complete for non-CAD presentation:** replace the Qt smoke UI with
     metadata-driven parameter/readout/preview wiring, presets, and exports;
     keep the Python implementation available until parity gates pass.
-11. Implement the native SOLIDWORKS family builders and connect the existing
-    validated GUI action through the COM worker boundary.
+11. **Complete for the native automation boundary:** connect the validated GUI
+    action through the COM worker boundary. Run live-seat integration fixtures
+    and expand recorded invocation coverage when SOLIDWORKS is available.
 
 ## Compatibility strategy and tolerances
 
@@ -336,7 +354,9 @@ CAD boundary.
   the eventual 3D renderer.
 * A native Windows COM implementation can be built without a CAD installation,
   but meaningful part/assembly verification still requires SOLIDWORKS and a
-  matching template/configuration.
+  matching template/configuration. The current CI-safe tests stop at checked
+  marshalling and core construction intent; they do not claim that a live
+  document was rebuilt.
 * The spur external gear Reverse flag, internal pair Reverse flag, and
   catalogue naming of bevel hand remain measured/live-CAD questions in the
   reference project; do not infer them from a convenient sign.
@@ -346,13 +366,13 @@ CAD boundary.
 
 ## Current stage acceptance
 
-The non-SOLIDWORKS presentation stage is complete when the verified Visual
-Studio 2022/MSVC and Qt builds, native tests, Python suite, and fixture
-comparisons pass. Remaining gaps are full type-specific validation-message
-parity for unusual invalid inputs, richer derived-row coverage, and native
-SOLIDWORKS construction bodies. The native hypoid section deliberately
-retains Python's documented Tredgold approximation boundary; replacing it
-with a true cutter-envelope model would be a separate geometry decision, not
-a compatibility fix. The current `Build in SOLIDWORKS` action deliberately
-reports the unconnected backend boundary rather than pretending to create a
-document; the Qt GUI itself is functional and testable without a CAD seat.
+The native SOLIDWORKS stage is complete when the Visual Studio/MSVC
+core/adapter build, Qt build where a matching Qt toolchain is installed,
+native tests, Python suite, and fixture comparisons pass. This stage now has
+the MSVC-buildable COM adapter, all current family construction paths, and the
+worker-thread GUI connection. Remaining environment-dependent work is live
+SOLIDWORKS verification of measured bodies, mate status, rebuild behavior,
+and saved documents against representative templates. The native hypoid
+section deliberately retains Python's documented Tredgold approximation
+boundary; replacing it with a true cutter-envelope model would be a separate
+geometry decision, not a compatibility fix.

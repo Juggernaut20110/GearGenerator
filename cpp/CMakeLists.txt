@@ -59,9 +59,16 @@ target_compile_features(geargen_preview PUBLIC cxx_std_20)
 geargen_enable_warnings(geargen_preview)
 
 add_library(geargen_solidworks STATIC
+    src/solidworks/com.cpp
+    src/solidworks/builder_common.cpp
+    src/solidworks/part_builder.cpp
+    src/solidworks/assembly_builder.cpp
     src/solidworks/solidworks.cpp
 )
 target_link_libraries(geargen_solidworks PUBLIC geargen_core)
+if(WIN32)
+    target_link_libraries(geargen_solidworks PUBLIC ole32 oleaut32 uuid)
+endif()
 target_include_directories(geargen_solidworks
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -121,6 +128,14 @@ if(GEARGEN_BUILD_TESTS)
     target_compile_features(geargen_tests PRIVATE cxx_std_20)
     geargen_enable_warnings(geargen_tests)
     add_test(NAME geargen_tests COMMAND geargen_tests)
+
+    add_executable(geargen_solidworks_tests
+        tests/solidworks_tests.cpp
+    )
+    target_link_libraries(geargen_solidworks_tests PRIVATE geargen_solidworks)
+    target_compile_features(geargen_solidworks_tests PRIVATE cxx_std_20)
+    geargen_enable_warnings(geargen_solidworks_tests)
+    add_test(NAME geargen_solidworks_tests COMMAND geargen_solidworks_tests)
 
     if(GEARGEN_BUILD_REFERENCE_TESTS)
         file(TO_CMAKE_PATH

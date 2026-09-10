@@ -73,6 +73,7 @@ private:
     bool has_geometry_{false};
     bool updating_widgets_{false};
     bool initialized_{false};
+    bool solidworks_build_running_{false};
     std::string kind_key_{"bevel"};
 
     static const std::vector<FieldSpec>& fields_for(const std::string& key);

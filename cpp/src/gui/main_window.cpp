@@ -10,13 +10,16 @@
 #include "solidworks/solidworks.hpp"
 
 #include <QComboBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMetaObject>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
@@ -24,6 +27,7 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolBar>
+#include <QThread>
 #include <QVBoxLayout>
 #include <QHeaderView>
 
@@ -654,7 +658,7 @@ void MainWindow::refresh_now()
         has_geometry_ = true;
         show_derived();
         show_scene();
-        build_button_->setEnabled(true);
+        build_button_->setEnabled(!solidworks_build_running_);
         set_status(QStringLiteral("ready - geometry valid"));
     } catch (const std::exception& error) {
         has_geometry_ = false;
@@ -920,17 +924,62 @@ void MainWindow::save_preset()
 
 void MainWindow::build_in_solidworks()
 {
-    if (!has_geometry_ || !validation_.ok()) return;
-    // The native SolidWorks target currently contains the COM/session boundary,
-    // not the family-specific builders. Keep the action visible and honest:
-    // it is enabled only for valid data and reports the missing backend without
-    // blocking the GUI or pretending that a document was created.
-    solidworks::Session session;
-    session.initialize();
-    QMessageBox::information(this, QStringLiteral("SOLIDWORKS build"),
-                             QStringLiteral("The native SOLIDWORKS session boundary is ready, "
-                                            "but the family construction backend is not connected yet."));
-    session.close();
+    if (!has_geometry_ || !validation_.ok() || solidworks_build_running_) return;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("SOLIDWORKS output directory"), QDir::currentPath());
+    if (directory.isEmpty()) return;
+
+    solidworks::Parameters build_parameters;
+    if (const auto* value = std::get_if<core::BevelSetParams>(&params_))
+        build_parameters = *value;
+    else if (const auto* value = std::get_if<core::SpurSetParams>(&params_))
+        build_parameters = *value;
+    else if (const auto* value = std::get_if<core::HypoidSetParams>(&params_))
+        build_parameters = *value;
+    else if (const auto* value = std::get_if<core::PlanetarySetParams>(&params_))
+        build_parameters = *value;
+    else
+        return;
+
+    solidworks::BuildRequest request;
+    request.parameters = std::move(build_parameters);
+    request.output_directory = std::filesystem::path(directory.toStdString());
+    request.options.visible = true;
+    request.options.silent = true;
+    request.options.save_assembly = true;
+    request.options.mate = true;
+
+    solidworks_build_running_ = true;
+    build_button_->setEnabled(false);
+    set_status(QStringLiteral("building in SOLIDWORKS..."));
+
+    QPointer<MainWindow> self(this);
+    auto* worker = QThread::create([self, request = std::move(request)]() mutable {
+        // solidworks::build owns the Session, and therefore initializes and
+        // releases COM on this worker thread. No COM wrapper crosses back to Qt.
+        auto result = solidworks::build(request);
+        if (!self) return;
+        QMetaObject::invokeMethod(self,
+            [self, result = std::move(result)]() mutable {
+                if (!self) return;
+                self->solidworks_build_running_ = false;
+                self->build_button_->setEnabled(self->has_geometry_ && self->validation_.ok());
+                if (result.ok) {
+                    self->set_status(QString::fromStdString(result.message));
+                    QMessageBox::information(self, QStringLiteral("SOLIDWORKS build"),
+                        QString::fromStdString(result.message +
+                            (result.assembly_path.empty()
+                                 ? std::string{}
+                                 : "\nSaved: " + result.assembly_path.string())));
+                } else {
+                    self->set_status(QStringLiteral("SOLIDWORKS build failed"));
+                    QMessageBox::critical(self, QStringLiteral("SOLIDWORKS build failed"),
+                                           QString::fromStdString(result.message));
+                }
+            }, Qt::QueuedConnection);
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
 }
 
 } // namespace geargen::gui
