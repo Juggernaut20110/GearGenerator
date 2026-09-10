@@ -351,6 +351,11 @@ void MainWindow::create_widgets()
     derived_layout->addWidget(derived_table_);
     right_layout->addWidget(derived_box, 2);
 
+    status_label_ = new QLabel(right);
+    status_label_->setWordWrap(true);
+    status_label_->setStyleSheet(QStringLiteral("color:#444444;"));
+    right_layout->addWidget(status_label_);
+
     splitter->addWidget(left);
     splitter->addWidget(right);
     splitter->setStretchFactor(0, 0);
