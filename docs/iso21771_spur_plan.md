@@ -1,10 +1,13 @@
 # ISO 21771 spur/cylindrical gear upgrade plan
 
-Status: engineering audit and implementation plan only. No geometry changes are
-included in this document's change.
+Status: implementation plan retained as the design record; the parameter,
+profile-shift, consumer, validation, root-mode, and independent-verification
+phases described here are implemented in the current tree. The final review
+does not treat this document as evidence of blanket standards compliance.
 
-Audit target: `master` at `3266242` (`Clarify hypoid spiral angle and hand
-convention`).
+Implementation baseline: current branch after the commits documented by
+`git log`; the independent release-gate checks are in
+`tests/test_spur_iso21771.py` and `docs/iso21771_verification.md`.
 
 ## 1. Scope and source status
 
@@ -23,11 +26,10 @@ paths implemented by this repository. The intended standards boundary is:
 ISO 21771-1 is a geometry and terminology standard. It is not a SOLIDWORKS
 feature recipe and it does not make the repository's sampling density, loft
 construction, blank construction, or validation thresholds normative. ISO
-21771-1:2024 also adopts the signed negative-tooth-count convention for internal
-gears; this repository currently uses positive tooth counts plus an `internal`
-flag. The implementation should preserve that public API and introduce an
-explicit conversion boundary rather than expose negative counts to existing
-callers.
+21771-1:2024 also uses a signed negative-tooth-count convention for internal
+gears. This repository deliberately preserves positive tooth counts plus an
+`internal` flag and implements the equivalent physical positive-radius branch;
+it does not expose a signed ISO adapter as a public API.
 
 There are three different categories of statements in this plan:
 
@@ -41,20 +43,18 @@ There are three different categories of statements in this plan:
    validation threshold, a default, a sampling method, or a SOLIDWORKS strategy.
 
 The public ISO pages establish publication and scope, but do not expose all of
-the paid standard text. A public preview of ISO 21771-1 confirms the relevant
-headings, symbols, internal sign convention, and the working-pressure-angle
-relations. The exact complete text of the formulas in the tooth-thickness,
-generated-root, and internal-cutter portions was not available from an
-authoritative ISO source during this audit. Those parts are explicitly marked
-below and must be checked against a licensed copy before implementation claims
-conformance.
+the paid standard text. The implementation therefore uses precise language:
+the reference/working relationships and profile-shift branches are verified
+against the equations recorded below, while the repository's backlash policy,
+sampling, legacy root approximation, external rack envelope, and conservative
+internal interference rule remain implementation choices or limitations.
 
 ## 2. ISO terminology mapped to this repository
 
 The ISO symbol `z` is signed for internal gears in ISO 21771-1. In the table,
 `Z` means the repository's positive magnitude (`p.z2` for a ring).
 
-| ISO concept | Repository today | Planned meaning |
+| ISO concept | Current implementation | Meaning |
 |---|---|---|
 | `m_n` normal module | `SpurSetParams.module`, `p.module` | Keep as the user-facing module and the rack/tool scale. |
 | `m_t` transverse module | `p.transverse_module`; `SpurSetGeometry.transverse_module` | Keep as `m_n / cos(beta)` and expose it as a named derived quantity. |
@@ -62,151 +62,155 @@ The ISO symbol `z` is signed for internal gears in ISO 21771-1. In the table,
 | `alpha_n` normal pressure angle | `p.alpha_n`; input `pressure_angle` is degrees | Keep. This is the rack/tool angle for the helical case. |
 | `alpha_t` transverse pressure angle | `p.alpha_t`; `geo.transverse_pressure_angle` | Keep as `atan(tan(alpha_n) / cos(beta))`. |
 | `beta` helix angle | `p.beta` is signed by `hand`; each member has signed `beta` | Keep the signed member convention. Document that the pair's hand rule is a mesh/placement choice, not an ISO profile-shift quantity. |
-| `d` reference diameter | `2 * member.pitch_r` | Rename internally to `reference_d`; keep `pitch_r` as a deprecated compatibility alias for the reference radius. |
+| `d` reference diameter | `member.reference_d` | `pitch_r` remains a compatibility alias for `reference_r`; new code uses the explicit name. |
 | `d_b` base diameter | `2 * member.base_r` | Keep, but derive from the reference circle and `alpha_t`, never from a working circle. |
-| `d_a` tip diameter | `2 * member.tip_r` | Keep as the nominal physical tip diameter, with the internal ring's tip being the smaller tooth radius. Add signed ISO adapters and, later, active/form diameters. |
+| `d_a` tip diameter | `member.tip_d` | Keep as the nominal physical tip diameter, with the internal ring's tip being the smaller tooth radius. No signed ISO adapter is exposed. |
 | `d_f` root diameter | `2 * member.root_r` | Keep as nominal root diameter. Do not use it to mean a generated root diameter. |
-| `d_fE` / generated root diameter | absent | Add a separate generated/form-root quantity when rack or cutter-envelope generation is implemented. |
-| profile shift coefficient `x` | absent | Add `profile_shift1` and `profile_shift2`, dimensionless, with zero defaults. |
-| `h_aP*` | `ADDENDUM_FACTOR = 1.0` in `geometry.py` | Add a rack addendum coefficient; default `1.0`. |
-| `h_fP*` | `DEDENDUM_FACTOR = 1.25` in `geometry.py` | Prefer an exposed clearance coefficient with `h_fP* = h_aP* + c_P*`; retain a derived dedendum coefficient for reporting. Default clearance `0.25`. |
-| `c_P*` | implicit difference `1.25 - 1.0` | Add as an explicit basic-rack clearance coefficient. Validate that it is non-negative and consistent with the selected rack profile. |
-| `rho_fP*` | absent; `fillet_factor = 0.2` is a gear-root approximation | Add `basic_rack_root_radius_factor`, with the ISO 53 Profile A candidate default `0.38` in generated-root mode. Do not reinterpret the existing `fillet_factor` silently. |
-| `s` / tooth thickness | local `tooth_thickness` in `compute_set`; not stored | Add per-member reference tooth thickness as derived geometry. Keep the old local behavior as the zero-shift compatibility case. |
-| `s_n` normal tooth thickness | absent | Add a derived normal thickness, with the normal/transverse conversion explicit. |
-| `s_t` transverse tooth thickness | local `tooth_thickness` only | Add a derived transverse reference thickness, including profile shift and the existing symmetric backlash policy. |
-| reference circle/cylinder | `member.pitch_r` | Make this the unambiguous reference circle. It is fixed by module and tooth count, not by working centre distance. |
+| `d_fE` / generated root diameter | `member.generated_root_d` in external straight rack mode | Available only for the opt-in external straight `rack_generated` mode; it is separate from nominal `root_d`. The involute transition radius is not exposed as a pair field. |
+| profile shift coefficient `x` | `profile_shift_1`, `profile_shift_2` | Dimensionless normal-module coefficients, both defaulting to zero. Transitional JSON spellings are migrated. |
+| `h_aP*` | `basic_rack_addendum_factor` | User-editable data-model field, default `1.0`. |
+| `h_fP*` | `basic_rack_dedendum_factor` property | Derived as `h_aP* + c_P*`; default `1.25`. |
+| `c_P*` | `basic_rack_clearance_factor` | Explicit field, default `0.25`, used to derive the rack dedendum. |
+| `rho_fP*` | `basic_rack_root_radius_factor` | Explicit field, default `0.38`; used by external straight rack-generated mode only. It is distinct from legacy `fillet_factor`. |
+| `s` / tooth thickness | `reference_tooth_thickness` | Stored as derived per-member transverse thickness after the compatibility backlash split. |
+| `s_n` normal tooth thickness | `normal_tooth_thickness` | Stored derived quantity, with normal/transverse conversion explicit. |
+| `s_t` transverse tooth thickness | `reference_tooth_thickness` | Stored derived quantity including profile shift and the existing symmetric backlash policy. |
+| reference circle/cylinder | `member.reference_r` | Fixed by `m_t` and tooth count, not by working centre distance. |
 | base circle/cylinder | `member.base_r` | Keep as the involute base circle. |
 | tip circle/cylinder | `member.tip_r` | Keep as the tooth-end circle, with directional labels for an internal gear. |
 | root circle/cylinder | `member.root_r` | Keep as the nominal root circle; add generated/form-root data separately. |
-| working pitch circle/cylinder | absent | Add `working_r`/`working_d`, derived from `alpha_wt` and the base radii. |
-| working pressure angle `alpha_wt` | absent; contact uses `geo.transverse_pressure_angle` | Add as a pair-level quantity. It equals `alpha_t` only for the default zero-shift/reference-centre case. |
-| reference centre distance | `p.centre_distance` and `geo.centre_distance` | Split into `reference_centre_distance` and `working_centre_distance`. The former is derived from reference diameters. |
-| working centre distance `a_w` | absent; `geo.centre_distance` is used by mesh and mates | Make `working_centre_distance` the assembly/mate distance. Keep `centre_distance` as a compatibility alias to it. |
-| profile shift | absent | Use ISO-positive external shifts. For the internal ring, document the physical positive-ring convention and convert it to ISO signed equations at the boundary. |
-| centre-distance modification | absent | Add derived `centre_distance_modification = (a_w - a_ref) / m_n`; do not identify it with `x1 + x2` or `x2 - x1` except where an equation explicitly proves that special case. |
-| transverse contact ratio `epsilon_alpha` | `geo.transverse_contact_ratio` | Keep the public name. Recompute from working pressure angle and active tip/form limits. |
-| overlap ratio `epsilon_beta` | `geo.axial_contact_ratio` | Add an ISO-named alias `overlap_ratio`; retain the old property and report label. |
-| total contact ratio `epsilon_gamma` | `total_contact_ratio` | Keep and add the ISO alias. |
+| working pitch circle/cylinder | `member.working_r`, `member.working_d` | Derived from the base radii and pair-level `alpha_wt`. |
+| working pressure angle `alpha_wt` | `geo.working_pressure_angle` | Pair-level operating quantity; it equals `alpha_t` for zero shift/reference distance. |
+| reference centre distance | `p.reference_centre_distance`, `geo.reference_centre_distance` | Derived from reference diameters; `p.centre_distance` remains the parameter compatibility alias. |
+| working centre distance `a_w` | `geo.working_centre_distance` | Assembly/mesh distance; `geo.centre_distance` remains its compatibility alias. |
+| profile shift | `p.profile_shift_combination` | External uses `x1 + x2`; internal physical positive-radius branch uses `x2 - x1`. No signed values are exposed. |
+| centre-distance modification | `geo.centre_distance_modification` | Derived as `(a_w - a) / m_n`. |
+| transverse contact ratio `epsilon_alpha` | `geo.transverse_contact_ratio` | Uses working distance/angle and nominal tip circles; it does not yet shorten the path for an active generated-root transition. |
+| overlap ratio `epsilon_beta` | `geo.overlap_ratio` | ISO-named property alias for `axial_contact_ratio`. |
+| total contact ratio `epsilon_gamma` | `geo.total_contact_ratio` | Sum of transverse and overlap ratios; report uses the ISO symbol. |
 
 ## 3. Current implementation audit
 
 ### Parameters and conversions
 
-`gears/spur/params.py` is a frozen, JSON-serializable dataclass. The current
-user inputs are module, tooth counts, face width, bore, hub, normal pressure
-angle, helix angle, hand, internal arrangement, a heuristic root-fillet factor,
-backlash, and ring rim thickness. The important derived properties are:
+`gears/spur/params.py` is a frozen, JSON-serializable dataclass. The user-facing
+inputs include module, tooth counts, face width, bore, hub, normal pressure
+angle, helix angle, hand, internal arrangement, backlash, ring rim thickness,
+and the two profile-shift coefficients `profile_shift_1` and
+`profile_shift_2`. The basic-rack coefficients are also represented, although
+the ordinary GUI exposes only the profile shifts. The important conversions are:
 
 - `transverse_module = module / cos(beta)`;
 - `alpha_t = atan2(tan(alpha_n), cos(beta))`;
-- `centre_distance = m_t * (z1 + z2) / 2` externally and
-  `m_t * (z2 - z1) / 2` internally.
+- `reference_centre_distance = m_t * (z1 + z2) / 2` externally and
+  `m_t * (z2 - z1) / 2` internally;
+- `profile_shift_combination = x1 + x2` externally and `x2 - x1` internally;
+- `alpha_wt` and `working_centre_distance` are solved from that combination,
+  unless an explicit working distance is supplied.
 
-The conversions are ISO-compatible for a parallel-axis helical pair. The centre
-distance is the reference/nominal distance only because the model has no profile
-shift or working geometry. `alpha_t` is a transverse reference pressure angle,
-not a working pressure angle.
+The normal/transverse conversions are used for a parallel-axis helical pair.
+`alpha_t` is the transverse reference pressure angle, not the working pressure
+angle. `p.centre_distance` is retained as a parameter-level alias for the
+reference distance, while `geo.centre_distance` is retained as a geometry-level
+alias for the working distance; new consumers use the explicit names.
 
-`JsonParams` already filters unknown JSON keys and allows dataclass defaults to
-fill fields absent from old files. That is a strong compatibility seam. New
-fields should be additive, and any rename should use
-`SpurSetParams._migrate_json_data` rather than changing `JsonParams` globally.
+`JsonParams` filters unknown JSON keys and allows dataclass defaults to fill
+fields absent from old files. New fields are additive, and the transitional
+spur names are handled by `SpurSetParams._migrate_json_data` rather than by
+changing `JsonParams` globally.
 
 ### Geometry and involute profile
 
-`gears/spur/geometry.py` contains the entire derived model in `compute_set`.
-The current path is:
+`gears/spur/geometry.py` contains the derived model in `compute_set`. The current
+path is:
 
-1. `pitch_r = m_t*z/2` and `base_r = pitch_r*cos(alpha_t)`.
-2. Addendum is `1.0*m_n`; dedendum is `1.25*m_n`.
-3. External tip/root radii are `pitch_r + addendum` and
-   `pitch_r - dedendum`. Internal ring radii are `pitch_r - addendum` and
-   `pitch_r + dedendum`.
-4. Tooth thickness is `pi*m_t/2 - backlash/2` for each member. The external
-   involute uses tooth thickness; the internal involute uses the complementary
-   space width.
-5. The pair centre distance is the reference distance. Contact uses the
-   reference pressure angle and nominal tip radii.
+1. `reference_r = m_t*z/2` and `base_r = reference_r*cos(alpha_t)`.
+2. Addendum and dedendum use `m_n` and the selected rack coefficients, with the
+   external and internal radial signs handled in separate branches.
+3. The reference tooth thickness is formed in the normal system from `x_i`,
+   projected to the transverse plane, and then reduced by half the deliberate
+   backlash on each member.
+4. `psi0` is calculated from that member's actual reference tooth thickness
+   for an external gear, or its complementary space width for a ring.
+5. Working radii come from the fixed base radii and `alpha_wt`; contact uses
+   `a_w`, `alpha_wt`, and the nominal tip circles.
 
-The first four items are compatible with ISO geometry only in the default
-unshifted, standard-rack case. They are not sufficient for arbitrary `x`,
-working centre distance, non-standard rack proportions, or exact generated root
-form.
+The reference/working/profile-shift equations are independently checked in
+`tests/test_spur_iso21771.py`. Non-standard rack values are represented and
+validated for finite/ordered geometry, but the generated-root envelope is only
+enabled for the external straight case described below.
 
 `gears/involute.py` correctly isolates the pure involute and has a deliberate
-external/internal split. `flank_points` uses a radial segment below the base
-circle; its own docstring calls this a simplification of the cutter-dependent
-trochoid. `internal_flank_points` requires the ring tip to clear its base circle
-and reverses the radial direction. `root_fillet` then fits a circular arc based
-on the repository's `fillet_factor`, not on `rho_fP*` and not on a generated
-rack envelope. This is an approximation, not a claim that the standard root
-is a circular arc of the final gear with that radius.
+external/internal split. In the default `legacy` mode, `flank_points` uses a
+radial segment below the base circle and `root_fillet` fits a final-gear arc
+based on `fillet_factor`; this is an approximation, not a claim that the
+standard root is a circular arc of the final gear. In external straight
+`rack_generated` mode, the below-base portion is instead the analytical rolling
+envelope of the rounded basic-rack corner, sampled for CAD. Internal and
+helical sections deliberately retain the legacy root path.
 
-The current helical twist is `face_width*tan(beta)/pitch_r`. The opposite-hand
-external rule and same-hand internal rule are exercised by tests and should be
-retained. The section-count/sagitta logic, cap overshoot, and guide curve are
+The current helical twist is `face_width*tan(beta)/reference_r`. The opposite-hand
+external rule and same-hand internal rule are exercised by tests and are retained.
+The section-count/sagitta logic, cap overshoot, and guide curve are
 SOLIDWORKS implementation choices and are independent of profile shift.
 
 ### Contact and validation
 
-`transverse_contact_ratio` uses the standard nominal tip-circle length of action:
+`transverse_contact_ratio` uses the working pressure angle and working distance
+in the nominal tip-circle length of action:
 
 ```text
-external: sqrt(ra1^2-rb1^2) + sqrt(ra2^2-rb2^2) - a*sin(alpha_t)
-internal: sqrt(ra1^2-rb1^2) - sqrt(ra2^2-rb2^2) + a*sin(alpha_t)
+ external: sqrt(ra1^2-rb1^2) + sqrt(ra2^2-rb2^2) - a_w*sin(alpha_wt)
+ internal: sqrt(ra1^2-rb1^2) - sqrt(ra2^2-rb2^2) + a_w*sin(alpha_wt)
 ```
 
-divided by `pi*m_t*cos(alpha_t)`. The internal signs are correct for the
-repository's positive-radius/positive-distance convention and are independently
-checked in `tests/test_internal_geometry.py`. They are not written in ISO's
-negative-diameter convention, and the function has no working pressure angle or
-active-root limit.
+divided by the reference transverse base pitch `pi*m_t*cos(alpha_t)`. The
+internal signs are correct for the repository's positive-radius/positive-
+distance convention and are independently checked. The implementation does
+not shorten this nominal path for the generated envelope's involute-transition
+radius, so its contact ratio is not an active-form contact ratio for every
+undercut case.
 
-`validate.py` warns about standard-rack undercut using a closed-form tooth-count
-limit, checks contact ratio, helix overlap, blank wall, and top land, and uses a
-fixed ten-tooth internal difference as a practical interference guard. The
-undercut warning is honest about the radial-root approximation, but profile shift
-will require it to become a geometry-dependent check. The internal ten-tooth
-rule should remain a conservative fallback until the exact tip/trimming
-interference calculation is implemented and independently validated.
+`validate.py` checks the derived reference/working geometry, tooth thickness,
+lands, loop topology, contact ratios, blank wall, and profile-dependent
+external undercut. It retains a fixed ten-tooth internal difference as a
+conservative fallback for unverified trimming/interference; exact internal
+involute, tip, and trimming interference is not implemented.
 
 ### Mesh, preview, reports, and builders
 
-- `gears/spur/mesh.py` translates by `geo.centre_distance`; clocking and gear
-  velocity ratio do not depend on profile shift. The translation must become the
-  working distance while the pitch-circle tests must use the reference circles.
-- `gears/spur/preview.py` draws `pitch_r` as a single pitch circle, reports it as
-  “pitch diameter,” and uses base/root/tip circles without distinguishing
-  reference, working, nominal root, or generated root. It is otherwise a good
-  consumer because all profile points come from `tooth_space_section`.
-- `gears/spur/report.py` prints one “centre distance,” “pitch diameter,” and
-  “base radius” per member. It must add reference/working labels without
-  removing the old rows immediately.
+- `gears/spur/mesh.py` translates by `geo.working_centre_distance`; reference
+  circles remain the phase/reference geometry. Clocking and gear velocity ratio
+  do not depend on profile shift.
+- `gears/spur/preview.py` draws separate reference and working pitch circles and
+  labels the readout with explicit reference/working terminology. All profile
+  points come from `tooth_space_section`.
+- `gears/spur/report.py` separates INPUT, REFERENCE GEOMETRY,
+  WORKING/OPERATING GEOMETRY, and MEMBER GEOMETRY, including ISO symbols.
 - `gears/sw/spur_part.py` revolves a blank to the current external tip or ring
   rim, loft-cuts the sampled tooth space, and patterns it. Its blank dimension
   plan relies on the outline's point count and H/V segment order. Shifted tip
   and root values must flow through `blank_outline`, not be recomputed in the
   COM layer.
-- `gears/sw/spur_assembly.py` mates the axes at `geo.centre_distance`; this must
-  use the working distance. Gear clocking remains a reference-tooth phase
-  operation, not a working-circle substitution.
-- `tools/build_spur.py` and `tools/build_spur_set.py` construct params directly
-  and should receive additive flags. Existing defaults and output filenames
-  should remain unchanged for the zero-shift legacy profile.
-- `gears/gui.py` owns `SPUR_FIELDS`, auto-sizing, parsing, JSON load/save, and
-  the derived readout. It needs an advanced ISO section but must not make old
-  presets fail because a new optional field is blank.
+- `gears/sw/spur_assembly.py` mates the axes at the working distance. Gear
+  clocking remains a reference-tooth phase operation, not a working-circle
+  substitution.
+- `tools/build_spur.py` and `tools/build_spur_set.py` accept additive `--x1`
+  and `--x2` flags. Existing defaults and output filenames remain unchanged
+  for zero-shift legacy builds.
+- `gears/gui.py` owns the two ordinary profile-shift inputs, auto-sizing,
+  parsing, JSON load/save, and the derived readout. Rack mode and an explicit
+  working-distance override remain programmatic/CLI data-model options rather
+  than ordinary GUI inputs.
 
-## 4. Proposed parameter model
+## 4. Implemented parameter model
 
-The parameter model should separate user intent from derived geometry. The
-following additions are recommended; exact public spelling can be finalized in
-the implementation phase, but the semantics should not change.
+The parameter model separates user intent from derived geometry. The canonical
+public fields are:
 
 ```python
-profile_shift1: float = 0.0
-profile_shift2: float = 0.0
+profile_shift_1: float = 0.0
+profile_shift_2: float = 0.0
 basic_rack_addendum_factor: float = 1.0
 basic_rack_clearance_factor: float = 0.25
 basic_rack_root_radius_factor: float = 0.38
@@ -231,25 +235,27 @@ silently change existing solids.
 
 The old `fillet_factor` remains accepted and serialized. In legacy mode it
 continues to mean the existing final-gear circular-fillet approximation. In
-generated mode it should either be rejected as ambiguous or explicitly documented
-as ignored. Do not silently treat `fillet_factor=0.2` as a basic-rack coefficient.
+generated mode the rack root-radius coefficient controls the rack corner and
+`fillet_factor` is not used for the selected external root transition. It is
+not silently reinterpreted as a basic-rack coefficient.
 
 `working_centre_distance=None` means “derive the working distance from the two
 profile shifts.” If a user supplies it, it becomes the assembly distance and
-`alpha_wt` is solved from it. The validator must compare the implied shift sum or
-difference to the supplied `profile_shift1/2` values and report a conflict rather
-than build a non-conjugate pair. This keeps centre distance and profile shift
-from becoming two contradictory sources of truth.
+`alpha_wt` is solved from it. The validator compares the implied shift sum or
+difference to the supplied `profile_shift_1`/`profile_shift_2` values and
+reports a conflict rather than silently treating contradictory inputs as a
+conjugate pair.
 
-Defaults and migration rules:
+Defaults and migration rules implemented:
 
 - all new numeric fields default to the current standard values or zero;
 - `working_centre_distance=None` derives the old nominal distance at `x1=x2=0`;
 - `root_geometry="legacy"` preserves the current section topology and point
   behavior;
 - old JSON loads through dataclass defaults;
-- a future rename such as `x1` to `profile_shift1` is handled explicitly in
-  `_migrate_json_data` and canonical JSON writes only the new name;
+- transitional names `x1`, `x2`, `profile_shift1`, and `profile_shift2` are
+  handled explicitly in `_migrate_json_data`, and canonical JSON writes only
+  the new names;
 - old CLI invocations do not acquire new required flags or new filename
   components.
 
@@ -258,7 +264,7 @@ Defaults and migration rules:
 The most important compatibility rule is: **`pitch_r` must never be silently
 repurposed to mean a working radius.**
 
-For each member, the planned derived object should have at least:
+For each member, the derived object has:
 
 ```text
 reference_r / reference_d     reference circle, d = m_t*|z|
@@ -266,13 +272,14 @@ working_r / working_d        operating circle, d_w = d_b/cos(alpha_wt)
 base_r / base_d               involute base circle, d_b = d*cos(alpha_t)
 tip_r / tip_d                 nominal tooth-end circle, directional for a ring
 root_r / root_d                nominal root circle, directional for a ring
-generated_root_r               actual generated/form boundary when available
+generated_root_r               generated nominal root boundary when available
 ```
 
-The compatibility property `pitch_r` returns `reference_r` and is marked for
-deprecation in code comments and API documentation. Existing preview, mesh, and
-tests that mean “reference pitch circle” continue to get the same value. New
-code must use `reference_r` or `working_r` by name.
+The compatibility property `pitch_r` returns `reference_r` and is documented as
+such. Existing callers that mean “reference pitch circle” continue to get the
+same value; new code uses `reference_r` or `working_r` by name. There is no
+deprecation warning because ordinary legacy calls and the compatibility tests
+still use the alias.
 
 At the set level:
 
@@ -284,22 +291,23 @@ working_centre_distance   = working_r2 - working_r1             internal
 centre_distance            compatibility alias of working_centre_distance
 ```
 
-The physical radii above are positive. The ISO adapter additionally exposes an
-internal ring with negative signed `z`, `d`, `d_b`, `d_a`, `d_f`, and centre
-distance where ISO requires that convention. No existing mesh or SOLIDWORKS
-caller should receive those signed values.
+The physical radii above are positive. The implementation does not expose an
+ISO signed internal adapter; instead it keeps the repository's positive ring
+count/radius convention and applies the verified internal sign relationships
+explicitly in `compute_set`. No mesh or SOLIDWORKS caller receives signed ISO
+display values.
 
 The tip/root naming used by the current code is useful for geometry but can be
-misread in a ring. Keep the physical names and add directional report labels:
+misread in a ring. The physical names are retained and reports/readouts identify
 “tip radius (inner)” and “root radius (outer)” for the ring. `outside_dia` remains
 the diameter occupied by the teeth, not the outer rim diameter.
 
 ## 6. Profile-shift equations and sign audit
 
-The equations below are the proposed positive-radius implementation equations.
+The equations below are the positive-radius implementation equations.
 They intentionally use `Z = abs(z2)` for a ring and branch explicitly for
-external/internal pairs. The ISO signed form can then be tested separately by
-mapping `z_iso2 = -Z` and signed diameters.
+external/internal pairs. The equivalent ISO signed mapping is a derivation
+boundary documented for review; it is not exposed as a production API.
 
 Let
 
@@ -413,7 +421,7 @@ implied_X     = q*(inv(alpha_wt)-inv(alpha_t))/(2*tan(alpha_n))
 ```
 
 The validator compares `implied_X` to `x1+x2` externally or `x2-x1`
-internally. The solver must reject an invalid inverse-involute domain and a
+internally. The solver rejects an invalid inverse-involute domain and a
 working distance that makes `alpha_wt` non-physical.
 
 Working radii and diameters are then:
@@ -448,12 +456,11 @@ gears; if the implementation later supports unequal or crossed working base
 pitches, it must use the corresponding ISO path-of-contact pitch instead of
 silently retaining this shortcut.
 
-When a generated root/undercut or active-profile limit is in effect, the active
-root/start diameter must be used to limit the path of contact. In other words,
-the formula above is the nominal full-involute formula, not a promise that every
-undercut gear has that contact ratio. The implementation phase must decide
-whether the active root is represented by an ISO-generated `d_Nf`/form value or
-whether that case remains a validation error.
+The implementation currently uses the nominal tip-circle limits in this
+equation even when an external rack-generated root is selected. It therefore
+reports a nominal full-involute contact ratio, not an active-form contact ratio
+shortened at the generated root/involute transition. This limitation is called
+out in the verification document and validator behavior.
 
 For the helical pair, retain the axial overlap equation:
 
@@ -466,7 +473,7 @@ Expose these as `overlap_ratio` and `total_contact_ratio`, while keeping
 `axial_contact_ratio` as a compatibility alias. The signed hand controls twist;
 the overlap magnitude uses the helix magnitude.
 
-## 7. Root geometry recommendation
+## 7. Root geometry status
 
 ISO 21771-1 distinguishes the nominal root circle from generated/form geometry
 and includes generated-root material in its later geometry sections and Annex B.
@@ -474,176 +481,165 @@ ISO 53 defines a basic rack tooth whose root transition is a circular fillet of
 radius `rho_fP`; that does not mean the final gear root is the same circle. The
 final root is the envelope left by the tool motion.
 
-The current model does not generate that envelope:
+The current model provides both paths:
 
-- below the base circle, `flank_points` inserts a radial segment;
-- `root_fillet` fits an approximate circular arc in the final gear space;
-- undercut is warned about but is not represented in the solid;
-- the internal ring uses a mirrored involute-space construction and has no
-  cutter-generated root model.
+- `root_geometry="legacy"` uses the radial below-base segment and the
+  `fillet_factor` final-gear circular approximation;
+- external straight `root_geometry="rack_generated"` uses the analytical
+  rolling envelope of the rounded basic-rack corner and named generated-root
+  segments;
+- internal and helical members remain on the legacy path, because their
+  cutter-generated root equations were not independently verified.
 
-**Recommendation: choose B as the target, keep A as the compatibility mode.**
+### B: rack/cutter envelope (implemented limited mode)
 
-### B: rack/cutter envelope (target ISO mode)
-
-Implement a pure-math profile generator that:
+The implemented external limited mode has a pure-math profile generator that:
 
 1. builds the selected basic rack/tool profile in a normal section from
    `alpha_n`, `h_aP*`, `h_fP*`, `c_P*`, and `rho_fP*`;
 2. rolls the rack/cutter against the gear and samples the envelope in the
    transverse plane;
-3. identifies the start of the nominal involute, undercut/trochoid portion,
-   generated root diameter, and the transition to the root fillet;
-4. supports the external rack/hob case first and an explicit pinion-type
-   cutter/shaper case for internal rings;
-5. sweeps the transverse result into the existing helical loft sections without
-   changing the face-width/hand machinery.
+3. identifies the generated root envelope and its transition to the nominal
+   involute;
+4. supports the external rack/hob case only;
+5. uses that straight transverse result in the existing CAD section path.
 
-This gives the model a real generated root and makes the undercut warning
-meaningful. It also has the largest implementation and verification cost, so it
-should be a separately selectable mode until its external and internal tests are
-complete.
+This gives the external straight model a generated root and makes its undercut
+warning meaningful, so it remains a separately selectable mode. It does not
+claim an internal cutter/shaper envelope or a helical normal-to-transverse
+projection of the rack corner.
 
 ### A: documented approximation (compatibility mode)
 
-Retain the existing radial-below-base and final-gear fillet path, but label it
-explicitly as `legacy` in reports and documentation. It remains useful for
-preview/SOLIDWORKS compatibility and for old JSON. It must not be described as
-ISO-generated geometry, and validators must continue to warn when the real
-generated gear would undercut.
+The existing radial-below-base and final-gear fillet path is retained and
+labelled explicitly as `legacy` in reports and documentation. It remains useful
+for preview/SOLIDWORKS compatibility and for old JSON. It is not described as
+ISO-generated geometry, and validators warn when the real generated gear would
+undercut.
 
 The ISO standard does not, by itself, require this repository to use a specific
 trochoidal construction for every CAD preview. The standard defines the
 geometrical concepts and gives generated-form calculations; the decision to
 implement the tool envelope, a simplified root, or a CAD-native sweep is an
-implementation choice. The plan chooses the envelope for the opt-in ISO mode
-because it is the closest practical match to the stated goal.
+implementation choice. The opt-in external straight envelope is the closest
+implemented match to the generated-root goal; its limits are recorded above.
 
 ## 8. Compatibility strategy
 
-### Geometry API
+### Geometry API (implemented)
 
-- Add explicit `reference_r`, `working_r`, `reference_d`, and `working_d`.
+- The model has explicit `reference_r`, `working_r`, `reference_d`, and
+  `working_d`.
 - Preserve `pitch_r` as a read-only alias for `reference_r`.
-- Add `reference_centre_distance` and `working_centre_distance` to
-  `SpurSetGeometry`; preserve `centre_distance` as an alias of the latter.
+- `SpurSetGeometry` has `reference_centre_distance` and
+  `working_centre_distance`; `centre_distance` is an alias of the latter.
 - Keep `tip_r`, `root_r`, `base_r`, `addendum`, `dedendum`, `psi0`, and `twist`
   available during migration. Clarify in docstrings whether a quantity is
   nominal, generated, reference, or working.
 - Keep `outside_dia` and `rim_radius` physical and positive. Never feed ISO
   signed ring diameters into SOLIDWORKS or preview transforms.
 
-### Mesh, preview, and DXF/CSV
+### Mesh, preview, and DXF/CSV (implemented)
 
 - Mesh translation and the assembly distance mate use `working_centre_distance`.
-- Reference-circle overlays continue to use `reference_r`; a new working-circle
-  overlay is added rather than replacing the old one.
-- Preview titles/readouts say “reference” and “working” explicitly. Existing
-  labels remain as aliases for the default reference values until the tests and
-  user-facing documentation are migrated.
+- Reference-circle overlays use `reference_r` and include a separate
+  `working_r` overlay.
+- Preview titles/readouts say “reference” and “working” explicitly. The
+  `pitch_r` compatibility property remains available to older callers.
 - Tooth-space and CSV point topology stays unchanged in legacy mode. Generated
   root mode may add named `trochoid`/`generated_root` segments, but the existing
   named segments (`flank`, `riser`, `cap`, `root`) remain available to consumers.
 - DXF export continues to export the selected scene, not a hidden signed ISO
   coordinate system.
 
-### SOLIDWORKS
+### SOLIDWORKS (implemented consumer path)
 
 - `blank_outline` remains the only source of blank dimensions. The builder keeps
   its current point count and alternating segment structure in legacy mode.
 - The assembly uses the working distance, which equals the old distance at
   defaults. A shifted set therefore gets the correct operating placement.
-- Part and assembly filenames remain unchanged for defaults. For non-default
-  shifts/rack/root modes, add a stable suffix only after a filename collision
-  test is added; otherwise a shifted set can overwrite a standard set with the
-  same module and tooth counts.
+- Part and assembly filenames remain unchanged for defaults and for shifted
+  variants. A shifted build can therefore overwrite a standard build with the
+  same module and tooth counts if the caller reuses the output directory/name.
 - Expected radius checks use the physical tip/rim values and remain independent
   of ISO signed display values.
 - The helix section-count, guide-curve, end-overshoot, hand, clocking, and
   pattern logic are retained unless a generated root adds more section segments.
 
-### JSON, GUI, and CLI
+### JSON, GUI, and CLI (implemented)
 
 - `JsonParams`' unknown-key filtering is retained.
 - Old JSON gets zero shifts, standard rack coefficients, derived nominal centre
   distance, and legacy root mode through dataclass defaults.
 - New JSON writes canonical field names. Migration tests cover both an old file
   with no new keys and any transitional aliases.
-- GUI exposes profile shifts and working centre distance in an “Advanced ISO
-  geometry” group. Rack coefficients and root mode can initially be advanced
-  fields or CLI-only, but the derived readout must show what was actually used.
-- Add flags to both spur build tools and the report CLI without changing the
-  meaning of existing flags. The old `--beta`, `--alpha`, `--hand`,
+- GUI exposes the two profile shifts as ordinary spur inputs. Rack coefficients,
+  root mode, and an explicit working-distance override remain data-model/CLI
+  options rather than ordinary GUI inputs.
+- Both spur build tools and the report CLI accept additive shift flags without
+  changing the meaning of existing flags. The old `--beta`, `--alpha`, `--hand`,
   `--backlash`, `--internal`, `--rim`, and sizing flags continue to produce the
   current default geometry.
 
-## 9. Implementation phases
+## 9. Implementation phases and current status
 
-### Phase 0 — freeze the audit and equation fixtures
+### Phase 0 — audit and equation fixtures (complete)
 
-- Add this plan and a short source/equation checklist to the review.
-- Obtain licensed copies or authoritative extracts of ISO 21771-1:2024 and
-  ISO 53:1998 before coding the formula-heavy phases.
-- Add independent expected-value fixtures for the current external, helical,
-  and internal anchor sets.
-- Record the current `pitch_r` and `centre_distance` aliases as reference
-  quantities, not working quantities.
+- This plan and the source/equation checklist are retained as the design record.
+- Independent expected-value fixtures cover external, helical, and internal
+  anchor sets in `tests/test_spur_iso21771.py`.
+- `pitch_r` and `centre_distance` are tested/documented as compatibility aliases
+  for reference and working quantities respectively.
 
-### Phase 1 — additive parameter model and compatibility aliases
+### Phase 1 — additive parameter model and compatibility aliases (complete)
 
-- Add new dataclass fields, validation, JSON defaults, and migration hooks.
-- Add derived rack coefficients and an explicit legacy/generated root mode.
-- Add `reference_*` and `working_*` names while retaining old properties.
-- Do not change the profile points in legacy/default mode.
+- Dataclass fields, validation, JSON defaults, and migration hooks are present.
+- Rack coefficients and explicit `legacy`/`rack_generated` root modes are present.
+- Explicit `reference_*` and `working_*` names coexist with compatibility aliases.
+- The default legacy profile retains the previous geometry.
 
-### Phase 2 — reference/working pair geometry and profile shift
+### Phase 2 — reference/working pair geometry and profile shift (complete)
 
-- Implement the external and internal branches for `x1/x2`, addendum/dedendum,
-  tooth thickness, working pressure angle, working radii, and centre distance.
-- Implement the ISO signed internal adapter and verify it against the positive
-  physical-radius branch.
-- Replace the current contact-ratio inputs with working quantities while
-  preserving the default values bit-for-bit within test tolerances.
-- Update validation for invalid inverse-involute domains, pointed tips,
-  internal tip/base clearance, root wall, and shift/centre-distance conflicts.
+- External and internal branches for `x1/x2`, addendum/dedendum, tooth thickness,
+  working pressure angle, working radii, and centre distance are implemented.
+- The repository uses explicit positive-radius internal equations equivalent to
+  the signed ISO convention; a signed adapter is not exposed.
+- Contact ratios use working distance/angle with the reference transverse base
+  pitch, and zero-shift defaults retain their previous values.
+- Validation covers inverse-involute domains, pointed tips, internal tip/base
+  clearance, root wall, and shift/centre-distance conflicts.
 
-### Phase 3 — consumer migration
+### Phase 3 — consumer migration (complete)
 
-- Migrate mesh and SOLIDWORKS mates to the working distance.
-- Migrate preview/report rows to explicit reference/working labels.
-- Keep `pitch_r` in old paths until all consumers are migrated, then add
-  deprecation warnings only if they will not spam normal CLI/GUI use.
-- Preserve DXF/CSV topology and existing filename behavior for default mode.
+- Mesh and SOLIDWORKS mates use the working distance.
+- Preview/report rows use explicit reference/working labels.
+- `pitch_r` remains a documented compatibility alias without warning noise.
+- DXF/CSV topology and default filename behavior are preserved.
 
-### Phase 4 — generated root mode
+### Phase 4 — generated root mode (limited implementation complete)
 
-- Implement the external rack envelope in pure math with named generated-root
-  segments.
-- Add an independent root-form validator and generated-root report values.
-- Implement the internal cutter/shaper path separately; do not reuse the
-  external trochoid with a sign flip unless an independent derivation proves it.
-- Update the SOLIDWORKS section builder only after the pure geometry and preview
-  tests establish the loop's orientation, closure, and material side.
+- The external straight rack envelope is implemented in pure math with named
+  generated-root segments and independent loop/root tests.
+- Generated-root values are reported separately from nominal root values.
+- No internal cutter/shaper envelope or helical projected rack-root envelope is
+  claimed; those paths remain legacy.
 
-### Phase 5 — GUI, CLI, JSON, and reports
+### Phase 5 — GUI, CLI, JSON, and reports (complete)
 
-- Add optional input fields and flags, including an explicit display of whether
-  the set is in legacy or rack-generated root mode.
-- Add migration/round-trip tests for old and new presets.
-- Add reference and working quantities to reports without removing old aliases
-  prematurely.
-- Add non-default filename suffixes only with a dedicated collision test.
+- The GUI exposes profile shifts, both spur build tools and the report accept
+  `--x1`/`--x2`, JSON migration/round trips are tested, and reports expose
+  reference/working quantities and root mode.
+- Non-default filename suffixes were not added; callers must choose distinct
+  output paths when building shifted variants.
 
-### Phase 6 — verification and release gate
+### Phase 6 — verification and release gate (partially complete)
 
-- Run the complete suite, the ISO-only formula suite, CLI snapshots, preview/DXF
-  tests, and all available SOLIDWORKS smoke tests.
-- Build at least one external straight, external helical, internal straight, and
-  internal helical pair in SOLIDWORKS with default and non-zero shift cases.
-- Check centre distance, hand, clocking, interference, tooth count, tip/rim
-  radius, and articulation in the generated assemblies.
-- Only then consider changing the default root mode from legacy, and treat that
-  as a deliberate compatibility decision rather than an incidental refactor.
+- The complete Python suite, independent ISO equation suite, CLI, preview/DXF,
+  and compiled-geometry gate are run as release checks where their dependencies
+  are available; results are recorded in the verification document.
+- SOLIDWORKS smoke builds are environment-dependent and are not verified in
+  this checkout without a COM/CAD session.
+- The default root mode remains `legacy` as a deliberate compatibility choice.
 
 ## 10. Testing strategy
 
@@ -653,7 +649,7 @@ the same equation and then compare the result to itself.
 
 ### Independent closed-form tests
 
-Add a dedicated `tests/test_spur_iso_geometry.py` (or equivalent) containing:
+`tests/test_spur_iso21771.py` contains:
 
 - `m_t` and `alpha_t` conversion tests for beta = 0 and several non-zero helix
   angles;
@@ -663,8 +659,6 @@ Add a dedicated `tests/test_spur_iso_geometry.py` (or equivalent) containing:
 - internal tests with positive physical `Z` that independently use
   `q = Z-z1` and `X=x2-x1`, including cases where only the ring is shifted and
   only the pinion is shifted;
-- an ISO signed-adapter test proving that signed internal diameters and centre
-  distance map to the same physical positive radii and placement distance;
 - an explicit-centre-distance inversion test: independently solve `alpha_wt`,
   recover implied shift sum/difference, and assert that inconsistent inputs are
   rejected;
@@ -686,57 +680,42 @@ Add a dedicated `tests/test_spur_iso_geometry.py` (or equivalent) containing:
 - For generated roots, test the rack profile independently, verify the envelope
   stays on the material side, verify tangent/transition continuity, and test
   undercut cases against independently sampled reference geometry.
-- For internal generated roots, use a separate independent fixture and include
-  a deliberate wrong-sign test that must fail.
+- Internal generated roots are intentionally not implemented or tested; the
+  external rack-root algorithm is not applied to rings.
 
 ### Consumer and compatibility tests
 
-- Keep all existing spur geometry, mesh, internal, validate, preview, GUI, and
-  CLI tests; update only labels or expected semantics where a test currently
-  asserts the ambiguous word 'pitch.'
-- Add JSON load tests for files without the new fields, files with transitional
-  aliases, and canonical round trips.
-- Add CLI tests showing old invocations produce the old report and new flags
-  reach params and geometry.
-- Add GUI tests for blank advanced fields, zero defaults, non-zero shifts,
-  explicit working distance, validation messages, and readout labels.
-- Add preview/DXF/CSV regression tests for both root modes.
-- Keep SOLIDWORKS tests skipped when COM is unavailable, but require smoke builds
-  in the release environment for all four pair types.
+- Existing spur geometry, mesh, internal, validate, preview, GUI, and CLI tests
+  cover compatibility and the explicit reference/working labels.
+- JSON tests cover files without new fields, transitional aliases, and
+  canonical round trips.
+- CLI/GUI tests cover zero defaults and non-zero profile shifts.
+- Preview/DXF/CSV tests cover legacy and external straight rack-generated modes;
+  SOLIDWORKS tests remain skipped when COM is unavailable.
 
-## 11. Current baseline and unresolved authoritative references
+## 11. Current verification boundary and limitations
 
-The unmodified repository was run from the requested `master` commit. The
-ordinary command initially encountered Windows permission errors while pytest
-enumerated the global temporary directory. Re-running the same suite with a
-dedicated workspace basetemp produced the usable baseline:
+The independent equation and compatibility results are recorded in
+`docs/iso21771_verification.md`; repository check results belong to the review
+record rather than this historical plan. The following boundaries remain:
 
-```text
-1047 passed, 59 skipped, 1 warning in 28.95s
-```
+1. The default basic-rack coefficients are represented as the common Profile A
+   values `h_aP*=1.0`, `h_fP*=1.25`, `c_P*=0.25`, and `rho_fP*=0.38`. They are
+   implementation inputs; profile selection and manufacturing tolerances are
+   not modelled.
+2. The symmetric `backlash/2` policy is a compatibility choice for the
+   user-facing circular reference-pitch backlash. It is not a full ISO 21771-2
+   tolerance or inspection model.
+3. The generated-root construction is verified only for the external straight
+   rack-generated mode. Internal and helical roots use the legacy approximation;
+   no internal cutter/shaper envelope is claimed.
+4. Contact ratio uses nominal tip-circle limits. It uses working distance and
+   working pressure angle, but does not yet shorten the path at a generated
+   root/involute transition, nor perform exact internal trimming/interference
+   analysis. The ten-tooth internal difference rule remains conservative.
+5. Sampling density, loft interpolation, blank construction, SOLIDWORKS mating,
+   manufacturing tolerances, and inspection definitions are not normative ISO
+   claims and require environment-specific validation.
 
-The warning is pytest's inability to write the existing `.pytest_cache` path;
-it did not affect the test results. No source files were changed by the audit.
-
-The following references/formulas remain to be verified against licensed
-standards text before implementation:
-
-1. The complete ISO 53:1998 numeric profile table and profile-selection rules.
-   Public secondary references consistently identify the common ISO 53 Profile
-   A values as `h_aP*=1.0`, `h_fP*=1.25`, `c_P*=0.25`, and
-   `rho_fP*=0.38`, but the official ISO page does not expose the table.
-2. The exact ISO 21771-1 tooth-thickness equations and the precise handling of
-   normal/transverse backlash and tolerances. ISO 21771-1 points tooth-thickness
-   and backlash measurement toward ISO 21771-2; the current repository's
-   symmetric `backlash/2` policy is an implementation compatibility choice.
-3. The complete generated-root/trochoid equations and transition conditions in
-   ISO 21771-1 Clauses 10/11 and Annex B, especially for an internal gear made
-   with a pinion-type cutter. The plan names the required behavior but does not
-   fabricate those equations.
-4. The exact active-root/start-of-profile treatment to use in contact-ratio
-   calculation once undercut/generated-root geometry is present. The nominal
-   tip-circle formula is clear and independently testable; active/form limits
-   require the licensed text and a deliberate implementation decision.
-
-Until those points are verified, the implementation should call the new mode
-'ISO-aligned' or 'ISO-derived', not 'ISO certified'.
+Accordingly, documentation and reports call the implementation ISO-aligned or
+ISO-derived and do not claim ISO certification or blanket ISO 21771 compliance.

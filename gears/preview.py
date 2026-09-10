@@ -44,6 +44,7 @@ STYLES: dict[str, Style] = {
     "neighbour": Style("#9db4c8", 1.0),
     "cut": Style("#b9a0d0", 1.0, (3, 3)),
     "pitch": Style("#2f8f4f", 1.2, (7, 3, 2, 3)),
+    "working": Style("#b56b1f", 1.2, (2, 2)),
     "reference": Style("#9a9a9a", 1.0, (4, 3)),
     "axis": Style("#7a7a7a", 1.0, (8, 3, 2, 3)),
     "blank": Style("#1b6fd4", 2.0),

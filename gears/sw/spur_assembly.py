@@ -6,7 +6,8 @@ afterwards, why every mate is swMateAlignCLOSEST, and why the gear mate cannot
 disturb the clocking.
 
 What is particular to a spur pair is the arrangement. The axes are parallel and
-a **centre distance** apart, so the gear is translated rather than tilted, and
+a **working centre distance** ``a_w`` apart, so the gear is translated rather
+than tilted, and
 the two members are held quite differently:
 
     pinion      origin coincident with the assembly origin                (3)
@@ -16,7 +17,7 @@ the two members are held quite differently:
     gear        axis parallel to the pinion axis                          (2)
                 axis coincident with the assembly Top plane               (1)
                 origin coincident with the assembly Front plane           (1)
-                axis at distance a from the pinion axis                   (1)
+                 axis at working distance a_w from the pinion axis           (1)
 
 Three things about the gear's half are worth stating, because the obvious
 arrangement is wrong in all three:
@@ -28,7 +29,7 @@ would force the gear onto x = 0 - which is precisely where it must not be.
 
 **Nothing above locates the gear along its own axis except the origin mate.**
 The bevel set gets all three translations from putting both origins on the
-assembly origin, because the members share an apex. Here they are `a` apart, so
+assembly origin, because the members share an apex. Here they are `a_w` apart, so
 the axial position has to be asked for separately: the gear's origin sits at its
 front face, and mating that point to the Front plane puts both front faces on
 z = 0.
@@ -36,8 +37,9 @@ z = 0.
 **The direction is a parallel mate, not an angle mate at zero.** An angle mate at
 zero degrees solves to 180 as readily as to 0.
 
-The centre distance is a distance mate between the two axes, which is the honest
-place to put that number and where someone would look for it afterwards.
+The working centre distance ``a_w`` is a distance mate between the two axes,
+which is the honest place to put that number and where someone would look
+for it afterwards.
 
 The *sense* of the gear mate has **not** been measured for a spur pair. An
 external pair turns in opposite senses about parallel axes -
@@ -204,8 +206,8 @@ def add_mates(
     mate((pick_gear_origin, front), SW_MATE_COINCIDENT,
          "gear front face - Front plane")
     mate((pick_gear_axis, pick_pinion_axis), SW_MATE_DISTANCE,
-         f"centre distance {geo.centre_distance:.4f} mm",
-         distance=geo.centre_distance)
+         f"working centre distance a_w {geo.working_centre_distance:.4f} mm",
+         distance=geo.working_centre_distance)
 
     ratio = mesh.gear_mate_ratio(geo.pinion.z, geo.gear.z)
     mate((pick_pinion_axis, pick_gear_axis), SW_MATE_GEAR,
@@ -278,7 +280,7 @@ def build_spur_set(
 
     # Measured after the rebuild, so both report where the *mates* left the
     # components rather than where the transforms put them. A distance mate that
-    # solved to the wrong side would show up here as a negative centre distance,
+    # solved to the wrong side would show up here as a negative working distance,
     # and any stray tilt as a non-zero axis angle.
     pinion_origin = measure_origin(pinion_comp)
     gear_origin = measure_origin(gear_comp)
@@ -301,7 +303,7 @@ def build_spur_set(
         gear=gear,
         assembly_title=model.GetTitle,
         assembly_path=path,
-        centre_distance_mm=geo.centre_distance,
+        centre_distance_mm=geo.working_centre_distance,
         clocking_deg=math.degrees(clocking),
         measured_centre_distance_mm=measured_centre_distance,
         measured_axis_angle_deg=measured_axis_angle,

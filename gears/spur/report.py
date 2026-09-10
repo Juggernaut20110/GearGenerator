@@ -2,8 +2,8 @@
 
 Same three-column shape as the bevel report, so the two line up side by side.
 The rows differ because the quantities do: no cone angles or cone distances, and
-in their place the transverse conversions, the centre distance and the two
-contact ratios.
+in their place the transverse conversions, reference/working centre distances,
+and the transverse, overlap, and total contact ratios.
 """
 
 from __future__ import annotations
@@ -160,8 +160,10 @@ def print_report(geo) -> None:
     print(_row("outside diameter", f(a.outside_dia), f(b.outside_dia), "mm"))
     # For the ring these two are the other way round - tip innermost, root
     # outermost - which is why the report names them rather than ordering them.
-    print(_row("tip radius", f(a.tip_r), f(b.tip_r), "mm"))
-    print(_row("root radius", f(a.root_r), f(b.root_r), "mm"))
+    tip_direction = "inner for ring" if p.internal else "outer"
+    root_direction = "outer for ring" if p.internal else "inner"
+    print(_row(f"tip radius d_a/2 ({tip_direction})", f(a.tip_r), f(b.tip_r), "mm"))
+    print(_row(f"root radius d_f/2 ({root_direction})", f(a.root_r), f(b.root_r), "mm"))
     print(
         _row(
             "generated root diameter d_fE",
@@ -195,6 +197,9 @@ def report(args) -> tuple[object, object, list]:
     f = lambda v: f"{v:.4f}"  # noqa: E731
     section = tooth_space_section(geo, args.member, z=0.0)
     loop3d = section.loop_3d()
+    section_member = geo.member(args.member)
+    section_tip_direction = "inner for ring" if section_member.internal else "outer"
+    section_root_direction = "outer for ring" if section_member.internal else "inner"
     print(f"\nTOOTH SPACE SECTION  ({args.member}, transverse, z = 0)")
     print(_row("boundary points", len(section.loop_2d)))
     root_form = (
@@ -203,8 +208,18 @@ def report(args) -> tuple[object, object, list]:
         else "sharp root"
     )
     print(_row("root form", root_form))
-    print(_row("root radius", f(section.r_root), "", "mm"))
-    print(_row("tip radius", f(section.r_tip), "", "mm"))
+    print(
+        _row(
+            f"root radius d_f/2 ({section_root_direction})",
+            f(section.r_root), "", "mm",
+        )
+    )
+    print(
+        _row(
+            f"tip radius d_a/2 ({section_tip_direction})",
+            f(section.r_tip), "", "mm",
+        )
+    )
     print(_row("cut cap radius", f(section.r_cap), "", "mm"))
     ov = end_overshoot(geo)
     print(_row("cut z span", f"{-ov:.4f} .. {geo.params.face_width + ov:.4f}", "", "mm"))

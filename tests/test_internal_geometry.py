@@ -271,19 +271,19 @@ def test_the_ring_shares_the_pinions_base_circle_formula(internal):
     assert r.tip_r > r.base_r
 
 
-def test_the_centre_distance_is_the_difference_not_the_sum(internal, external):
-    """m_t (z2 - z1) / 2. At z1 = z2 the axes would coincide."""
-    assert internal.centre_distance == pytest.approx(42.0)
-    assert external.centre_distance == pytest.approx(78.0)
-    assert internal.centre_distance == pytest.approx(
+def test_the_working_centre_distance_is_the_difference_not_the_sum(internal, external):
+    """At zero shift, a_w = m_t (z2 - z1) / 2 internally and is a sum externally."""
+    assert internal.working_centre_distance == pytest.approx(42.0)
+    assert external.working_centre_distance == pytest.approx(78.0)
+    assert internal.working_centre_distance == pytest.approx(
         internal.gear.pitch_r - internal.pinion.pitch_r
     )
 
 
-def test_the_pitch_circles_are_internally_tangent(internal):
-    """Solved the other way round: the two radii and the centre distance agree."""
+def test_the_reference_pitch_circles_are_internally_tangent(internal):
+    """At zero shift, the reference radii and working distance agree."""
     assert (
-        internal.pinion.pitch_r + internal.centre_distance
+        internal.pinion.reference_r + internal.working_centre_distance
         == pytest.approx(internal.gear.pitch_r)
     )
 
@@ -515,10 +515,10 @@ def test_a_shifted_internal_pair_is_placed_at_the_working_distance():
 
 
 def test_the_contact_point_lands_on_both_pitch_circles(internal):
-    """The placement's own consistency check, and the reason for the -a sign.
+    """The placement's own consistency check, and the reason for the -a_w sign.
 
-    With the ring at -a the contact sits at (+r_p1, 0), which is angle 0 in the
-    pinion's frame - where its tooth space already is. At +a it would land at
+    With the ring at -a_w the contact sits at (+r_p1, 0), which is angle 0 in the
+    pinion's frame - where its tooth space already is. At +a_w it would land at
     (-r_p1, 0), and the pinion would need clocking too.
     """
     contact = (internal.pinion.pitch_r, 0.0)

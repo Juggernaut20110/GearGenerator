@@ -274,7 +274,7 @@ def _spur_status(p, geo) -> str:
     arrangement = "internal ring" if p.internal else "external"
     return (
         f"m_n {p.module:g}   {p.z1}:{p.z2} teeth   {arrangement}   "
-        f"ratio {p.ratio:.3f}:1   {helix}   a {geo.centre_distance:.3f} mm   "
+        f"ratio {p.ratio:.3f}:1   {helix}   a_w {geo.working_centre_distance:.3f} mm   "
         f"contact {geo.total_contact_ratio:.3f}"
     )
 
@@ -321,7 +321,7 @@ def _bevel_result_lines(result) -> list[str]:
 
 def _spur_result_lines(result) -> list[str]:
     return [
-        f"  centre distance {result.measured_centre_distance_mm:.4f} mm measured "
+        f"  working centre distance {result.measured_centre_distance_mm:.4f} mm measured "
         f"({result.centre_distance_error_mm:+.2e} mm error)",
         f"  axes {result.measured_axis_angle_deg:.6f} deg apart (parallel is 0)",
         f"  gear clocked {result.clocking_deg:.4f} deg",

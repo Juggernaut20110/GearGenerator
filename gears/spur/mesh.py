@@ -5,7 +5,7 @@ along +Z, its front face at z = 0, and a tooth **space** centred on the part's
 +X direction at z = 0.
 
 In the assembly the pinion keeps that frame unchanged. The gear is **translated**
-along +X by the centre distance and not rotated at all - its axis stays parallel
+along +X by the working centre distance and not rotated at all - its axis stays parallel
 to the pinion's and pointing the same way. That is the whole arrangement, and it
 is what makes the spur case so much shorter than the bevel one: no shaft angle,
 no shared apex, no tilt.
@@ -37,10 +37,10 @@ way. Still no flip in the placement.
 it is positive for an internal pair - which is what a planetary train is built
 out of.
 
-**The ring goes to -a, not +a**, and this is not a free choice. Internally
+**The ring goes to -a_w, not +a_w**, and this is not a free choice. Internally
 tangent pitch circles touch on the far side of the small one from the large
-one's centre: with the pinion at the origin and the ring centre at (-a, 0), the
-contact point is at (+r_p1, 0), because r_p1 + a = r_p2. Put the ring at (+a, 0)
+one's centre: with the pinion at the origin and the ring centre at (-a_w, 0), the
+contact point is at (+r_p1, 0), because r_p1 + a_w = r_p2. Put the ring at (+a_w, 0)
 instead and the contact lands at (-r_p1, 0) - **angle pi in the pinion's frame**,
 where the pinion has whatever its tooth count happens to put there rather than
 the tooth space it is built with at angle 0. The pinion would then need clocking
@@ -96,11 +96,11 @@ def gear_placement(clocking: float) -> Matrix3:
 
 
 def gear_translation(geo: SpurSetGeometry) -> tuple[float, float, float]:
-    """Where the gear's origin goes: along X by the centre distance. mm.
+    """Where the gear's origin goes: along X by the working distance ``a_w``.
 
     **Positive X for an external pair, negative for an internal one.** See the
     module docstring: internally tangent pitch circles touch on the far side of
-    the pinion from the ring's centre, so putting the ring at -a is what keeps
+    the pinion from the ring's centre, so putting the ring at -a_w is what keeps
     the contact point at the pinion's angle 0, where its tooth space already is.
 
     Millimetres, like everything else upstream of `gears.sw`. `to_array_data`
@@ -108,7 +108,7 @@ def gear_translation(geo: SpurSetGeometry) -> tuple[float, float, float]:
     the unit conversion stays at that boundary and nowhere else.
     """
     sign = -1.0 if geo.params.internal else 1.0
-    return (sign * geo.centre_distance, 0.0, 0.0)
+    return (sign * geo.working_centre_distance, 0.0, 0.0)
 
 
 def internal_gear_clocking(z: int) -> float:
@@ -117,7 +117,7 @@ def internal_gear_clocking(z: int) -> float:
     The internal counterpart of `placement.gear_clocking`, and a different
     answer rather than the same one reached differently. The contact line sits
     at angle **0** in the ring's frame - not pi - because the ring is placed at
-    -a; and the ring is built with a tooth *space* centred on angle 0, so what
+    -a_w; and the ring is built with a tooth *space* centred on angle 0, so what
     is wanted is the nearest tooth centre brought to 0.
 
     Tooth centres sit at (k + 1/2) * tau, so the nearest is half a pitch away

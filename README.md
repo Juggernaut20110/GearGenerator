@@ -701,16 +701,23 @@ That sign is why `internal_flank_points` is a second function rather than
 one form into the other. Building `psi0` from the **space width** rather than
 the tooth thickness is the entire substitution.
 
-Three things flip together:
+For a shifted pair, the reference centre distance remains the difference of
+the reference radii, while the operating placement uses the working centre
+distance `a_w`. The internal profile-shift combination is `x2 - x1` (positive
+ring shift and positive pinion shift therefore move the operating geometry in
+opposite directions); it is not the external `x1 + x2` rule.
 
-* the **centre distance** is the difference of the tooth counts, not the sum
+Three things remain distinctive:
+
+* the **reference centre distance** is the difference of the tooth counts, not
+  the sum
 * the **helix hands agree** rather than oppose — no flip in the placement either
   way, but a ring wraps around its pinion instead of facing it
 * the pair **turns the same way**, which is the sign a planetary train is made of
 
-**The ring is placed at -a, and that is forced.** Internally tangent pitch
-circles touch on the far side of the small one, so at `-a` the contact lands at
-the pinion's angle 0 where its tooth space already is. At `+a` it lands at pi,
+**The ring is placed at `-a_w`, and that is forced.** Internally tangent working
+pitch circles touch on the far side of the small one, so at `-a_w` the contact lands at
+the pinion's angle 0 where its tooth space already is. At `+a_w` it lands at pi,
 and the pinion would need clocking too — and the pinion is the one member in
 this codebase that never does. The ring's own clocking is then half an angular
 pitch, with no parity case.
@@ -743,7 +750,10 @@ and is why the anchor ring has 60. Trimming interference is guarded by the
 ten-tooth difference rule and is **not** computed: the first attempt shipped a
 formula that flagged the anchor pair by comparing the two tip circles directly,
 when a meshing internal pair's tip circles are supposed to overlap — that is
-where the mesh is.
+where the mesh is. The validator also performs the exact nominal far-side
+pinion-tip/ring-root clearance check using the working distance and shifted
+radii; exact involute and trimming interference remain outside the implemented
+scope.
 
 ---
 
@@ -989,7 +999,7 @@ guide that only passes *near* a spline is the classic way a guided loft fails.
 
 `build_spur_set` in [gears/sw/spur_assembly.py](gears/sw/spur_assembly.py)
 places the pair the same way — transforms first, mates after — but on parallel
-axes a centre distance apart:
+axes a working centre distance `a_w` apart:
 
 ```
 pinion      origin coincident with the assembly origin                (3)
@@ -999,7 +1009,7 @@ pinion      origin coincident with the assembly origin                (3)
 gear        axis parallel to the pinion axis                          (2)
             axis coincident with the assembly Top plane               (1)
             origin coincident with the assembly Front plane           (1)
-            axis at distance a from the pinion axis                   (1)
+            axis at working distance a_w from the pinion axis          (1)
 ```
 
 The gear's half is not the pinion's, and the obvious arrangement is wrong three
@@ -1007,12 +1017,12 @@ ways. **Its axis runs along +Z, so it cannot lie in the Front plane** — that i
 the XY plane, and only Top and Right contain a +Z direction, with Right forcing
 the gear onto x = 0, which is exactly where it must not be. **Nothing else
 locates it axially**: a bevel pair takes all three translations from putting both
-origins on the assembly origin, but here they are `a` apart, so the gear's origin
+origins on the assembly origin, but here they are `a_w` apart, so the gear's origin
 — which sits at its front face — is mated to the Front plane to put both fronts
 on z = 0. And the direction is a **parallel** mate, because an angle mate at zero
 degrees solves to 180 as readily as to 0.
 
-The centre distance is a distance mate between the two axes. This is also the
+The working centre distance `a_w` is a distance mate between the two axes. This is also the
 first caller of `to_array_data`'s translation argument; a bevel pair always
 passed zero.
 

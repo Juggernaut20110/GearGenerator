@@ -243,7 +243,7 @@ def test_the_arrangement_field_reads_back_as_a_bool(app):
 
     set_input(app, "internal", "internal")
     assert app._params.internal is True
-    assert app._geo.centre_distance == pytest.approx(
+    assert app._geo.working_centre_distance == pytest.approx(
         app._params.transverse_module * (app._params.z2 - app._params.z1) / 2.0
     )
 
@@ -635,7 +635,9 @@ def test_a_spur_set_computes_and_draws(app):
     app.on_kind_change()
     assert app._geo.centre_distance == pytest.approx(60.0)
     assert app._scene.key == "transverse"
-    assert "centre distance" in [r.label for r in spur_preview.derived_rows(app._geo)]
+    assert "reference centre distance a" in [
+        r.label for r in spur_preview.derived_rows(app._geo)
+    ]
     assert app.build_button.instate(["!disabled"])
 
 
@@ -674,11 +676,11 @@ def test_auto_size_uses_the_active_type_s_rules(app):
     assert app._params.helix_angle == pytest.approx(15.0)
 
 
-def test_a_spur_status_line_names_spur_quantities(app):
+def test_a_spur_status_line_names_working_spur_quantities(app):
     app.kind_key.set("spur")
     app.on_kind_change()
     status = app._status_text()
-    assert "a 60.000 mm" in status
+    assert "a_w 60.000 mm" in status
     assert "cones" not in status
 
 
@@ -713,7 +715,7 @@ def test_the_spur_build_report_survives_a_stub_result():
 
     lines = App._format_result(Result(), _spur_result_lines)
     text = "\n".join(lines)
-    assert "centre distance 60.0000 mm measured" in text
+    assert "working centre distance 60.0000 mm measured" in text
     assert "parallel is 0" in text
     assert "the set turns" in text
 

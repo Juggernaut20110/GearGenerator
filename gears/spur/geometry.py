@@ -37,13 +37,13 @@ The twist, and why the gear is wound the other way
 --------------------------------------------------
 Over the face width a helical tooth sweeps
 
-    twist = face_width * tan(beta) / pitch_r
+    twist = face_width * tan(beta) / reference_r
 
-about the axis. `beta` is signed by hand, so the twist is too, and the two
-members of a pair carry opposite signs. That is not a convention - it is forced.
-The gear is placed on its parallel axis by a pure translation with no flip, so
-if both parts were cut the same way round their teeth would cross instead of
-meshing.
+about the axis. `beta` is signed by hand, so the twist is too. An external pair
+carries opposite signs, while an internal pair carries the same sign; those are
+the mesh hand rules for the two arrangements. The gear is placed on its parallel
+axis by a pure translation with no flip, so using the wrong rule would make the
+helical teeth cross instead of meshing.
 """
 
 from __future__ import annotations
@@ -292,12 +292,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     rack_addendum = p.basic_rack_addendum_factor
     rack_dedendum = p.basic_rack_dedendum_factor
 
-    # Circular tooth thickness at the pitch circle, measured in the transverse
+    # Circular tooth thickness at the reference circle, measured in the transverse
     # plane. Backlash is taken off the tooth, which is the convention that keeps
     # the centre distance nominal.
     standard_geometric_thickness = math.pi * m_t / 2.0
-    standard_tooth_thickness = standard_geometric_thickness - p.backlash / 2.0
-
     # The gear's hand. An external pair is cut with opposite hands and an
     # internal pair with the same one - see `SpurSetParams.hand`. Neither is a
     # convention: the placement has no flip in it either way, and what differs
@@ -548,7 +546,7 @@ def transverse_contact_ratio(
     **Two signs flip together for an internal pair, and they have to.** The ring
     curves the same way as the pinion rather than against it, so its tip circle
     cuts the line of action on the far side of the pitch point from where an
-    external gear's would, and the centre distance is added rather than
+    external gear's would, and the centre-distance term is added rather than
     subtracted.
 
     Measured on the anchor ring pair, the four sign combinations give:
@@ -639,10 +637,10 @@ def undercut_limit(
     rack form, not an exact internal interference calculation.
 
     This remains a conservative design warning. ``root_geometry="legacy"``
-    uses a radial below-base approximation and does not show the generated
-    undercut; the opt-in external straight rack-envelope mode does show its
-    cutter-limited root form. The limit itself is still reported rather than
-    used to silently alter the selected tooth geometry.
+    uses a radial below-base approximation, so it does not show the cutter-limited
+    undercut; the opt-in external straight rack-envelope mode does show that
+    generated root form. The limit itself is still reported rather than used to
+    silently alter the selected tooth geometry.
     """
     return (
         2.0

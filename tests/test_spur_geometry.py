@@ -899,24 +899,26 @@ def test_tooth_depths_are_measured_on_the_normal_module(member, beta):
 
 @pytest.mark.parametrize("beta", BETAS)
 @pytest.mark.parametrize("z1,z2", TOOTH_COUNTS)
-def test_centre_distance_is_the_sum_of_the_pitch_radii(beta, z1, z2):
+def test_zero_shift_working_distance_is_the_sum_of_the_reference_radii(beta, z1, z2):
     g = sets(beta, z1, z2)
-    assert g.centre_distance == pytest.approx(g.pinion.pitch_r + g.gear.pitch_r, rel=1e-14)
+    assert g.working_centre_distance == pytest.approx(
+        g.pinion.reference_r + g.gear.reference_r, rel=1e-14
+    )
 
 
 @pytest.mark.parametrize("beta", BETAS)
 @pytest.mark.parametrize("z1,z2", TOOTH_COUNTS)
-def test_centre_distance_solved_back_out_of_the_base_radii(beta, z1, z2):
-    """a = (rb1 + rb2) / cos(alpha_t) - the involute's own statement of the same fact.
+def test_zero_shift_working_distance_solved_from_the_base_radii(beta, z1, z2):
+    """a_w = (rb1 + rb2) / cos(alpha_t) at zero shift.
 
-    Two independent routes to the centre distance agreeing is what says the base
+    Two independent routes to the working distance agreeing is what says the base
     circles and the pressure angle belong to each other.
     """
     g = sets(beta, z1, z2)
     from_base = (g.pinion.base_r + g.gear.base_r) / math.cos(
         g.transverse_pressure_angle
     )
-    assert from_base == pytest.approx(g.centre_distance, rel=1e-13)
+    assert from_base == pytest.approx(g.working_centre_distance, rel=1e-13)
 
 
 # --- tooth thickness -------------------------------------------------------

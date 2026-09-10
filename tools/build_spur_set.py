@@ -8,10 +8,11 @@
 Both parts plus an assembly with the pair clocked, meshing and coupled by a gear
 mate, so dragging either member turns the other.
 
-`--internal` makes z2 a ring gear: the pinion runs inside it, the centre
-distance is the *difference* of the tooth counts, the ring sits on -X rather
-than +X, and a helical pair is cut with the **same** hand rather than opposite
-ones. A ring needs at least 34 teeth at 20 degrees before its tip clears its own
+`--internal` makes z2 a ring gear: the pinion runs inside it, the reference
+centre distance is the *difference* of the tooth counts, the working distance
+is `a_w`, the ring sits on -X rather than +X, and a helical pair is cut with the
+**same** hand rather than opposite ones. A ring needs at least 34 teeth at 20
+degrees before its tip clears its own
 base circle, so the counts here are not interchangeable with an external pair's.
 
 `--reverse-gear` flips the gear mate's sense. **Which setting is right has not
@@ -103,7 +104,8 @@ def main(argv=None) -> int:
     print(
         f"building {'internal' if p.internal else 'external'} "
         f"{geo.pinion.z}x{geo.gear.z} at m_n={p.module}, "
-        f"beta={p.helix_angle:g} deg, centre distance {geo.centre_distance:.4f} mm"
+        f"beta={p.helix_angle:g} deg, working centre distance "
+        f"a_w {geo.working_centre_distance:.4f} mm"
     )
     if p.helix_angle:
         rule = "same, or they will not mesh" if p.internal else (
@@ -142,7 +144,7 @@ def main(argv=None) -> int:
 
         print("\nASSEMBLY")
         print(f"  document              {built.assembly_title}")
-        print(f"  centre distance       {built.centre_distance_mm:.4f} mm")
+        print(f"  working centre distance a_w {built.centre_distance_mm:.4f} mm")
         print(f"  measured              {built.measured_centre_distance_mm:.4f} mm")
         print(f"  error                 {built.centre_distance_error_mm:+.6f} mm")
         print(f"  axes measured apart   {built.measured_axis_angle_deg:.6f} deg")
@@ -175,7 +177,7 @@ def main(argv=None) -> int:
             )
         if abs(built.centre_distance_error_mm) > 1e-6:
             print(
-                f"\nWARNING: centre distance is off by "
+                f"\nWARNING: working centre distance a_w is off by "
                 f"{built.centre_distance_error_mm:+.6f} mm."
             )
         if not built.articulates and not args.no_mates:

@@ -34,9 +34,9 @@ from ..params_io import JsonParams
 # Basic-rack coefficients.  These are dimensionless ISO quantities; the
 # actual lengths are obtained by multiplying by the normal module m_n.
 #
-# The root-radius value is carried by the data model now, but the legacy root
-# generator deliberately continues to use ``fillet_factor`` until the
-# rack-generated profile phase is implemented.
+# The root-radius value is carried by the data model and is consumed by the
+# opt-in external straight rack-generated root. The legacy mode deliberately
+# continues to use ``fillet_factor`` for compatibility.
 BASIC_RACK_ADDENDUM_FACTOR = 1.0       # h_aP*
 BASIC_RACK_CLEARANCE_FACTOR = 0.25     # c_P*
 BASIC_RACK_ROOT_RADIUS_FACTOR = 0.38   # rho_fP*

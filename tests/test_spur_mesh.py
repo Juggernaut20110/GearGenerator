@@ -20,7 +20,7 @@ def geo():
 
 
 def placed_gear(geo):
-    """Where the gear's own frame ends up: rotation plus the centre distance."""
+    """Where the gear's own frame ends up: rotation plus the working distance."""
     clocking = mesh.gear_clocking(geo.gear.z)
     matrix = mesh.gear_placement(clocking)
     translation = mesh.gear_translation(geo)
@@ -41,9 +41,11 @@ def test_the_pinion_keeps_the_frame_it_was_built_in(geo):
     )
 
 
-def test_the_gear_is_translated_along_x_by_the_centre_distance(geo):
-    assert mesh.gear_translation(geo) == (geo.centre_distance, 0.0, 0.0)
-    assert geo.centre_distance == pytest.approx(60.0)
+def test_the_gear_is_translated_along_x_by_the_working_centre_distance(geo):
+    assert mesh.gear_translation(geo) == (
+        geo.working_centre_distance, 0.0, 0.0
+    )
+    assert geo.working_centre_distance == pytest.approx(60.0)
 
 
 def test_the_axes_stay_parallel(geo):
@@ -59,7 +61,7 @@ def test_the_axes_stay_parallel(geo):
 def test_the_gear_axis_lands_on_the_line_of_centres(geo):
     place = placed_gear(geo)
     origin = place((0.0, 0.0, 0.0))
-    assert origin == pytest.approx((geo.centre_distance, 0.0, 0.0))
+    assert origin == pytest.approx((geo.working_centre_distance, 0.0, 0.0))
 
 
 def test_a_shifted_external_pair_is_placed_at_the_working_distance():
@@ -197,11 +199,13 @@ def test_the_transform_is_written_column_major(geo):
     assert data[6:9] == pytest.approx([matrix[0][2], matrix[1][2], matrix[2][2]])
 
 
-def test_the_translation_column_carries_the_centre_distance(geo):
+def test_the_translation_column_carries_the_working_centre_distance(geo):
     """The bevel pair shares an apex and always passes zero here; this one does not."""
     metres = tuple(v * 0.001 for v in mesh.gear_translation(geo))
     data = mesh.to_array_data(mesh.gear_placement(0.0), metres)
-    assert data[9:12] == pytest.approx([geo.centre_distance * 0.001, 0.0, 0.0])
+    assert data[9:12] == pytest.approx(
+        [geo.working_centre_distance * 0.001, 0.0, 0.0]
+    )
     assert data[12] == 1.0
     assert data[13:16] == [0.0, 0.0, 0.0]
 
@@ -221,7 +225,7 @@ def test_the_gear_needs_its_own_axial_locator(geo):
 
     A bevel pair gets all three translations from putting both origins on the
     assembly origin, because it shares an apex. A spur pair does not: the gear's
-    origin is `a` away, so its axial position has to be asked for separately.
+    origin is `a_w` away, so its axial position has to be asked for separately.
     That is what the gear-origin-to-Front-plane mate is for, and this records
     that the number it should land on is zero.
     """

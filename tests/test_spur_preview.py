@@ -340,10 +340,10 @@ def test_derived_rows_cover_the_set_and_both_members(geo):
     labels = [r.label for r in rows]
     assert "SET" in labels and "MEMBERS" in labels
     for wanted in (
-        "centre distance",
-        "transverse module",
-        "contact ratio, transverse",
-        "contact ratio, axial",
+        "reference centre distance a",
+        "transverse module m_t",
+        "epsilon_alpha (transverse)",
+        "epsilon_beta (overlap)",
         "twist over the face",
     ):
         assert wanted in labels
@@ -351,7 +351,8 @@ def test_derived_rows_cover_the_set_and_both_members(geo):
 
 def test_derived_rows_report_the_numbers_the_geometry_holds(geo):
     rows = {r.label: r for r in preview.derived_rows(geo)}
-    assert rows["centre distance"].pinion == "60.0000"
+    assert rows["reference centre distance a"].pinion == "60.0000"
+    assert rows["working centre distance a_w"].pinion == "60.0000"
     assert rows["teeth"].pinion == "17"
     assert rows["teeth"].gear == "43"
 
