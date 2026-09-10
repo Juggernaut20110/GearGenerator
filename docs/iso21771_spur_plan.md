@@ -91,7 +91,11 @@ The ISO symbol `z` is signed for internal gears in ISO 21771-1. In the table,
 | working centre distance `a_w` | `geo.working_centre_distance` | Assembly/mesh distance; `geo.centre_distance` remains its compatibility alias. |
 | profile shift | `p.profile_shift_combination` | External uses `x1 + x2`; internal physical positive-radius branch uses `x2 - x1`. No signed values are exposed. |
 | centre-distance modification | `geo.centre_distance_modification` | Derived as `(a_w - a) / m_n`. |
-| transverse contact ratio `epsilon_alpha` | `geo.transverse_contact_ratio` | Uses working distance/angle and nominal tip circles; it does not yet shorten the path for an active generated-root transition. |
+| transverse contact ratio `epsilon_alpha` | `geo.transverse_contact_ratio` | Uses the actual `g_alpha` path when exact active-form limits are available; legacy, internal, and helical roots report an explicitly `approximate` nominal/full-involute basis. |
+| path of contact `g_alpha` | `geo.path_of_contact` / `geo.actual_path_of_contact` | Actual line-of-action length between the resolved active limits; the report also exposes `contact_ratio_basis`. |
+| tip-form diameter `d_Fa` | `member.tip_form_d` | Tip-form limit, separate from nominal `d_a`; currently equal to `d_a` because no separate tip corner/chamfer model is present. |
+| start active profile `d_Nf` | `member.start_active_profile_d` | Pair-dependent active root/start limit selected from the member form and its mate's opposing limit. |
+| active tip diameter `d_Na` | `member.active_tip_d` | Pair-dependent active tip limit selected from the member tip form and its mate's opposing root/form limit. |
 | overlap ratio `epsilon_beta` | `geo.overlap_ratio` | ISO-named property alias for `axial_contact_ratio`. |
 | total contact ratio `epsilon_gamma` | `geo.total_contact_ratio` | Sum of transverse and overlap ratios; report uses the ISO symbol. |
 
@@ -143,8 +147,11 @@ path is:
    backlash on each member.
 4. `psi0` is calculated from that member's actual reference tooth thickness
    for an external gear, or its complementary space width for a ring.
-5. Working radii come from the fixed base radii and `alpha_wt`; contact uses
-   `a_w`, `alpha_wt`, and the nominal tip circles.
+5. Working radii come from the fixed base radii and `alpha_wt`. Active
+   profile resolution then uses each member's analytical form limit and its
+   mate's opposing limit on the line of action. The exact branch computes
+   `d_Na`, `d_Nf`, and `g_alpha`; unsupported roots retain the nominal path and
+   report an approximate basis.
 
 The reference/working/profile-shift equations are independently checked in
 `tests/test_spur_iso21771.py`. Non-standard rack values are represented and
@@ -168,19 +175,21 @@ SOLIDWORKS implementation choices and are independent of profile shift.
 ### Contact and validation
 
 `transverse_contact_ratio` uses the working pressure angle and working distance
-in the nominal tip-circle length of action:
+to resolve the line-of-action limits. For the exact external
+`rack_generated` branch, the active path is resolved from the analytical
+member form limits. Unsupported roots retain the nominal path and report an
+approximate basis.
 
 ```text
  external: sqrt(ra1^2-rb1^2) + sqrt(ra2^2-rb2^2) - a_w*sin(alpha_wt)
  internal: sqrt(ra1^2-rb1^2) - sqrt(ra2^2-rb2^2) + a_w*sin(alpha_wt)
 ```
 
-divided by the reference transverse base pitch `pi*m_t*cos(alpha_t)`. The
-internal signs are correct for the repository's positive-radius/positive-
-distance convention and are independently checked. The implementation does
-not shorten this nominal path for the generated envelope's involute-transition
-radius, so its contact ratio is not an active-form contact ratio for every
-undercut case.
+These are the documented fallback equations for unsupported roots, divided by
+the reference transverse base pitch `pi*m_t*cos(alpha_t)`. The internal signs
+are correct for the repository's positive-radius/positive-distance convention
+and are independently checked. The exact external rack-generated branch uses
+the active-limit equations in the Contact ratios section below.
 
 `validate.py` checks the derived reference/working geometry, tooth thickness,
 lands, loop topology, contact ratios, blank wall, and profile-dependent
@@ -454,31 +463,46 @@ sign check that should be used in tests and in the mesh placement.
 
 ### Contact ratios
 
-For an unmodified nominal involute active to the tip circle, use the working
-pressure angle and working distance in the existing positive-radius length of
-action:
+For the exact external `rack_generated` branch, define the non-negative
+line-of-action offsets
 
 ```text
-B_i = sqrt(max(0, r_ai^2 - r_bi^2))
+q(r) = sqrt(max(0, r^2 - r_b^2))
+q_wi = q(r_wi)
+q_Ffi = q(d_Ffi / 2)
+q_Fai = q(d_Fai / 2)
+```
 
-g_alpha_external = B_1 + B_2 - a_w*sin(alpha_wt)
-g_alpha_internal = B_1 - B_2 + a_w*sin(alpha_wt)
+and the own tip/root paths:
+
+```text
+tip_path_i  = q_Fai - q_wi
+root_path_i = q_wi - q_Ffi
+
+active_tip_path_1 = min(tip_path_1, root_path_2)
+active_tip_path_2 = min(tip_path_2, root_path_1)
+g_alpha = active_tip_path_1 + active_tip_path_2
 
 p_bt = pi*m_t*cos(alpha_t)
 epsilon_alpha = g_alpha / p_bt
 ```
 
-The external/internal sign pair is deliberately retained and independently
-tested. The denominator is the reference transverse base pitch for parallel-axis
-gears; if the implementation later supports unequal or crossed working base
-pitches, it must use the corresponding ISO path-of-contact pitch instead of
-silently retaining this shortcut.
+This is the positive-radius implementation of ISO 21771-1:2024 Clause 5.5.2.2
+Eqs. (79)-(85), Clause 5.5.2.3 Eqs. (86)-(92), and Clause 5.5.6.2 Eq. (94),
+with the approach/recess components corresponding to Eqs. (96) and (97). The
+external/internal sign pair is deliberately retained in the fallback and in
+the internal branch. For an internal ring, the physical ring tip is inward,
+so its tip offset is `q_w - q_Fa` and the internal length uses the equivalent
+subtraction branch.
 
-The implementation currently uses the nominal tip-circle limits in this
-equation even when an external rack-generated root is selected. It therefore
-reports a nominal full-involute contact ratio, not an active-form contact ratio
-shortened at the generated root/involute transition. This limitation is called
-out in the verification document and validator behavior.
+When no verified `d_Ff` exists, the implementation retains the historical
+nominal/full-involute tip-circle path, does not invent a root-form diameter,
+and marks the result `contact_ratio_basis="approximate"`. This covers the
+legacy, helical, and internal root paths currently supported by the CAD code.
+The denominator is the reference transverse base pitch for the parallel-axis
+cases implemented here, consistent with Clause 5.5.9.1 Eq. (113). If unequal
+or crossed working base pitches are added later, the corresponding ISO
+path-of-contact pitch must replace this shortcut.
 
 For the helical pair, retain the axial overlap equation:
 
@@ -731,10 +755,12 @@ record rather than this historical plan. The following boundaries remain:
    no internal cutter/shaper envelope is claimed. The Clause 10.4 trochoid
    curvature equations are recorded in the verification document but are not
    implemented as a reported result.
-4. Contact ratio uses nominal tip-circle limits. It uses working distance and
-   working pressure angle, but does not yet shorten the path at a generated
-   root/involute transition, nor perform exact internal trimming/interference
-   analysis. The ten-tooth internal difference rule remains conservative.
+4. Active contact limits and the shortened path are exact only for the
+   external straight rack-generated branch with both generated root forms
+   available. Legacy, internal, and helical roots retain a nominal/full-
+   involute approximation and are labelled as such; internal trimming and
+   interference analysis remain separate future work. The ten-tooth internal
+   difference rule remains conservative.
 5. Sampling density, loft interpolation, blank construction, SOLIDWORKS mating,
    manufacturing tolerances, and inspection definitions are not normative ISO
    claims and require environment-specific validation.

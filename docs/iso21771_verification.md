@@ -39,7 +39,8 @@ internal phase target, and the pair-level backlash split.
 The equations follow the terminology and implementation equations recorded in
 [`docs/iso21771_spur_plan.md`](iso21771_spur_plan.md), based on the concepts of
 ISO 21771-1:2024 and the ISO 53:1998 basic rack. The independent tests write
-the following directly:
+the following directly for nominal/full-involute and unsupported-root cases;
+the exact active-profile path equations are recorded below:
 
 ```text
 m_t       = m_n / cos(beta)
@@ -90,7 +91,10 @@ not yet have the corresponding analytical `d_fE` construction.
 and the working pair condition. `k` is a later pair-level tip/addendum change:
 it changes addendum, tip diameter, working depth, and tip clearance, but not
 reference diameter, base diameter, reference tooth thickness, or working
-pressure angle. New parameter sets default to `tip_alteration_mode=
+pressure angle. Under this repository's external positive-radius convention,
+negative `k` shortens the external tips and positive `k` lengthens them; the
+internal ring direction is reversed by the physical-radius conversion. New
+parameter sets default to `tip_alteration_mode=
 "iso_clearance"`; JSON files that predate this field are migrated to the
 explicit `legacy` (`k=0`) mode so old saved geometry is not silently changed.
 `explicit` mode accepts a user-supplied coefficient.
@@ -107,7 +111,7 @@ test derives it from the reported working radius and `psi0` using the
 involute angular law, with the complementary ring-space expression for an
 internal member.
 
-### Generated-root and SOI references
+### Active profile, path of contact, and generated-root references
 
 The primary source for this change is ISO 21771-1:2024, Clauses 9.6, 9.7 and
 10.1–10.4. The publication record is
@@ -116,6 +120,28 @@ clause/equation text used for this review was checked against the
 [publisher/sample preview of the same edition](https://previewnorm.com/iso/ISO%2021771-1-2024%20PDF.pdf).
 
 The implementation uses these exact references:
+
+- Clause 5.5.2.1 defines the active profile limits and distinguishes the
+  root-form/start-of-involute diameter `d_Ff`, the tip-form diameter `d_Fa`,
+  and the pair-dependent active limits `d_Nf` and `d_Na`.
+- Clause 5.5.2.2 Eqs. (79)-(85) gives the pinion active root/tip limits and
+  the corresponding line-of-action angles/roll parameters. Clause 5.5.2.3
+  Eqs. (86)-(92) gives the corresponding gear limits. The implementation
+  selects the smaller usable own/mating interval on the line of action and
+  reconstructs the corresponding physical diameter from the base-circle
+  offset. This is the positive-radius external equivalent of those equations;
+  the internal sign convention is kept separate.
+- Clause 5.5.4 defines the line of action and its operating limits A and E.
+- Clause 5.5.5 Eq. (93) defines the form-overlap quantity `c_F`.
+- Clause 5.5.6.2 Eq. (94) defines the path of contact `g_alpha = AE`.
+  Eqs. (96) and (97) define the approach/recess components `g_a` and `g_f`.
+  The implementation evaluates the same quantities from analytical
+  base-circle offsets, using the external and internal positive-radius sign
+  branches documented in the plan.
+- Clause 5.5.9.1 Eq. (113) defines `epsilon_alpha = g_alpha / p_et`;
+  Clause 5.5.9.3 defines the overlap ratio and Clause 5.5.9.5 the total
+  contact ratio. For the parallel-axis cases implemented here, `p_et` is the
+  transverse base pitch `p_bt`.
 
 - Clause 10.1, Eqs. (264)–(272): polar involute/trochoid definitions and the
   rack tip parameter. The code retains an analytical rolling-envelope form in
@@ -137,6 +163,23 @@ The implementation uses these exact references:
 - Clause 10.4, Eqs. (280)–(286): radius of curvature of the trochoid. These
   equations are recorded as a source boundary but are not used to locate the
   SOI or exposed as a claimed curvature result in this change.
+
+The active-profile implementation exposes `path_of_contact` (the actual
+`g_alpha`) and `contact_ratio_basis` on `SpurSetGeometry`. Each member also
+exposes `tip_form_d` (`d_Fa`), `start_active_profile_d` (`d_Nf`), and
+`active_tip_d` (`d_Na`). In the exact branch, `contact_ratio_basis` is
+`active_profile`: it is currently available only when both members are
+external straight members using the analytical rack-generated root, so both
+`d_Ff` values are known. The current tip model has no separate rounded or
+chamfered tooth-end form, therefore `d_Fa` equals the member's nominal `d_a`
+in that branch; it remains a distinct field so a future tip-form model cannot
+collapse the ISO quantities.
+
+For legacy roots, internal pairs, and helical pairs, the generated root or
+cutter form is not verified. Those configurations retain the historical
+nominal/full-involute tip path and report `contact_ratio_basis` as
+`approximate`; the implementation does not manufacture a `d_Ff` value for
+them. This is a declared approximation, not an ISO active-profile result.
 
 The distinction required by Clauses 9.6 and 9.7 is preserved: `d_fE` is the
 generated root-circle boundary produced by the selected rack envelope, `d_f`
@@ -171,9 +214,10 @@ manufacturing tolerance, datum, or inspection definition in ISO 21771-1:2024.
 The rack-generated root envelope and SOI intersection are verified only for
 the existing opt-in external straight construction. Exact cutter-generated
 root geometry for helical and internal gears remains outside this
-implementation. Clause 10.4 curvature is not implemented. The nominal
-tip-circle contact-ratio formula is verified, but a complete active-profile
-contact-ratio calculation for every generated undercut form is not claimed.
+implementation. Clause 10.4 curvature is not implemented. Active-profile
+path/contact-ratio limits are implemented only for the exact external straight
+rack-generated branch; legacy, internal, and helical results remain explicitly
+approximate as described above.
 
 ISO 21771-1 Clause 5.3.9 describes Eq. (76) as an estimate for many gear sets
 and notes that internal-pair addendum limits can prevent the calculated `k`

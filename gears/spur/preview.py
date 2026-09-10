@@ -346,6 +346,8 @@ def derived_rows(geo: SpurSetGeometry) -> list[Row]:
         Row("epsilon_alpha (transverse)", _n(geo.transverse_contact_ratio)),
         Row("epsilon_beta (overlap)", _n(geo.overlap_ratio)),
         Row("epsilon_gamma (total)", _n(geo.total_contact_ratio)),
+        Row("actual path of contact g_alpha", _n(geo.path_of_contact), unit="mm"),
+        Row("contact-ratio basis", geo.contact_ratio_basis),
         Row("MEMBERS", "PINION", "RING" if p.internal else "GEAR", header=True),
         Row("teeth", str(a.z), str(b.z)),
         Row("hand", a.hand, b.hand),
@@ -354,6 +356,12 @@ def derived_rows(geo: SpurSetGeometry) -> list[Row]:
         Row("base diameter d_b", _n(a.base_d), _n(b.base_d), "mm"),
         Row("working pitch diameter d_w", _n(a.working_d), _n(b.working_d), "mm"),
         Row("tip diameter d_a", _n(a.tip_d), _n(b.tip_d), "mm"),
+        Row(
+            "tip form diameter d_Fa",
+            "not available" if a.tip_form_d is None else _n(a.tip_form_d),
+            "not available" if b.tip_form_d is None else _n(b.tip_form_d),
+            "mm",
+        ),
         Row("root diameter d_f", _n(a.root_d), _n(b.root_d), "mm"),
         Row(
             "reference tooth thickness s_t",
@@ -394,6 +402,18 @@ def derived_rows(geo: SpurSetGeometry) -> list[Row]:
             "root form diameter d_Ff / SOI diameter",
             "not available" if a.root_form_d is None else _n(a.root_form_d),
             "not available" if b.root_form_d is None else _n(b.root_form_d),
+            "mm",
+        ),
+        Row(
+            "start active profile diameter d_Nf",
+            "not available" if a.start_active_profile_d is None else _n(a.start_active_profile_d),
+            "not available" if b.start_active_profile_d is None else _n(b.start_active_profile_d),
+            "mm",
+        ),
+        Row(
+            "active tip diameter d_Na",
+            "not available" if a.active_tip_d is None else _n(a.active_tip_d),
+            "not available" if b.active_tip_d is None else _n(b.active_tip_d),
             "mm",
         ),
         Row(

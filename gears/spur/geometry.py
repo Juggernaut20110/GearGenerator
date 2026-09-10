@@ -49,7 +49,7 @@ helical teeth cross instead of meshing.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..involute import (
     CUT_OVERSHOOT_FACTOR,
@@ -121,6 +121,7 @@ class SpurMemberGeometry:
     working_r: float            # d_w / 2, ISO working pitch-circle radius
     tip_r: float                # SMALLEST radius of the teeth if internal
     root_r: float               # LARGEST radius of the teeth if internal
+    tip_form_r: float            # d_Fa / 2; no separate tip corner is modelled
     addendum: float
     dedendum: float
     geometric_tooth_thickness: float  # s_t before deliberate backlash thinning
@@ -138,6 +139,8 @@ class SpurMemberGeometry:
     start_of_involute_angle: float | None = None
     involute_roll_parameter: float | None = None
     undercut: bool | None = None
+    start_active_profile_r: float | None = None  # d_Nf / 2
+    active_tip_r: float | None = None  # d_Na / 2
 
     @property
     def pitch_r(self) -> float:
@@ -184,6 +187,11 @@ class SpurMemberGeometry:
         return 2.0 * self.tip_r
 
     @property
+    def tip_form_d(self) -> float | None:
+        """Tip form diameter d_Fa, separate from nominal d_a."""
+        return None if self.tip_form_r is None else 2.0 * self.tip_form_r
+
+    @property
     def root_d(self) -> float:
         """Nominal physical root diameter d_f = 2 * root_r, in millimetres."""
         return 2.0 * self.root_r
@@ -216,6 +224,20 @@ class SpurMemberGeometry:
     @property
     def start_of_involute_d(self) -> float | None:
         return self.root_form_d
+
+    @property
+    def start_active_profile_d(self) -> float | None:
+        """Start-of-active-profile diameter d_Nf."""
+        return (
+            None
+            if self.start_active_profile_r is None
+            else 2.0 * self.start_active_profile_r
+        )
+
+    @property
+    def active_tip_d(self) -> float | None:
+        """Active tip diameter d_Na."""
+        return None if self.active_tip_r is None else 2.0 * self.active_tip_r
 
     @property
     def hand(self) -> str:
@@ -262,6 +284,8 @@ class SpurSetGeometry:
     tip_clearance_1: float           # ISO c_1, pinion-tip clearance
     tip_clearance_2: float           # ISO c_2, gear-tip clearance
     minimum_tip_clearance: float
+    path_of_contact: float           # ISO g_alpha, actual active path
+    contact_ratio_basis: str         # active_profile / approximate
     transverse_contact_ratio: float
     axial_contact_ratio: float
     pinion: SpurMemberGeometry
@@ -292,6 +316,11 @@ class SpurSetGeometry:
     @property
     def total_contact_ratio(self) -> float:
         return self.transverse_contact_ratio + self.axial_contact_ratio
+
+    @property
+    def actual_path_of_contact(self) -> float:
+        """Clear-name alias for ISO ``g_alpha``."""
+        return self.path_of_contact
 
     @property
     def tip_clearances(self) -> tuple[float, float]:
@@ -440,6 +469,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 working_r=working_r,
                 tip_r=tip_r,
                 root_r=root_r,
+                tip_form_r=tip_r,
                 addendum=addendum,
                 dedendum=dedendum,
                 geometric_tooth_thickness=geometric_thickness,
@@ -464,6 +494,11 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         )
 
     pinion, gear = members
+    pinion, gear, path_of_contact, contact_ratio_basis = (
+        _resolve_active_profile_geometry(
+            pinion, gear, working_centre_distance, working_pressure_angle
+        )
+    )
     sin_beta = abs(math.sin(p.beta))
     working_depth = pair_working_depth(
         pinion, gear, working_centre_distance, p.internal
@@ -487,6 +522,8 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         tip_clearance_1=tip_clearance_1,
         tip_clearance_2=tip_clearance_2,
         minimum_tip_clearance=min(tip_clearance_1, tip_clearance_2),
+        path_of_contact=path_of_contact,
+        contact_ratio_basis=contact_ratio_basis,
         transverse_contact_ratio=transverse_contact_ratio(
             pinion,
             gear,
@@ -678,6 +715,153 @@ def _working_geometry(
     return working_pressure_angle, working_distance
 
 
+def _involute_line_offset(radius: float, base_radius: float) -> float | None:
+    """Distance on the line of action from a base-circle tangent point."""
+    if radius < base_radius - 1e-10 * max(1.0, base_radius):
+        return None
+    return math.sqrt(max(0.0, radius * radius - base_radius * base_radius))
+
+
+def _radius_from_involute_offset(base_radius: float, offset: float) -> float:
+    """Return the physical radius for a non-negative involute offset."""
+    return math.sqrt(base_radius * base_radius + max(0.0, offset) ** 2)
+
+
+def _resolve_active_profile_geometry(
+    pinion: SpurMemberGeometry,
+    gear: SpurMemberGeometry,
+    centre_distance: float,
+    alpha_wt: float,
+) -> tuple[SpurMemberGeometry, SpurMemberGeometry, float, str]:
+    """Resolve ISO ``d_Na``/``d_Nf`` limits and the actual path of contact.
+
+    ISO 21771-1:2024 5.5.2 defines the active tip/root limits from the
+    member's own form limit and the mating member's opposing form limit.  The
+    implementation works with signed distances from the working pitch point:
+
+    * an external member has a positive tip path and a positive root path;
+    * the internal ring's physical tip is inward, so its positive tip path is
+      ``q_w - q_tip`` and its positive root path is ``q_root - q_w``.
+
+    The smaller opposing limit is the actual active endpoint.  This is the
+    same construction as intersecting the two usable flank intervals on the
+    line of action; it does not clamp a nominal contact-ratio term after the
+    fact.
+
+    A legacy, internal, or helical root has no verified generated form
+    diameter.  In that case the historical nominal/full-involute tip limits
+    are retained, the returned basis is explicitly ``approximate``, and no
+    ``d_Ff`` value is invented.
+    """
+    del centre_distance, alpha_wt  # retained in the conceptual API/documentation
+
+    members = (pinion, gear)
+    q_work: list[float] = []
+    q_tip: list[float] = []
+    q_root_form: list[float] = []
+    form_known = True
+    for member in members:
+        q_w = _involute_line_offset(member.working_r, member.base_r)
+        tip_form_r = member.tip_form_r if member.tip_form_r is not None else member.tip_r
+        q_t = _involute_line_offset(tip_form_r, member.base_r)
+        if q_w is None or q_t is None:
+            # The validator will report the non-physical flank.  Keeping the
+            # derived fields finite makes reports and diagnostic tests useful.
+            empty = (
+                replace(member, start_active_profile_r=None, active_tip_r=None)
+                for member in members
+            )
+            first, second = tuple(empty)
+            return first, second, 0.0, "approximate"
+        if member.root_form_r is None:
+            form_known = False
+            form_r = member.base_r
+        else:
+            form_r = max(member.base_r, member.root_form_r)
+        q_f = _involute_line_offset(form_r, member.base_r)
+        if q_f is None:
+            q_f = 0.0
+            form_known = False
+        q_work.append(q_w)
+        q_tip.append(q_t)
+        q_root_form.append(q_f)
+
+    if not form_known:
+        # Legacy/internal/helical roots do not expose a verified d_Ff.  Keep
+        # their contact ratio on the historical nominal/full-involute basis
+        # instead of manufacturing a root-form diameter.  The active root
+        # diameters below are still derived from the opposing tip limits.
+        active_tip_path_1 = tip_path_1 = q_tip[0] - q_work[0]
+        if gear.internal:
+            active_tip_path_2 = tip_path_2 = q_work[1] - q_tip[1]
+            active_root_path_1 = tip_path_2
+            active_root_path_2 = tip_path_1
+            active_tip_q_1 = q_work[0] + active_tip_path_1
+            active_tip_q_2 = q_work[1] - active_tip_path_2
+            active_root_q_1 = q_work[0] - active_root_path_1
+            active_root_q_2 = q_work[1] + active_root_path_2
+        else:
+            active_tip_path_2 = tip_path_2 = q_tip[1] - q_work[1]
+            active_root_path_1 = tip_path_2
+            active_root_path_2 = tip_path_1
+            active_tip_q_1 = q_work[0] + active_tip_path_1
+            active_tip_q_2 = q_work[1] + active_tip_path_2
+            active_root_q_1 = q_work[0] - active_root_path_1
+            active_root_q_2 = q_work[1] - active_root_path_2
+    elif gear.internal:
+        # Pinion: outward tip, inward/root start. Ring: inward tip, outward
+        # root. These are the physical positive-radius equivalents of the ISO
+        # signed internal-gear convention.
+        tip_path_1 = q_tip[0] - q_work[0]
+        tip_path_2 = q_work[1] - q_tip[1]
+        root_path_1 = q_work[0] - q_root_form[0]
+        root_path_2 = q_root_form[1] - q_work[1]
+
+        active_tip_path_1 = min(tip_path_1, root_path_2)
+        active_tip_path_2 = min(tip_path_2, root_path_1)
+        active_root_path_1 = min(root_path_1, tip_path_2)
+        active_root_path_2 = min(root_path_2, tip_path_1)
+
+        active_tip_q_1 = q_work[0] + active_tip_path_1
+        active_tip_q_2 = q_work[1] - active_tip_path_2
+        active_root_q_1 = q_work[0] - active_root_path_1
+        active_root_q_2 = q_work[1] + active_root_path_2
+    else:
+        tip_path_1 = q_tip[0] - q_work[0]
+        tip_path_2 = q_tip[1] - q_work[1]
+        root_path_1 = q_work[0] - q_root_form[0]
+        root_path_2 = q_work[1] - q_root_form[1]
+
+        active_tip_path_1 = min(tip_path_1, root_path_2)
+        active_tip_path_2 = min(tip_path_2, root_path_1)
+        active_root_path_1 = min(root_path_1, tip_path_2)
+        active_root_path_2 = min(root_path_2, tip_path_1)
+
+        active_tip_q_1 = q_work[0] + active_tip_path_1
+        active_tip_q_2 = q_work[1] + active_tip_path_2
+        active_root_q_1 = q_work[0] - active_root_path_1
+        active_root_q_2 = q_work[1] - active_root_path_2
+
+    active_path = max(0.0, active_tip_path_1 + active_tip_path_2)
+    resolved = []
+    for member, tip_q, root_q in zip(
+        members, (active_tip_q_1, active_tip_q_2), (active_root_q_1, active_root_q_2)
+    ):
+        resolved.append(
+            replace(
+                member,
+                start_active_profile_r=_radius_from_involute_offset(
+                    member.base_r, root_q
+                ),
+                active_tip_r=_radius_from_involute_offset(
+                    member.base_r, tip_q
+                ),
+            )
+        )
+    basis = "active_profile" if form_known else "approximate"
+    return resolved[0], resolved[1], active_path, basis
+
+
 def transverse_contact_ratio(
     pinion: SpurMemberGeometry,
     gear: SpurMemberGeometry,
@@ -689,8 +873,11 @@ def transverse_contact_ratio(
 ) -> float:
     """How many tooth pairs are in contact on average, in the transverse plane.
 
-    The standard length-of-action over base pitch. The length of action is the
-    part of the line of action lying between the two tip circles:
+    The active path of contact over base pitch. When ``d_Na`` is present on
+    both members, the path is obtained from those active tip intersections;
+    this includes root-form, undercut, and tip-form limits. Otherwise the
+    historical nominal-tip expression is retained for compatibility with
+    externally constructed geometry objects:
 
         external   g = sqrt(ra1^2 - rb1^2) + sqrt(ra2^2 - rb2^2) - a sin(alpha_t)
         internal   g = sqrt(ra1^2 - rb1^2) - sqrt(ra2^2 - rb2^2) + a sin(alpha_t)
@@ -731,7 +918,24 @@ def transverse_contact_ratio(
     def branch(m: SpurMemberGeometry) -> float:
         return math.sqrt(max(0.0, m.tip_r ** 2 - m.base_r ** 2))
 
-    if gear.internal:
+    def active_branch(m: SpurMemberGeometry) -> float:
+        radius = m.active_tip_r
+        if radius is None:
+            radius = m.tip_r
+        return math.sqrt(max(0.0, radius ** 2 - m.base_r ** 2))
+
+    if pinion.active_tip_r is not None and gear.active_tip_r is not None:
+        pinion_offset = active_branch(pinion) - math.sqrt(
+            max(0.0, pinion.working_r ** 2 - pinion.base_r ** 2)
+        )
+        gear_offset = active_branch(gear) - math.sqrt(
+            max(0.0, gear.working_r ** 2 - gear.base_r ** 2)
+        )
+        if gear.internal:
+            length_of_action = pinion_offset - gear_offset
+        else:
+            length_of_action = pinion_offset + gear_offset
+    elif gear.internal:
         length_of_action = (
             branch(pinion) - branch(gear) + centre_distance * math.sin(alpha_t)
         )

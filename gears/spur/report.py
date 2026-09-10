@@ -147,6 +147,8 @@ def print_report(geo) -> None:
     print(_row("epsilon_alpha (transverse)", f(geo.transverse_contact_ratio)))
     print(_row("epsilon_beta (overlap)", f(geo.overlap_ratio)))
     print(_row("epsilon_gamma (total)", f(geo.total_contact_ratio)))
+    print(_row("actual path of contact g_alpha", f(geo.path_of_contact), "", "mm"))
+    print(_row("contact-ratio basis", geo.contact_ratio_basis))
     axial = "inf" if math.isinf(geo.axial_pitch) else f(geo.axial_pitch)
     print(_row("axial pitch", axial, "", "mm"))
     print(_row("whole depth", f(geo.whole_depth), "", "mm"))
@@ -172,6 +174,7 @@ def print_report(geo) -> None:
     print(_row("base diameter d_b", f(a.base_d), f(b.base_d), "mm"))
     print(_row("working pitch diameter d_w", f(a.working_d), f(b.working_d), "mm"))
     print(_row("tip diameter d_a", f(a.tip_d), f(b.tip_d), "mm"))
+    print(_row("tip form diameter d_Fa", _optional(a.tip_form_d), _optional(b.tip_form_d), "mm"))
     print(_row("root diameter d_f", f(a.root_d), f(b.root_d), "mm"))
     print(
         _row(
@@ -210,6 +213,22 @@ def print_report(geo) -> None:
             "root form diameter d_Ff / SOI diameter",
             _optional(a.root_form_d),
             _optional(b.root_form_d),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "start active profile diameter d_Nf",
+            _optional(a.start_active_profile_d),
+            _optional(b.start_active_profile_d),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "active tip diameter d_Na",
+            _optional(a.active_tip_d),
+            _optional(b.active_tip_d),
             "mm",
         )
     )

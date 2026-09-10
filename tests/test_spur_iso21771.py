@@ -247,6 +247,116 @@ def _assert_pair_matches_expected(geo, expected, internal: bool) -> None:
         )
 
 
+def _independent_rack_root_point(
+    reference_r, alpha, depth, rho, psi0, half_pitch, phi
+):
+    """Independent rolling-envelope point used by active-contact fixtures."""
+    tangent = math.tan(alpha)
+    centre_v = -depth + rho
+    centre_u = tangent * centre_v - rho / math.cos(alpha)
+    a = reference_r + centre_v
+    b = centre_u - reference_r * phi
+    c, s = math.cos(phi), math.sin(phi)
+    cx = c * a - s * b
+    cy = s * a + c * b
+    dcx = -s * a - c * b + s * reference_r
+    dcy = c * a - s * b - c * reference_r
+    speed = math.hypot(dcx, dcy)
+    raw = (cx + rho * dcy / speed, cy - rho * dcx / speed)
+    pitch_space_angle = half_pitch - psi0 + math.tan(alpha) - alpha
+    cp, sp = math.cos(pitch_space_angle), math.sin(pitch_space_angle)
+    return raw[0] * cp - raw[1] * sp, raw[0] * sp + raw[1] * cp
+
+
+def _independent_rack_undercut_root_form(member, module, rho):
+    """Calculate the undercut SOI radius without production SOI helpers."""
+    reference_r = member.reference_r
+    alpha = math.acos(member.base_r / reference_r)
+    depth = member.dedendum
+    centre_v = -depth + rho
+    centre_u = math.tan(alpha) * centre_v - rho / math.cos(alpha)
+    phi_root = centre_u / reference_r
+    tangent_v = centre_v - rho * math.sin(alpha)
+    phi_transition = tangent_v * (1.0 + math.tan(alpha) ** 2) / (
+        math.tan(alpha) * reference_r
+    )
+
+    corner_depth = depth - rho * (1.0 - math.sin(alpha))
+    undercut = reference_r * math.sin(alpha) ** 2 - corner_depth < 0.0
+    if not undercut:
+        point = _independent_rack_root_point(
+            reference_r, alpha, depth, rho, member.psi0, member.half_pitch,
+            phi_transition,
+        )
+        return math.hypot(*point)
+
+    base_space_angle = member.half_pitch - member.psi0
+
+    def residual(phi):
+        point = _independent_rack_root_point(
+            reference_r, alpha, depth, rho, member.psi0, member.half_pitch, phi
+        )
+        radius = math.hypot(*point)
+        if radius < member.base_r:
+            return None
+        roll = math.sqrt((radius / member.base_r) ** 2 - 1.0)
+        return math.atan2(point[1], point[0]) - (
+            base_space_angle + roll - math.atan(roll)
+        )
+
+    lo = min(phi_transition, phi_root)
+    hi = max(phi_transition, phi_root)
+    previous = None
+    bracket = None
+    for index in range(4097):
+        phi = lo + (hi - lo) * index / 4096.0
+        value = residual(phi)
+        if value is None:
+            previous = None
+            continue
+        if abs(value) < 1e-13:
+            bracket = (phi, phi)
+            break
+        if previous is not None and previous[1] * value < 0.0:
+            bracket = (previous[0], phi)
+            break
+        previous = (phi, value)
+    assert bracket is not None
+    lo, hi = bracket
+    if lo != hi:
+        f_lo = residual(lo)
+        for _ in range(120):
+            mid = (lo + hi) / 2.0
+            f_mid = residual(mid)
+            assert f_mid is not None
+            if abs(f_mid) < 1e-14:
+                lo = hi = mid
+                break
+            if f_lo * f_mid <= 0.0:
+                hi = mid
+            else:
+                lo, f_lo = mid, f_mid
+    point = _independent_rack_root_point(
+        reference_r, alpha, depth, rho, member.psi0, member.half_pitch,
+        (lo + hi) / 2.0,
+    )
+    return math.hypot(*point)
+
+
+def _independent_q(member, radius):
+    return math.sqrt(max(0.0, radius * radius - member.base_r ** 2))
+
+
+def _independent_nominal_path(geo):
+    q1w = _independent_q(geo.pinion, geo.pinion.working_r)
+    q2w = _independent_q(geo.gear, geo.gear.working_r)
+    q1a = _independent_q(geo.pinion, geo.pinion.tip_r)
+    q2a = _independent_q(geo.gear, geo.gear.tip_r)
+    if geo.params.internal:
+        return (q1a - q1w) + (q2w - q2a)
+    return (q1a - q1w) + (q2a - q2w)
+
+
 EXTERNAL_STRAIGHT_CASES = (
     ("standard", 0.0, 0.0),
     ("positive_pinion", 0.3, 0.0),
@@ -904,3 +1014,177 @@ def test_profile_segments_respect_the_independent_circles_and_involute_transitio
                 math.hypot(x, y) >= member.root_r - 1e-8
                 for x, y in generated
             )
+
+
+def test_standard_non_undercut_active_path_matches_nominal_reference_path():
+    """A standard rack-generated pair above the limit transitions smoothly."""
+    p = SpurSetParams.with_defaults(2.0, 30, 43, root_geometry="rack_generated")
+    geo = compute_set(p)
+    independent_root_1 = _independent_rack_undercut_root_form(
+        geo.pinion, p.module, p.basic_rack_root_radius_factor * p.module
+    )
+    independent_root_2 = _independent_rack_undercut_root_form(
+        geo.gear, p.module, p.basic_rack_root_radius_factor * p.module
+    )
+    q1w = _independent_q(geo.pinion, geo.pinion.working_r)
+    q2w = _independent_q(geo.gear, geo.gear.working_r)
+    q1a = _independent_q(geo.pinion, geo.pinion.tip_form_r)
+    q2a = _independent_q(geo.gear, geo.gear.tip_form_r)
+    q1f = _independent_q(geo.pinion, independent_root_1)
+    q2f = _independent_q(geo.gear, independent_root_2)
+    expected_path = min(q1a - q1w, q2w - q2f) + min(q2a - q2w, q1w - q1f)
+
+    assert geo.pinion.undercut is False
+    assert geo.gear.undercut is False
+    assert geo.contact_ratio_basis == "active_profile"
+    assert geo.path_of_contact == pytest.approx(
+        expected_path, abs=2e-9
+    )
+    assert geo.transverse_contact_ratio == pytest.approx(
+        geo.path_of_contact /
+        (math.pi * geo.transverse_module * math.cos(geo.reference_pressure_angle)),
+        abs=1e-11,
+    )
+    for member in (geo.pinion, geo.gear):
+        assert member.active_tip_d == pytest.approx(member.tip_form_d, abs=1e-11)
+
+
+def test_shifted_non_undercut_pair_uses_actual_tip_form_limits():
+    geo = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 20, 40, profile_shift_1=0.25, profile_shift_2=0.10
+        )
+    )
+
+    expected_path = _independent_nominal_path(geo)
+    assert geo.path_of_contact == pytest.approx(expected_path, abs=1e-11)
+    assert geo.pinion.active_tip_d == pytest.approx(geo.pinion.tip_form_d, abs=1e-11)
+    assert geo.gear.active_tip_d == pytest.approx(geo.gear.tip_form_d, abs=1e-11)
+    assert all(
+        member.start_active_profile_d is not None
+        and member.active_tip_d is not None
+        for member in (geo.pinion, geo.gear)
+    )
+
+
+def test_undercut_active_path_uses_independent_root_form_and_iso_94_geometry():
+    """The old nominal-tip path overstates the 12-tooth rack-generated pair."""
+    p = SpurSetParams.with_defaults(2.0, 12, 43, root_geometry="rack_generated")
+    geo = compute_set(p)
+    pinion, gear = geo.pinion, geo.gear
+    rho = p.basic_rack_root_radius_factor * p.module
+    independent_root_form = _independent_rack_undercut_root_form(
+        pinion, p.module, rho
+    )
+
+    q1w = _independent_q(pinion, pinion.working_r)
+    q2w = _independent_q(gear, gear.working_r)
+    q1a = _independent_q(pinion, pinion.tip_form_r)
+    q2a = _independent_q(gear, gear.tip_form_r)
+    q1f = _independent_q(pinion, independent_root_form)
+    # ISO 21771-1:2024 5.5.2.2 Eq. (82) / 5.5.6.2 Eq. (97): the gear active
+    # tip is limited by the pinion start-of-involute when that is the smaller
+    # approach/recess interval.
+    active_tip_1_q = q1a
+    active_tip_2_q = q1w + q2w - q1f
+    expected_path = (active_tip_1_q - q1w) + (active_tip_2_q - q2w)
+    old_nominal_path = (q1a - q1w) + (q2a - q2w)
+
+    assert pinion.undercut is True
+    assert geo.contact_ratio_basis == "active_profile"
+    assert old_nominal_path > expected_path + 1e-6
+    assert geo.path_of_contact == pytest.approx(expected_path, abs=2e-9)
+    assert geo.path_of_contact < old_nominal_path
+    assert geo.transverse_contact_ratio == pytest.approx(
+        expected_path /
+        (math.pi * geo.transverse_module * math.cos(geo.reference_pressure_angle)),
+        abs=2e-11,
+    )
+
+    expected_n_f1 = independent_root_form
+    expected_n_a2 = math.sqrt(gear.base_r ** 2 + active_tip_2_q ** 2)
+    expected_n_f2_q = q1w + q2w - q1a
+    expected_n_f2 = math.sqrt(gear.base_r ** 2 + expected_n_f2_q ** 2)
+    assert pinion.start_active_profile_d == pytest.approx(2.0 * expected_n_f1, abs=2e-8)
+    assert gear.active_tip_d == pytest.approx(2.0 * expected_n_a2, abs=2e-8)
+    assert gear.start_active_profile_d == pytest.approx(2.0 * expected_n_f2, abs=2e-8)
+
+    for member in (pinion, gear):
+        assert member.root_form_d <= member.start_active_profile_d <= member.active_tip_d
+        assert member.active_tip_d <= member.tip_form_d + 1e-10
+
+
+def test_positive_profile_shift_reduces_undercut_and_increases_active_path():
+    negative = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 12, 43, profile_shift_1=-0.3, root_geometry="rack_generated"
+        )
+    )
+    positive = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 12, 43, profile_shift_1=0.3, root_geometry="rack_generated"
+        )
+    )
+
+    assert negative.pinion.undercut is True
+    assert positive.pinion.undercut is False
+    assert positive.path_of_contact > negative.path_of_contact
+    assert positive.transverse_contact_ratio > negative.transverse_contact_ratio
+
+
+def test_tip_shortening_reduces_active_path_without_a_correction_factor():
+    standard = compute_set(SpurSetParams.with_defaults(2.0, 20, 40))
+    shortened = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            20,
+            40,
+            tip_alteration_mode="explicit",
+            tip_alteration_coefficient=-0.2,
+        )
+    )
+
+    assert shortened.pinion.tip_d < standard.pinion.tip_d
+    assert shortened.gear.tip_d < standard.gear.tip_d
+    assert shortened.path_of_contact < standard.path_of_contact
+    assert shortened.transverse_contact_ratio < standard.transverse_contact_ratio
+
+
+def test_helical_contact_ratio_keeps_active_transverse_path_and_overlap_separate():
+    p = SpurSetParams.with_defaults(2.0, 20, 40, helix_angle=15.0)
+    geo = compute_set(p)
+    expected_path = _independent_nominal_path(geo)
+    expected_epsilon_beta = p.face_width * abs(math.sin(p.beta)) / (math.pi * p.module)
+
+    assert geo.contact_ratio_basis == "approximate"
+    assert geo.path_of_contact == pytest.approx(expected_path, abs=1e-11)
+    assert geo.transverse_contact_ratio == pytest.approx(
+        expected_path /
+        (math.pi * geo.transverse_module * math.cos(geo.reference_pressure_angle)),
+        abs=1e-11,
+    )
+    assert geo.overlap_ratio == pytest.approx(expected_epsilon_beta, abs=1e-11)
+    assert geo.total_contact_ratio == pytest.approx(
+        geo.transverse_contact_ratio + expected_epsilon_beta, abs=1e-11
+    )
+
+
+def test_internal_active_limits_use_the_internal_sign_branch():
+    geo = compute_set(
+        SpurSetParams.with_defaults(2.0, 18, 60, internal=True)
+    )
+    pinion, ring = geo.pinion, geo.gear
+    expected_path = _independent_nominal_path(geo)
+
+    assert geo.contact_ratio_basis == "approximate"
+    assert geo.path_of_contact == pytest.approx(expected_path, abs=1e-11)
+    assert geo.path_of_contact == pytest.approx(
+        _independent_q(pinion, pinion.tip_r)
+        - _independent_q(pinion, pinion.working_r)
+        + _independent_q(ring, ring.working_r)
+        - _independent_q(ring, ring.tip_r),
+        abs=1e-11,
+    )
+    assert ring.active_tip_d == pytest.approx(ring.tip_form_d, abs=1e-11)
+    assert pinion.start_active_profile_d < pinion.active_tip_d
+    assert ring.active_tip_d < ring.start_active_profile_d < ring.root_d

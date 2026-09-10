@@ -378,6 +378,16 @@ def validate(p: SpurSetParams) -> ValidationResult:
             )
 
     # --- contact ratio -----------------------------------------------------
+    if geo.path_of_contact < -GEOMETRY_TOLERANCE:
+        result.error(
+            "z1",
+            f"actual path of contact is negative: {geo.path_of_contact:.6g} mm",
+        )
+    if geo.contact_ratio_basis not in {"active_profile", "nominal_full_involute", "approximate"}:
+        result.error(
+            "z1",
+            f"unknown contact-ratio basis {geo.contact_ratio_basis!r}",
+        )
     eps_a = geo.transverse_contact_ratio
     if not _is_finite(eps_a) or eps_a < 0.0:
         result.error("z1", f"transverse contact ratio is invalid: {eps_a!r}")
@@ -716,6 +726,31 @@ def _check_member_radii(member, field: str, result: ValidationResult) -> bool:
                 f"does not clear its active root-form radius "
                 f"({member.root_form_r:.6g} mm)",
             )
+    if member.tip_form_r is not None and member.active_tip_r is not None:
+        if member.internal:
+            if member.active_tip_r < member.tip_form_r - GEOMETRY_TOLERANCE:
+                result.error(
+                    field,
+                    f"{member.name}'s active tip diameter lies inside its tip "
+                    f"form ({member.active_tip_r:.6g} mm radius)",
+                )
+        elif member.active_tip_r > member.tip_form_r + GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"{member.name}'s active tip radius ({member.active_tip_r:.6g} mm) "
+                "lies beyond its tip form",
+            )
+    if member.start_active_profile_r is not None:
+        if member.internal:
+            if member.active_tip_r is not None and member.start_active_profile_r < member.active_tip_r - GEOMETRY_TOLERANCE:
+                result.error(field, f"{member.name}'s active root lies inside its active tip")
+            if member.root_form_r is not None and member.start_active_profile_r > member.root_form_r + GEOMETRY_TOLERANCE:
+                result.error(field, f"{member.name}'s active root lies beyond its root form")
+        else:
+            if member.root_form_r is not None and member.start_active_profile_r < member.root_form_r - GEOMETRY_TOLERANCE:
+                result.error(field, f"{member.name}'s active root lies below its root form")
+            if member.active_tip_r is not None and member.start_active_profile_r > member.active_tip_r + GEOMETRY_TOLERANCE:
+                result.error(field, f"{member.name}'s active root lies beyond its active tip")
     return True
 
 
