@@ -27,7 +27,9 @@ add_library(geargen_core STATIC
     src/core/spur/spur.cpp
     src/core/spur/mesh.cpp
     src/core/bevel/bevel.cpp
+    src/core/bevel/mesh.cpp
     src/core/hypoid/hypoid.cpp
+    src/core/hypoid/mesh.cpp
     src/core/planetary/planetary.cpp
     src/core/planetary/mesh.cpp
 )

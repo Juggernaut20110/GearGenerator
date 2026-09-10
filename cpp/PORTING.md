@@ -95,11 +95,15 @@ The first skeleton maps the conceptual modules as follows:
 | `gui.py` | `src/gui` | Qt owns controls, event loop, workers and presentation; it calls core/preview interfaces. |
 
 The type-specific `.cpp` files implement the parameter records,
-size-dependent `with_defaults` behavior, angle/transverse accessors, spur
-derived dimensions, analytical involute/root geometry, section sampling,
-placement, clocking, and planetary mesh composition. Bevel remains a scalar
-foundation and hypoid remains a scalar foundation; neither is claimed to have
-full native tooth geometry yet.
+size-dependent `with_defaults` behavior, angle/transverse accessors, derived
+dimensions, analytical involute/root geometry, section sampling, placement,
+clocking, and planetary mesh composition. Bevel now includes the exact
+Tredgold/Gleason section construction and CrownTrace phase model. Hypoid now
+includes the non-zero-offset ISO Method 1 curvature closure, depth/thickness
+calculation, boundary spiral transport, skew-axis phase integration, and its
+independent Tredgold section approximation. The native hypoid section remains
+the same explicitly approximate Tredgold surface as Python; it is not claimed
+to be a full cutter-envelope solver.
 
 ## Parameters, defaults, and validation
 
@@ -228,9 +232,9 @@ records/strings only.
 6. Port planetary as a composition of the verified spur core: ring derivation,
    station arithmetic, clocking, and train interference invariants.
 7. Port bevel straight geometry, then CrownTrace/spiral/Zerol sections and
-   cone placement.
+   cone placement. **Complete on `feature/cpp-port`.**
 8. Port the hypoid Method 1 solver only after its numerical fixtures and
-   contact/offset conventions are fixed.
+   contact/offset conventions are fixed. **Complete on `feature/cpp-port`.**
 9. Port SOLIDWORKS part primitives and one spur pair, using a live CAD seat;
    then bevel, planetary and hypoid builders.
 10. Replace the Qt smoke UI with real parameter/readout/preview wiring and
@@ -240,13 +244,13 @@ records/strings only.
 
 The Python implementation is the oracle. `tools/cpp_reference/export.py`
 currently emits eleven fixtures covering external/helical/internal/profile-
-shifted/rack-generated spur, straight/spiral/Zerol bevel, a hypoid offset
-sample, planetary valid/edge cases, and an invalid-input case. The committed
-JSON keeps `inputs`, ordered `validation`, `derived`, and a compact `geometry`
-object. Geometry fixtures contain representative flank samples, named section
-segments, loop topology, generated-root metadata, and planetary
-station/clocking values rather than unbounded tessellations. The fixture
-format preserves ordering and can represent null for non-finite values.
+shifted/rack-generated spur, straight/spiral/Zerol bevel, a non-zero-offset
+Method 1 hypoid sample, planetary valid/edge cases, and an invalid-input case.
+The committed JSON keeps `inputs`, ordered `validation`, `derived`, and a
+compact `geometry` object. Bevel and hypoid fixtures include solver scalars,
+phase values, cone-distance station lists, and representative named-section
+loops rather than unbounded tessellations. The fixture format preserves
+ordering and can represent null for optional solver diagnostics.
 
 Comparison policy:
 
@@ -268,11 +272,14 @@ Comparison policy:
   articulation and interference. The live result outranks an approximate
   renderer preview.
 
-`geargen_reference_tests` parses those snapshots and compares native scalar
-results numerically; it does not compare formatted floating-point strings.
-Validation fields/messages are exact. The existing `geargen_tests` continues
-to cover the shared involute scalar, clocking, column-major transform packing,
-scene bounds, DXF structure, and the mm-to-m CAD boundary.
+`geargen_reference_tests` parses those snapshots and compares native scalar,
+section, phase, solver, and loop results numerically; it does not compare
+formatted floating-point strings. Validation fields/messages are exact where
+the current fixture exercises them. The existing `geargen_tests` covers the
+shared involute scalar, cylindrical geometry, bevel CrownTrace/sections,
+hypoid Method 1 convergence and zero-offset behavior, clocking,
+column-major transform packing, scene bounds, DXF structure, and the mm-to-m
+CAD boundary.
 
 ## Known risks and open questions
 
@@ -286,11 +293,16 @@ scene bounds, DXF structure, and the mm-to-m CAD boundary.
 * Python's banker rounding in a few default/clocking paths must be reproduced
   intentionally where it affects a boundary case.
 * Root fillets, generated roots, internal flanks and undercut start-of-involute
-  intersections remain the highest-risk topology areas even though the first
+  intersections remain the highest-risk topology areas even though the
   cylindrical fixtures now pass. A profile that merely looks similar is not
   compatible.
-* Bevel crown trace signs, Zerol hand at zero mean angle, and hypoid signed
-  contact azimuth are convention traps.
+* Bevel CrownTrace signs, Zerol hand at zero mean angle, and hypoid signed
+  contact azimuth are convention traps; the current fixtures cover the anchor
+  right-hand cases, while mirrored left-hand and negative-offset combinations
+  remain useful expansion cases.
+* The native hypoid phase quadrature and terminal loft-clearance search have
+  explicit convergence limits. Future diagnostics should carry failing
+  interval/iteration details rather than only an exception string.
 * Section sample count is derived from sagitta limits and must not be chosen by
   the eventual 3D renderer.
 * A native Windows COM implementation can be built without a CAD installation,
@@ -305,8 +317,11 @@ scene bounds, DXF structure, and the mm-to-m CAD boundary.
 
 ## Current stage acceptance
 
-The cylindrical involute stage is complete when the verified Visual Studio
-2022/MSVC build, native tests, Python suite, and fixture comparisons pass. The
-largest remaining behavioral gaps are bevel CrownTrace sections, the hypoid
-Method 1 non-zero-offset solver, native preview scene parity, and all native
-SOLIDWORKS construction bodies.
+The bevel/hypoid mathematical-core stage is complete when the verified Visual
+Studio 2022/MSVC build, native tests, Python suite, and fixture comparisons
+pass. The largest remaining behavioral gaps are native preview scene parity,
+full type-specific validation-message parity for unusual invalid inputs, and
+native SOLIDWORKS construction bodies. The native hypoid section deliberately
+retains Python's documented Tredgold approximation boundary; replacing it with
+a true cutter-envelope model would be a separate geometry decision, not a
+compatibility fix.

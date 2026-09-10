@@ -1,7 +1,9 @@
 #include "core/bevel/bevel.hpp"
+#include "core/bevel/mesh.hpp"
 #include "core/common/geometry_types.hpp"
 #include "core/common/serialization.hpp"
 #include "core/hypoid/hypoid.hpp"
+#include "core/hypoid/mesh.hpp"
 #include "core/involute/involute.hpp"
 #include "core/placement/placement.hpp"
 #include "core/planetary/planetary.hpp"
@@ -154,6 +156,85 @@ int main()
                         0.0 &&
                     planetary_geometry.ring.internal,
                 "planetary members share centre distance and orbit conventions");
+
+    const auto bevel_straight = bevel::derive(
+        BevelSetParams::with_defaults(2.0, 25, 40));
+    const auto bevel_straight_section = bevel::tooth_space_section(
+        bevel_straight, "pinion", "outer", 8, 0.0, std::nullopt, true);
+    ok &= check(!bevel_straight.trace.has_value() &&
+                    std::abs(bevel::phase_at_cone_distance(
+                        bevel_straight, "pinion", bevel_straight.mean_cone_dist_mm)) <
+                        1e-12 &&
+                    bevel::section_count(bevel_straight, "pinion") == 2 &&
+                    bevel_straight_section.loop_2d().size() > 10,
+                "straight bevel uses the zero-phase two-section construction");
+
+    BevelDefaultOverrides spiral_overrides;
+    spiral_overrides.spiral_angle = 35.0;
+    const auto bevel_spiral = bevel::derive(
+        BevelSetParams::with_defaults(2.0, 25, 40, false, spiral_overrides));
+    const double spiral_outer = bevel::phase_at_cone_distance(
+        bevel_spiral, "pinion", bevel_spiral.outer_cone_dist_mm);
+    const double spiral_inner = bevel::phase_at_cone_distance(
+        bevel_spiral, "pinion", bevel_spiral.inner_cone_dist_mm);
+    ok &= check(bevel_spiral.trace.has_value() &&
+                    std::abs(bevel_spiral.trace->spiral_angle_at(
+                        bevel_spiral.mean_cone_dist_mm) -
+                               bevel_spiral.parameters.psi_m()) <
+                        1e-12 &&
+                    spiral_outer != spiral_inner &&
+                    bevel::section_count(bevel_spiral, "pinion") > 2 &&
+                    bevel::mesh::gear_clocking(40) > 0.0,
+                "spiral bevel retains crown trace, phase sweep, and clocking");
+
+    const auto bevel_zerol = bevel::derive(
+        BevelSetParams::with_defaults(2.0, 25, 40, true));
+    ok &= check(bevel_zerol.trace.has_value() &&
+                    std::abs(bevel_zerol.parameters.psi_m()) < 1e-12 &&
+                    bevel::section_count(bevel_zerol, "pinion") > 2,
+                "Zerol bevel remains curved even at zero mean spiral angle");
+
+    const auto cone_point = bevel::to_cone_3d(
+        10.0, 0.0, bevel_straight.pinion.pitch_angle_rad,
+        bevel_straight.outer_cone_dist_mm /
+            std::cos(bevel_straight.pinion.pitch_angle_rad));
+    ok &= check(std::abs(norm(cone_point) - 10.0) > 0.0 &&
+                    std::isfinite(cone_point.z),
+                "bevel sections map from the developed plane into 3D");
+
+    HypoidDefaultOverrides hypoid_overrides;
+    hypoid_overrides.offset = 15.0;
+    hypoid_overrides.face_width = 30.0;
+    hypoid_overrides.spiral_angle = 50.0;
+    hypoid_overrides.cutter_radius = 63.5;
+    const auto hypoid_offset = HypoidSetParams::with_defaults(
+        170.0 / 42.0, 13, 42, hypoid_overrides);
+    const auto hypoid_geometry = hypoid::derive(hypoid_offset);
+    const auto hypoid_distances = hypoid::section_cone_distances(
+        hypoid_geometry, "pinion", 4);
+    const auto hypoid_section = hypoid::tooth_space_section(
+        hypoid_geometry, "pinion", hypoid_geometry.pinion.cone_distance_mm,
+        true, 8);
+    ok &= check(hypoid_geometry.method1.iterations > 0 &&
+                    hypoid_geometry.method1.curvature_residual_mm.has_value() &&
+                    std::abs(*hypoid_geometry.method1.curvature_residual_mm) < 1e-8 &&
+                    std::abs(hypoid_geometry.pitch_plane_offset_mm) > 0.0 &&
+                    hypoid_distances.size() >= 4 &&
+                    hypoid_section.loop.size() > 10 &&
+                    std::isfinite(hypoid::phase(
+                        hypoid_geometry, "pinion",
+                        hypoid_geometry.pinion.cone_distance_mm)),
+                "hypoid Method 1 converges and builds a Tredgold section");
+    const auto hypoid_zero = hypoid::derive(
+        HypoidSetParams::with_defaults(2.0, 13, 42));
+    ok &= check(std::abs(hypoid_zero.pitch_plane_offset_mm) < 1e-12 &&
+                    hypoid_zero.method1.iterations == 0 &&
+                    std::isfinite(hypoid::mesh::gear_clocking(hypoid_zero)) &&
+                    std::isfinite(hypoid::mesh::skew_axis_distance(
+                        {}, {0.0, 0.0, 1.0}, {},
+                        {std::sin(hypoid_zero.parameters.sigma()), 0.0,
+                         std::cos(hypoid_zero.parameters.sigma())})),
+                "zero-offset hypoid retains the external cone and mesh path");
     ok &= check(std::abs(degrees_to_radians(180.0) - kPi) < 1e-15 &&
                     std::abs(radians_to_degrees(kPi) - 180.0) < 1e-12,
                 "angle boundary helpers use radians internally");

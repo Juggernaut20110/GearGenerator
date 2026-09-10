@@ -1,6 +1,8 @@
 #include "core/bevel/bevel.hpp"
+#include "core/bevel/mesh.hpp"
 #include "core/common/numerics.hpp"
 #include "core/hypoid/hypoid.hpp"
+#include "core/hypoid/mesh.hpp"
 #include "core/planetary/planetary.hpp"
 #include "core/planetary/mesh.hpp"
 #include "core/spur/spur.hpp"
@@ -491,6 +493,67 @@ void compare_bevel(const Json& fixture, bool& ok)
     ok &= compare(geometry.gear.pitch_angle_rad, derived.at("gear_pitch_angle"), name + " gear angle");
     ok &= compare(geometry.pinion.virtual_teeth, derived.at("pinion_virtual_teeth"), name + " pinion virtual teeth");
     ok &= compare(geometry.gear.virtual_teeth, derived.at("gear_virtual_teeth"), name + " gear virtual teeth");
+
+    const auto compare_member = [&](const auto& actual, const Json& expected,
+                                     const std::string& label) {
+        ok &= check(actual.z == static_cast<int>(number(expected.at("z"))),
+                    label + " z");
+        ok &= compare(actual.pitch_angle_rad, expected.at("pitch_angle"), label + " pitch angle");
+        ok &= compare(actual.pitch_dia_mm, expected.at("pitch_dia"), label + " pitch diameter");
+        ok &= compare(actual.addendum_mm, expected.at("addendum"), label + " addendum");
+        ok &= compare(actual.dedendum_mm, expected.at("dedendum"), label + " dedendum");
+        ok &= compare(actual.addendum_angle_rad, expected.at("addendum_angle"), label + " addendum angle");
+        ok &= compare(actual.dedendum_angle_rad, expected.at("dedendum_angle"), label + " dedendum angle");
+        ok &= compare(actual.face_angle_rad, expected.at("face_angle"), label + " face angle");
+        ok &= compare(actual.root_angle_rad, expected.at("root_angle"), label + " root angle");
+        ok &= compare(actual.virtual_teeth, expected.at("virtual_teeth"), label + " virtual teeth");
+        ok &= compare(actual.virtual_pitch_r_mm, expected.at("virtual_pitch_r"), label + " virtual pitch");
+        ok &= compare(actual.virtual_base_r_mm, expected.at("virtual_base_r"), label + " virtual base");
+        ok &= compare(actual.virtual_tip_r_mm, expected.at("virtual_tip_r"), label + " virtual tip");
+        ok &= compare(actual.virtual_root_r_mm, expected.at("virtual_root_r"), label + " virtual root");
+        ok &= compare(actual.virtual_tip_r_inner_mm, expected.at("virtual_tip_r_inner"), label + " inner tip");
+        ok &= compare(actual.outside_dia_mm, expected.at("outside_dia"), label + " outside diameter");
+        ok &= compare(actual.crown_to_apex_mm, expected.at("crown_to_apex"), label + " crown apex");
+        ok &= compare(actual.mounting_distance_mm, expected.at("mounting_distance"), label + " mounting distance");
+        ok &= compare(actual.outer_root_radius_mm, expected.at("outer_root_radius"), label + " outer root");
+        ok &= compare(actual.root_to_apex_mm, expected.at("root_to_apex"), label + " root apex");
+    };
+    compare_member(geometry.pinion, derived.at("pinion"), name + " pinion");
+    compare_member(geometry.gear, derived.at("gear"), name + " gear");
+    const auto& trace = derived.at("trace");
+    if (std::holds_alternative<std::nullptr_t>(trace.value)) {
+        ok &= check(!geometry.trace.has_value(), name + " trace absent");
+    } else {
+        ok &= check(geometry.trace.has_value(), name + " trace present");
+        if (geometry.trace.has_value()) {
+            ok &= compare(geometry.trace->cutter_radius_mm, trace.at("cutter_radius"), name + " cutter radius");
+            ok &= compare(geometry.trace->centre_distance_mm, trace.at("centre_distance"), name + " trace centre");
+            ok &= compare(geometry.trace->mean_cone_dist_mm, trace.at("mean_cone_dist"), name + " trace mean");
+            ok &= compare(geometry.trace->sign, trace.at("sign"), name + " trace sign");
+        }
+    }
+    const auto& snapshot_geometry = fixture.at("geometry");
+    ok &= compare(geargen::core::bevel::phase_at_cone_distance(geometry, "pinion", geometry.outer_cone_dist_mm), snapshot_geometry.at("pinion_phase_outer"), name + " pinion outer phase");
+    ok &= compare(geargen::core::bevel::phase_at_cone_distance(geometry, "pinion", geometry.inner_cone_dist_mm), snapshot_geometry.at("pinion_phase_inner"), name + " pinion inner phase");
+    ok &= compare(geargen::core::bevel::phase_at_cone_distance(geometry, "gear", geometry.outer_cone_dist_mm), snapshot_geometry.at("gear_phase_outer"), name + " gear outer phase");
+    ok &= compare(geargen::core::bevel::phase_at_cone_distance(geometry, "gear", geometry.inner_cone_dist_mm), snapshot_geometry.at("gear_phase_inner"), name + " gear inner phase");
+    compare_numbers(geargen::core::bevel::section_cone_distances(geometry, "pinion"), snapshot_geometry.at("pinion_section_distances"), ok, name + " pinion section distances");
+    compare_numbers(geargen::core::bevel::section_cone_distances(geometry, "gear"), snapshot_geometry.at("gear_section_distances"), ok, name + " gear section distances");
+    const auto compare_section = [&](const std::string& member_name, const Json& expected) {
+        const auto section = geargen::core::bevel::tooth_space_section(
+            geometry, member_name, "mid", 8, 0.0, number(expected.at("cone_dist")), true);
+        ok &= compare(section.phase_rad, expected.at("phase"), name + " " + member_name + " section phase");
+        compare_points(section.loop_2d(), expected.at("loop"), ok, name + " " + member_name + " section loop");
+        const auto& expected_segments = std::get<Json::Object>(expected.at("segments").value);
+        for (const auto& [segment_name, segment_expected] : expected_segments) {
+            const auto* actual_segment = section.profile.find_segment(segment_name);
+            const std::vector<geargen::core::Point2> empty;
+            compare_points(actual_segment == nullptr ? empty : *actual_segment,
+                           segment_expected, ok, name + " " + member_name + " segment " + segment_name);
+        }
+    };
+    compare_section("pinion", snapshot_geometry.at("pinion_mean_section"));
+    compare_section("gear", snapshot_geometry.at("gear_mean_section"));
 }
 
 void compare_hypoid(const Json& fixture, bool& ok)
@@ -507,6 +570,7 @@ void compare_hypoid(const Json& fixture, bool& ok)
     if (!validation.ok()) {
         return;
     }
+    const auto geometry = geargen::core::hypoid::derive(p);
     const auto& derived = fixture.at("derived");
     ok &= compare(p.alpha(), derived.at("alpha"), "hypoid alpha");
     ok &= compare(p.sigma(), derived.at("sigma"), "hypoid sigma");
@@ -514,6 +578,137 @@ void compare_hypoid(const Json& fixture, bool& ok)
     ok &= compare(p.ratio(), derived.at("ratio"), "hypoid ratio");
     ok &= compare(p.wheel_outer_diameter(), derived.at("wheel_outer_diameter"), "hypoid wheel diameter");
     ok &= compare(p.effective_root_fillet_radius(), derived.at("effective_root_fillet_radius"), "hypoid root fillet");
+    ok &= compare(geometry.outer_cone_dist_mm, derived.at("outer_cone_dist"), "hypoid outer cone");
+    ok &= compare(geometry.mean_cone_dist_mm, derived.at("mean_cone_dist"), "hypoid mean cone");
+    ok &= compare(geometry.inner_cone_dist_mm, derived.at("inner_cone_dist"), "hypoid inner cone");
+    ok &= compare(geometry.mean_normal_module_mm, derived.at("mean_normal_module"), "hypoid mean normal module");
+    ok &= compare(geometry.method1_profile_shift_coefficient, derived.at("method1_profile_shift"), "hypoid profile shift");
+    ok &= compare(geometry.mean_working_depth_mm, derived.at("mean_working_depth"), "hypoid working depth");
+    ok &= compare(geometry.mean_clearance_mm, derived.at("mean_clearance"), "hypoid clearance");
+    ok &= compare(geometry.mean_whole_depth_mm, derived.at("mean_whole_depth"), "hypoid whole depth");
+    ok &= compare(geometry.offset_angle_rad, derived.at("offset_angle"), "hypoid offset angle");
+    ok &= compare(geometry.pitch_plane_offset_mm, derived.at("pitch_plane_offset"), "hypoid pitch plane offset");
+
+    const auto& method = derived.at("method1");
+    const auto compare_method = [&](double actual, const char* key) {
+        ok &= compare(actual, method.at(key), std::string("hypoid Method 1 ") + key);
+    };
+    compare_method(geometry.method1.gear_ratio, "gear_ratio");
+    compare_method(geometry.method1.desired_pinion_spiral_angle_rad, "desired_pinion_spiral_angle");
+    compare_method(geometry.method1.shaft_angle_departure_rad, "shaft_angle_departure");
+    compare_method(geometry.method1.preliminary_wheel_pitch_angle_rad, "preliminary_wheel_pitch_angle");
+    compare_method(geometry.method1.preliminary_wheel_mean_radius_mm, "preliminary_wheel_mean_radius");
+    compare_method(geometry.method1.preliminary_pinion_offset_angle_rad, "preliminary_pinion_offset_angle");
+    compare_method(geometry.method1.preliminary_dimension_factor, "preliminary_dimension_factor");
+    compare_method(geometry.method1.preliminary_pinion_mean_radius_mm, "preliminary_pinion_mean_radius");
+    compare_method(geometry.method1.wheel_offset_angle_axial_rad, "wheel_offset_angle_axial");
+    compare_method(geometry.method1.intermediate_pinion_offset_angle_axial_rad, "intermediate_pinion_offset_angle_axial");
+    compare_method(geometry.method1.intermediate_pinion_pitch_angle_rad, "intermediate_pinion_pitch_angle");
+    compare_method(geometry.method1.intermediate_pinion_offset_angle_pitch_rad, "intermediate_pinion_offset_angle_pitch");
+    compare_method(geometry.method1.intermediate_pinion_spiral_angle_rad, "intermediate_pinion_spiral_angle");
+    compare_method(geometry.method1.dimension_factor_increment, "dimension_factor_increment");
+    compare_method(geometry.method1.pinion_mean_radius_increment_mm, "pinion_mean_radius_increment");
+    compare_method(geometry.method1.pinion_offset_angle_axial_rad, "pinion_offset_angle_axial");
+    compare_method(geometry.method1.pinion_offset_angle_pitch_rad, "pinion_offset_angle_pitch");
+    compare_method(geometry.method1.pinion_spiral_angle_rad, "pinion_spiral_angle");
+    compare_method(geometry.method1.wheel_spiral_angle_rad, "wheel_spiral_angle");
+    compare_method(geometry.method1.pinion_pitch_angle_rad, "pinion_pitch_angle");
+    compare_method(geometry.method1.wheel_pitch_angle_rad, "wheel_pitch_angle");
+    compare_method(geometry.method1.pinion_mean_radius_mm, "pinion_mean_radius");
+    compare_method(geometry.method1.wheel_mean_radius_mm, "wheel_mean_radius");
+    compare_method(geometry.method1.pinion_mean_cone_distance_mm, "pinion_mean_cone_distance");
+    compare_method(geometry.method1.wheel_mean_cone_distance_mm, "wheel_mean_cone_distance");
+    compare_method(geometry.method1.pitch_plane_offset_mm, "pitch_plane_offset");
+    compare_method(geometry.method1.limit_pressure_angle_rad, "limit_pressure_angle");
+    compare_method(geometry.method1.generated_drive_normal_pressure_angle_rad, "generated_drive_normal_pressure_angle");
+    compare_method(geometry.method1.generated_coast_normal_pressure_angle_rad, "generated_coast_normal_pressure_angle");
+    ok &= check(geometry.method1.iterations == static_cast<int>(number(method.at("iterations"))), "hypoid Method 1 iterations");
+    compare_optional_number(geometry.method1.limit_radius_of_curvature_mm, method.at("limit_radius_of_curvature"), ok, "hypoid limit radius");
+    compare_optional_number(geometry.method1.mean_tooth_curvature_mm, method.at("mean_tooth_curvature"), ok, "hypoid mean curvature");
+    compare_optional_number(geometry.method1.curvature_residual_mm, method.at("curvature_residual"), ok, "hypoid curvature residual");
+    const auto compare_method_optional = [&](const std::optional<double>& actual, const char* key) {
+        compare_optional_number(actual, method.at(key), ok, std::string("hypoid Method 1 ") + key);
+    };
+    compare_method_optional(geometry.method1.wheel_face_width_factor, "wheel_face_width_factor");
+    compare_method_optional(geometry.method1.wheel_outer_face_width_mm, "wheel_outer_face_width");
+    compare_method_optional(geometry.method1.wheel_inner_face_width_mm, "wheel_inner_face_width");
+    compare_method_optional(geometry.method1.pinion_face_width_mm, "pinion_face_width");
+    compare_method_optional(geometry.method1.pinion_face_width_increment_along_axis_mm, "pinion_face_width_increment_along_axis");
+    compare_method_optional(geometry.method1.pinion_outer_face_width_mm, "pinion_outer_face_width");
+    compare_method_optional(geometry.method1.pinion_inner_face_width_mm, "pinion_inner_face_width");
+    compare_method_optional(geometry.method1.pinion_boundary_wheel_outer_cone_distance_mm, "pinion_boundary_wheel_outer_cone_distance");
+    compare_method_optional(geometry.method1.pinion_boundary_wheel_inner_cone_distance_mm, "pinion_boundary_wheel_inner_cone_distance");
+    compare_method_optional(geometry.method1.pinion_inner_spiral_angle_rad, "pinion_inner_spiral_angle");
+    compare_method_optional(geometry.method1.pinion_outer_spiral_angle_rad, "pinion_outer_spiral_angle");
+    compare_method_optional(geometry.method1.wheel_inner_spiral_angle_rad, "wheel_inner_spiral_angle");
+    compare_method_optional(geometry.method1.wheel_outer_spiral_angle_rad, "wheel_outer_spiral_angle");
+    compare_method_optional(geometry.method1.crossing_to_wheel_mean_z_mm, "crossing_to_wheel_mean_z");
+    compare_method_optional(geometry.method1.crossing_to_pinion_mean_z_mm, "crossing_to_pinion_mean_z");
+    compare_method_optional(geometry.method1.wheel_pitch_apex_z_mm, "wheel_pitch_apex_z");
+    compare_method_optional(geometry.method1.pinion_pitch_apex_z_mm, "pinion_pitch_apex_z");
+    compare_method_optional(geometry.method1.wheel_face_apex_z_mm, "wheel_face_apex_z");
+    compare_method_optional(geometry.method1.wheel_root_apex_z_mm, "wheel_root_apex_z");
+    compare_method_optional(geometry.method1.pinion_face_apex_z_mm, "pinion_face_apex_z");
+    compare_method_optional(geometry.method1.pinion_root_apex_z_mm, "pinion_root_apex_z");
+    compare_method_optional(geometry.method1.pinion_root_plane_offset_angle_rad, "pinion_root_plane_offset_angle");
+    compare_method_optional(geometry.method1.pinion_face_plane_offset_angle_rad, "pinion_face_plane_offset_angle");
+    compare_method_optional(geometry.method1.pinion_face_width_auxiliary_angle_rad, "pinion_face_width_auxiliary_angle");
+
+    const auto compare_member = [&](const auto& actual, const Json& expected,
+                                     const std::string& label) {
+        ok &= check(actual.z == static_cast<int>(number(expected.at("z"))), label + " z");
+        ok &= compare(actual.pitch_angle_rad, expected.at("pitch_angle"), label + " pitch angle");
+        ok &= compare(actual.pitch_radius_mm, expected.at("pitch_radius"), label + " pitch radius");
+        ok &= compare(actual.cone_distance_mm, expected.at("cone_distance"), label + " cone distance");
+        ok &= compare(actual.outer_cone_distance_mm, expected.at("outer_cone_distance"), label + " outer cone");
+        ok &= compare(actual.tooth_face_inner_cone_distance_mm, expected.at("tooth_face_inner"), label + " inner face");
+        ok &= compare(actual.tooth_face_outer_cone_distance_mm, expected.at("tooth_face_outer"), label + " outer face");
+        ok &= compare(actual.mean_spiral_angle_rad, expected.at("mean_spiral_angle"), label + " spiral");
+        ok &= compare(actual.inner_spiral_angle_rad, expected.at("inner_spiral_angle"), label + " inner spiral");
+        ok &= compare(actual.outer_spiral_angle_rad, expected.at("outer_spiral_angle"), label + " outer spiral");
+        ok &= compare(actual.addendum_mm, expected.at("addendum"), label + " addendum");
+        ok &= compare(actual.dedendum_mm, expected.at("dedendum"), label + " dedendum");
+        ok &= compare(actual.face_width_mm, expected.at("face_width"), label + " face width");
+        ok &= compare(actual.face_width_along_pitch_cone_mm, expected.at("face_width_along_pitch_cone"), label + " physical face width");
+        ok &= compare(actual.inner_cone_distance_mm, expected.at("inner_cone_distance"), label + " inner cone distance");
+        ok &= compare(actual.pitch_apex_z_mm, expected.at("pitch_apex_z"), label + " pitch apex");
+        ok &= compare(actual.mean_pitch_z_mm, expected.at("mean_pitch_z"), label + " mean pitch z");
+        ok &= compare(actual.face_apex_z_mm, expected.at("face_apex_z"), label + " face apex");
+        ok &= compare(actual.root_apex_z_mm, expected.at("root_apex_z"), label + " root apex");
+        ok &= compare(actual.inner_tip_radius_mm, expected.at("inner_tip_radius"), label + " inner tip");
+        ok &= compare(actual.outer_tip_radius_mm, expected.at("outer_tip_radius"), label + " outer tip");
+        ok &= compare(actual.inner_root_radius_mm, expected.at("inner_root_radius"), label + " inner root");
+        ok &= compare(actual.outer_root_radius_mm, expected.at("outer_root_radius"), label + " outer root");
+        ok &= compare(actual.virtual_teeth, expected.at("virtual_teeth"), label + " virtual teeth");
+        ok &= compare(actual.virtual_pitch_r_mm, expected.at("virtual_pitch_r"), label + " virtual pitch");
+        ok &= compare(actual.virtual_base_r_mm, expected.at("virtual_base_r"), label + " virtual base");
+        ok &= compare(actual.virtual_tip_r_mm, expected.at("virtual_tip_r"), label + " virtual tip");
+        ok &= compare(actual.virtual_root_r_mm, expected.at("virtual_root_r"), label + " virtual root");
+        ok &= compare(actual.mean_normal_tooth_thickness_mm, expected.at("mean_normal_tooth_thickness"), label + " normal thickness");
+        ok &= compare(actual.mean_transverse_tooth_thickness_mm, expected.at("mean_transverse_tooth_thickness"), label + " transverse thickness");
+        ok &= compare(actual.tredgold_tip_radius_mm, expected.at("tredgold_tip_radius"), label + " Tredgold tip");
+        ok &= compare(actual.tredgold_mean_root_radius_mm, expected.at("tredgold_mean_root_radius"), label + " Tredgold root");
+    };
+    compare_member(geometry.pinion, derived.at("pinion"), "hypoid pinion");
+    compare_member(geometry.gear, derived.at("gear"), "hypoid gear");
+    const auto& snapshot_geometry = fixture.at("geometry");
+    ok &= compare(geargen::core::hypoid::phase(geometry, "pinion", geometry.pinion.cone_distance_mm), snapshot_geometry.at("pinion_phase_mean"), "hypoid pinion phase");
+    ok &= compare(geargen::core::hypoid::phase(geometry, "gear", geometry.gear.cone_distance_mm), snapshot_geometry.at("gear_phase_mean"), "hypoid gear phase");
+    compare_numbers(geargen::core::hypoid::section_cone_distances(geometry, "pinion", 4), snapshot_geometry.at("pinion_section_distances"), ok, "hypoid pinion section distances");
+    compare_numbers(geargen::core::hypoid::section_cone_distances(geometry, "gear", 4), snapshot_geometry.at("gear_section_distances"), ok, "hypoid gear section distances");
+    const auto compare_section = [&](const std::string& member_name, const Json& expected) {
+        const auto section = geargen::core::hypoid::tooth_space_section(
+            geometry, member_name, number(expected.at("cone_dist")), true, 8);
+        ok &= compare(section.phase_rad, expected.at("phase"), "hypoid " + member_name + " phase");
+        ok &= compare(section.spiral_angle_rad, expected.at("spiral_angle"), "hypoid " + member_name + " spiral");
+        ok &= compare(section.normal_tooth_thickness_mm, expected.at("normal_tooth_thickness"), "hypoid " + member_name + " normal thickness");
+        ok &= compare(section.transverse_tooth_thickness_mm, expected.at("transverse_tooth_thickness"), "hypoid " + member_name + " transverse thickness");
+        ok &= compare(section.drive_base_radius_mm, expected.at("drive_base_radius"), "hypoid " + member_name + " drive base");
+        ok &= compare(section.coast_base_radius_mm, expected.at("coast_base_radius"), "hypoid " + member_name + " coast base");
+        compare_points(section.loop, expected.at("loop"), ok, "hypoid " + member_name + " loop");
+    };
+    compare_section("pinion", snapshot_geometry.at("pinion_mean_section"));
+    compare_section("gear", snapshot_geometry.at("gear_mean_section"));
 }
 
 void compare_planetary(const Json& fixture, bool& ok)

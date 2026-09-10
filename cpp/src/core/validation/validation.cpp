@@ -1,6 +1,7 @@
 #include "core/validation/validation.hpp"
 
 #include "core/common/numerics.hpp"
+#include "core/hypoid/hypoid.hpp"
 
 #include <cmath>
 #include <iomanip>
@@ -408,6 +409,18 @@ ValidationResult validate(const HypoidSetParams& p)
     check_nonnegative_finite("hub_thickness", p.hub_thickness, result);
     check_nonnegative_finite("min_root_thickness", p.min_root_thickness, result);
     check_nonnegative_finite("backlash", p.backlash, result);
+    if (p.face_width >= p.wheel_outer_radius()) {
+        result.error("face_width", "must be less than the wheel outer radius");
+    }
+    if (p.root_fillet_radius.has_value() &&
+        (!finite(*p.root_fillet_radius) || *p.root_fillet_radius < 0.0)) {
+        result.error("root_fillet_radius",
+                     "must be finite and non-negative when specified");
+    }
+    if (!finite(p.thickness_factor) ||
+        !(p.thickness_factor > -0.95 && p.thickness_factor < 0.95)) {
+        result.error("thickness_factor", "must be between -0.95 and 0.95");
+    }
     if (!finite(p.spiral_angle) || p.spiral_angle < 0.0 ||
         p.spiral_angle > kMaxHypoidSpiralAngle) {
         result.error("spiral_angle", "must be a finite non-negative magnitude between 0 and 60 degrees");
@@ -419,14 +432,76 @@ ValidationResult validate(const HypoidSetParams& p)
         (!finite(*p.cutter_radius) || *p.cutter_radius <= 0.0)) {
         result.error("cutter_radius", "must be greater than zero");
     }
+    if (std::abs(p.offset) > 0.0 && !p.cutter_radius.has_value()) {
+        result.error("cutter_radius",
+                     "is required for non-zero-offset Method 1 curvature closure");
+    }
     if (std::abs(p.offset) > p.wheel_outer_diameter() * 0.25) {
         result.error("offset", "must not exceed 25% of the wheel outer diameter");
     }
     if (!result.ok()) {
         return result;
     }
-    if (std::abs(p.spiral_angle) > 40.0) {
+    hypoid::SetGeometry geometry;
+    try {
+        geometry = hypoid::derive(p);
+    } catch (const std::exception& error) {
+        const std::string message = error.what();
+        const char* field =
+            (p.cutter_radius.has_value() &&
+             (message.find("curvature") != std::string::npos ||
+              message.find("cutter radius") != std::string::npos))
+                ? "cutter_radius"
+                : (message.find("tooth thickness") != std::string::npos
+                       ? "backlash"
+                       : "geometry");
+        result.error(field, "Method 1 geometry failed: " + message);
+        return result;
+    }
+    for (const auto& member : {&geometry.pinion, &geometry.gear}) {
+        if (member->pitch_angle_rad <= 0.0 || member->pitch_angle_rad >= kPi / 2.0)
+            result.error(member->name, "pitch angle is outside the external hypoid range");
+        if (member->virtual_tip_r_mm <= member->virtual_base_r_mm)
+            result.error(member->name, "tip circle does not reach the involute");
+        if (member->virtual_root_r_mm <= 0.0)
+            result.error(member->name, "root radius is not positive");
+        if (member->mean_normal_tooth_thickness_mm <= 0.0)
+            result.error("backlash", member->name +
+                         " mean normal tooth thickness is not positive");
+        for (double station : {member->tooth_face_inner_cone_distance_mm,
+                               member->cone_distance_mm,
+                               member->tooth_face_outer_cone_distance_mm}) {
+            try {
+                const auto section = hypoid::tooth_space_section(
+                    geometry, member->name, station);
+                if (!p.root_fillet_radius.has_value() &&
+                    p.effective_root_fillet_radius() > 0.0 && !section.filleted) {
+                    result.warning(member->name,
+                                   "the requested approximate root fillet does not fit every face section; the affected transition remains sharp");
+                    break;
+                }
+            } catch (const std::exception& error) {
+                const std::string message = error.what();
+                result.error(message.find("root fillet") != std::string::npos
+                                 ? "root_fillet_radius"
+                                 : member->name,
+                             "Tredgold tooth-space approximation failed: " + message);
+                break;
+            }
+        }
+    }
+    if (p.cutter_radius.has_value() && *p.cutter_radius < 0.25 * p.module)
+        result.warning("cutter_radius", "a very small cutter produces a sharply varying spiral");
+    if (std::abs(p.offset) > 0.15 * p.wheel_outer_diameter())
+        result.warning("offset", "offset exceeds the usual 15% design range");
+    if (p.spiral_angle > 45.0)
         result.warning("spiral_angle", "high spiral angle increases axial thrust");
+    if (p.bore / 2.0 + p.module >= geometry.pinion.inner_root_radius_mm) {
+        std::ostringstream message;
+        message << "pinion bore leaves insufficient material below the Method 1 inner root radius ("
+                << std::fixed << std::setprecision(3)
+                << geometry.pinion.inner_root_radius_mm << " mm)";
+        result.error("bore", message.str());
     }
     return result;
 }
