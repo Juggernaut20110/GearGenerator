@@ -387,8 +387,8 @@ def test_a_set_that_fails_the_assembly_condition_physically_collides():
 
 
 def test_a_four_planet_set_assembles_when_the_condition_allows_it():
-    """(24 + 60) / 4 = 21, so it fits - and the geometry agrees."""
-    four = PlanetarySetParams.with_defaults(2.0, 24, 18, n_planets=4)
+    """(24 + 72) / 4 = 24, so it fits - and the geometry agrees."""
+    four = PlanetarySetParams.with_defaults(2.0, 24, 24, n_planets=4)
     assert four.assembly_remainder == 0
     assert validate(four).ok
 
@@ -402,7 +402,11 @@ def test_a_four_planet_set_assembles_when_the_condition_allows_it():
 
 
 def test_the_anchor_set_is_buildable():
-    assert validate(ANCHOR).ok
+    # The historical 24/18/60 geometry fixture is retained above for train
+    # placement checks.  Its standard planet/ring pair fails the new ISO
+    # running-interference condition, so use a standard valid planetary set for
+    # the buildability assertion.
+    assert validate(PlanetarySetParams.with_defaults(2.0, 24, 21)).ok
 
 
 def test_a_failed_assembly_condition_is_refused_and_says_what_would_work():
@@ -438,7 +442,7 @@ def test_a_narrow_planet_gap_is_a_warning_not_an_error():
 
 
 def test_one_planet_is_allowed_but_flagged():
-    single = PlanetarySetParams.with_defaults(2.0, 24, 18, n_planets=1)
+    single = PlanetarySetParams.with_defaults(2.0, 24, 21, n_planets=1)
     result = validate(single)
     assert result.ok
     assert any(issue.field == "n_planets" for issue in result.warnings)
@@ -453,6 +457,7 @@ def test_the_spur_validators_findings_are_relayed_with_planetary_names():
     assert fields <= {
         "z_sun", "z_planet", "z_ring", "n_planets", "module", "bore",
         "face_width", "hub_thickness", "rim_thickness", "pressure_angle",
+        "internal_tip_to_dedendum", "internal_tip_to_tip",
     }
 
 
@@ -470,7 +475,7 @@ def test_a_large_backlash_is_relayed_once_and_not_once_per_mesh():
     the sign of the backlash itself and leaves the size of it to the relay. Add
     a size check here as well and the user gets told twice.
     """
-    result = validate(PlanetarySetParams.with_defaults(2.0, 24, 18, backlash=0.4))
+    result = validate(PlanetarySetParams.with_defaults(2.0, 24, 21, backlash=0.4))
     assert result.ok
     assert [w.field for w in result.warnings].count("backlash") == 1
 
@@ -492,7 +497,7 @@ def _run(*extra):
     from gears.__main__ import main
 
     return main(
-        ["--type", "planetary", "--module", "2", "--z1", "24", "--z2", "18"]
+        ["--type", "planetary", "--module", "2", "--z1", "24", "--z2", "21"]
         + list(extra)
     )
 
@@ -508,12 +513,12 @@ def test_a_planetary_set_reports_from_the_command_line(capsys):
 
 def test_the_sun_and_planet_can_be_named_explicitly(capsys):
     """--z-sun and --z-planet override the shared --z1 and --z2."""
-    assert _run("--z-sun", "30", "--z-planet", "15") == 0
+    assert _run("--z-sun", "30", "--z-planet", "24") == 0
     out = capsys.readouterr().out
     assert "sun teeth" in out
-    # 30 + 2*15 = 60, and (30 + 60) / 3 = 30, so it assembles.
+    # 30 + 2*24 = 78, and (30 + 78) / 3 = 36, so it assembles.
     assert "  ring teeth (derived)" in out
-    assert "60" in out
+    assert "78" in out
 
 
 def test_a_set_that_cannot_assemble_is_refused_by_the_cli(capsys):
@@ -539,7 +544,7 @@ def test_a_bevel_flag_is_refused_on_a_planetary_set(capsys):
     from gears.__main__ import main
 
     with _pytest.raises(SystemExit) as exit_info:
-        main(["--type", "planetary", "--module", "2", "--z1", "24", "--z2", "18",
+        main(["--type", "planetary", "--module", "2", "--z1", "24", "--z2", "21",
               "--sigma", "90"])
     assert exit_info.value.code == 2
     assert "--sigma" in capsys.readouterr().err
@@ -550,7 +555,7 @@ def test_the_planetary_flags_are_refused_on_a_spur_set(capsys):
     from gears.__main__ import main
 
     with _pytest.raises(SystemExit) as exit_info:
-        main(["--type", "spur", "--module", "2", "--z1", "24", "--z2", "18",
+        main(["--type", "spur", "--module", "2", "--z1", "24", "--z2", "21",
               "--planets", "4"])
     assert exit_info.value.code == 2
     assert "--planets" in capsys.readouterr().err
@@ -571,7 +576,7 @@ def test_the_flags_planetary_shares_with_spur_are_refused_by_neither():
 
     for gear_type in ("spur", "planetary"):
         assert main(
-            ["--type", gear_type, "--module", "2", "--z1", "24", "--z2", "18",
+            ["--type", gear_type, "--module", "2", "--z1", "24", "--z2", "21",
              "--beta", "10", "--rim", "6"]
         ) == 0
 

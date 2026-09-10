@@ -195,9 +195,11 @@ the active-limit equations in the Contact ratios section below.
 lands, loop topology, contact ratios, blank wall, and profile-dependent
 external undercut. It also checks working depth, both ISO tip clearances,
 non-positive addendum, altered tip/form ordering, and pointed tips. Negative
-tip clearance is an error. It retains a fixed ten-tooth internal difference as a
-conservative fallback for unverified trimming/interference; exact internal
-involute, tip, and trimming interference is not implemented.
+tip clearance is an error. Internal running-pair interference now uses the
+Clause 5.5.8.2 `CA < CT1` and `d_Nf2 < d_Ff2` conditions when the required
+active/form geometry is available, plus the Clause 5.5.8.3 tip-to-tip rotation
+criterion. The historical ten-tooth difference is retained only as a clearly
+labelled non-normative warning.
 
 ### Mesh, preview, reports, and builders
 
@@ -803,9 +805,13 @@ record rather than this historical plan. The following boundaries remain:
 4. Active contact limits and the shortened path are exact only for the
    external straight rack-generated branch with both generated root forms
    available. Legacy, internal, and helical roots retain a nominal/full-
-   involute approximation and are labelled as such; internal trimming and
-   interference analysis remain separate future work. The ten-tooth internal
-   difference rule remains conservative.
+   involute approximation and are labelled as such. Internal running-pair
+   interference is checked from working geometry, but the current internal
+   legacy root does not provide an independently verified `d_Ff`, so the
+   `d_Nf2 < d_Ff2` branch remains a documented warning rather than a fabricated
+   nominal-`d_f` substitution. The check is transverse for helical pairs and
+   does not cover internal cutter/shaper geometry or Clause 11 cutter
+   interference.
 5. Sampling density, loft interpolation, blank construction, SOLIDWORKS mating,
    manufacturing tolerances, and inspection definitions are not normative ISO
    claims and require environment-specific validation.

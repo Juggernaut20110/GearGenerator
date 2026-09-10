@@ -51,7 +51,7 @@ def _independent_working_backlash(geo) -> float:
 def test_working_circumferential_backlash_closes_independent_working_spaces(kwargs):
     p = SpurSetParams.with_defaults(
         2.0,
-        18,
+        21 if kwargs.get("internal") else 18,
         60 if kwargs.get("internal") else 43,
         backlash=0.10,
         backlash_mode="working_circumferential",

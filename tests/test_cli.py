@@ -105,7 +105,7 @@ def test_backlash_belongs_to_every_type_and_is_refused_by_none(gear_type, capsys
     on a set whose geometry uses it, which is the loudest possible way to be
     inconsistent about one number.
     """
-    counts = ["--module", "2", "--z1", "24", "--z2", "18"]
+    counts = ["--module", "2", "--z1", "24", "--z2", "21"]
     assert main(["--type", gear_type, "--backlash", "0.05"] + counts) == 0
     assert "backlash" in capsys.readouterr().out
 

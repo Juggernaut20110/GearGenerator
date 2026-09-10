@@ -34,7 +34,7 @@ from gears.spur.geometry import (
     tooth_space_section,
 )
 from gears.spur.params import SpurSetParams
-from gears.spur.validate import MIN_INTERNAL_TOOTH_DIFFERENCE, validate
+from gears.spur.validate import validate
 
 ANCHOR_INTERNAL = SpurSetParams.with_defaults(2.0, 18, 60, internal=True)
 ANCHOR_EXTERNAL = SpurSetParams.with_defaults(2.0, 18, 60)
@@ -724,17 +724,23 @@ def test_a_ring_reports_the_diameter_its_teeth_occupy_not_its_rim(internal):
 
 
 def test_the_anchor_internal_pair_is_buildable():
-    assert validate(ANCHOR_INTERNAL).ok
+    # The historical 18/60 fixture remains useful for closed-form geometry
+    # tests, but ISO running-pair interference rejects it.  Use a standard
+    # pair above the independent CA/CT1 boundary for this validation check.
+    assert validate(SpurSetParams.with_defaults(2.0, 21, 60, internal=True)).ok
 
 
-def test_too_few_teeth_between_the_two_is_refused():
-    """The pinion and the ring have to differ by enough to clear each other."""
-    for z2 in range(19, 18 + MIN_INTERNAL_TOOTH_DIFFERENCE):
-        result = validate(SpurSetParams.with_defaults(2.0, 18, z2, internal=True))
-        assert not result.ok
-        assert any(
-            "more teeth than the pinion" in issue.message for issue in result.errors
-        )
+def test_tooth_difference_is_only_a_non_normative_warning():
+    """A ten-tooth difference is not the ISO running-pair criterion."""
+    p = SpurSetParams.with_defaults(
+        2.0, 26, 34, internal=True, profile_shift_2=0.25
+    )
+    result = validate(p)
+    assert result.ok
+    assert any(
+        issue.field == "z2" and "non-normative" in issue.message
+        for issue in result.warnings
+    )
 
 
 def test_a_ring_needs_a_minimum_tooth_count_of_its_own():
@@ -744,8 +750,9 @@ def test_a_ring_needs_a_minimum_tooth_count_of_its_own():
     circle and the flank has no involute anywhere - not just near the root, the
     way an external gear runs out of involute. 34 teeth at 20 degrees.
 
-    This is why the anchor ring has 60 teeth. A 28-tooth ring clears the
-    difference rule against an 18-tooth pinion and is still unbuildable.
+    This is why the anchor ring has 60 teeth. A 28-tooth ring has no usable
+    involute, while a 34-tooth ring can still be rejected by the separate
+    running-pair interference condition depending on its pinion.
     """
     alpha_t = compute_set(ANCHOR_INTERNAL).transverse_pressure_angle
     assert min_internal_teeth(alpha_t) == pytest.approx(33.16, abs=0.01)
@@ -754,7 +761,7 @@ def test_a_ring_needs_a_minimum_tooth_count_of_its_own():
     assert not result.ok
     assert any("no involute" in issue.message for issue in result.errors)
 
-    assert validate(SpurSetParams.with_defaults(2.0, 18, 34, internal=True)).ok
+    assert validate(SpurSetParams.with_defaults(2.0, 32, 34, internal=True)).ok
 
 
 def test_a_larger_pressure_angle_lets_a_ring_have_fewer_teeth():
@@ -809,7 +816,7 @@ def test_the_internal_flag_reaches_the_geometry_from_the_command_line(capsys):
     from gears.__main__ import main
 
     assert main(
-        ["--type", "spur", "--module", "2", "--z1", "18", "--z2", "60", "--internal"]
+        ["--type", "spur", "--module", "2", "--z1", "21", "--z2", "60", "--internal"]
     ) == 0
     out = capsys.readouterr().out
     assert "arrangement" in out

@@ -300,7 +300,7 @@ def test_explicit_helical_working_distance_is_checked_against_profile_shift():
     assert "working_centre_distance" in fields_with_errors(conflicting)
 
 
-@pytest.mark.parametrize("shift_1,shift_2", [(0.3, 0.0), (0.3, -0.3), (0.0, 0.3)])
+@pytest.mark.parametrize("shift_1,shift_2", [(0.3, 0.0), (0.3, -0.3), (0.0, 0.5)])
 def test_internal_profile_shift_sets_remain_valid(shift_1, shift_2):
     p = SpurSetParams.with_defaults(
         2.0,

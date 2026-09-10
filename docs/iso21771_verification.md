@@ -6,6 +6,11 @@ involute implementation. The tests are in
 expected values from equations written in that test module rather than calling
 the production conversion, working-geometry, or contact-ratio helpers.
 
+The internal running-pair interference cases are in
+[`tests/test_spur_internal_interference.py`](../tests/test_spur_internal_interference.py).
+They independently recompute the Clause 5.5.8 margins and do not call the
+validator's private interference helper.
+
 ## Cases covered
 
 The independent matrix includes:
@@ -261,6 +266,63 @@ distribution, helical, internal, and high-positive-shift cases. The high-shift
 case is also run in legacy mode to prove that negative clearance is reported
 as an error rather than returned as overlapping geometry.
 
+## Internal running-pair interference
+
+This pass replaces the former fixed `z2-z1 >= 10` rejection with the
+geometry-based running-pair checks in ISO 21771-1:2024 Clause 5.5.8. The
+primary source is the [ISO 21771-1:2024 record](https://www.iso.org/standard/84949.html)
+and its [published preview](https://gso-sims-preview-doc-aws.s3-eu-west-1.amazonaws.com/iso-21771-1-2024-en.html),
+especially:
+
+- 5.5.8.1, which defines interference as contact outside the working flanks
+  or contact of the top lands;
+- 5.5.8.2, which states for an internal pair the conditions `CA < CT1` and
+  `d_Nf2 < d_Ff2`;
+- 5.5.8.3, which defines the separate internal tip-to-tip condition;
+- 5.5.2 and 5.5.4, which supply active tip/start-of-active-profile and
+  working line-of-action geometry; and
+- 9.6 and 9.7, which keep generated root diameter `d_fE`, nominal root
+  diameter `d_f`, and form diameters such as `d_Ff` distinct.
+
+For the repository's positive-radius internal convention, the implemented
+`CA < CT1` margin is the algebraic reduction of the Clause 5.5.8.2 condition
+using the transverse working geometry from Clauses 5.5.2 and 5.5.4:
+
+```text
+alpha_a2 = acos(r_b2 / r_Na2)
+margin_CA_CT1 = z1/z2 - (1 - tan(alpha_a2)/tan(alpha_wt))
+```
+
+Here `r_Na2` is the active ring-tip radius when `d_Na2` is available. The
+formula above is recorded as an implementation reduction, not as a numbered
+ISO equation. A non-positive margin is reported as internal tip-to-dedendum
+interference. The second Clause 5.5.8.2 comparison is evaluated only when an
+independently verified internal `d_Ff2` exists. The current internal profile
+is a legacy final-gear fillet and deliberately has no such value, so validation
+warns that `d_Nf2 < d_Ff2` is unavailable; it never substitutes nominal `d_f`.
+
+The tip-to-tip calculation follows Clause 5.5.8.3 directly. It uses the
+active tip-circle intersection and the ISO equations 105-107 for
+`omega_1`, `theta_aa1`, and `theta_a1`, together with the following
+`theta_aa2` sine-law and `theta_a2` relations. The implemented criterion is:
+
+```text
+omega_1 = theta_aa1 + theta_a1
+omega_2 = theta_aa2 - theta_a2
+z1*omega_1 > z2*omega_2
+```
+
+This is a rotational criterion; overlapping tip circles at the working mesh
+are not themselves treated as interference. The nominal far-side radial
+pinion-tip/ring-root circle check remains a separate diagnostic and is not
+collapsed into Clause 5.5.8 running interference.
+
+The validator applies these equations to transverse geometry for helical
+pairs. It does not claim a three-dimensional axial tip-interference analysis,
+and it does not implement Clause 11 pinion-cutter interference. Internal
+generated roots and internal cutter/shaper envelopes remain outside the
+documented root-geometry scope.
+
 ## Tolerances
 
 Closed-form dimensions, angles, and ratios are checked to `1e-11` in the test
@@ -292,7 +354,7 @@ ISO 21771-1 Clause 5.3.9 describes Eq. (76) as an estimate for many gear sets
 and notes that internal-pair addendum limits can prevent the calculated `k`
 from being realized. This implementation validates the resulting pair
 clearances, addendum, active form, and tip land, but does not claim a complete
-internal tip-to-tip interference analysis or manufacturing feasibility proof.
+manufacturing feasibility proof.
 
 The tests verify the legacy reference-circle, working-circumferential, and
 normal-base input paths from analytical member widths, and verify the

@@ -41,11 +41,10 @@ MAX_HELIX_ANGLE = 45.0
 # noisy even though it still transmits.
 MIN_COMFORTABLE_CONTACT_RATIO = 1.1
 
-# Conservative fallback for unverified internal trimming (fighting)
-# interference. The shifted geometry checks the ring tip against its base
-# circle and the pinion tip against the ring root using the actual radii and
-# working distance; no verified closed-form x-dependent trimming criterion is
-# available in this model, so this guard remains intentionally conservative.
+# Historical design heuristic retained for diagnostics only.  It is not an ISO
+# interference limit: profile shift, tip alteration, pressure angle, and the
+# actual working geometry can move a pair across the running-interference
+# boundaries on either side of this number.
 MIN_INTERNAL_TOOTH_DIFFERENCE = 10
 
 # The geometry is in millimetres.  This is below the tolerances used by the
@@ -108,20 +107,6 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
         and p.z2 <= p.z1
     ):
         r.error("z2", "an internal ring must have more teeth than the pinion")
-    if (
-        _is_integer_tooth_count(p.z1)
-        and _is_integer_tooth_count(p.z2)
-        and p.internal
-        and p.z2 - p.z1 < MIN_INTERNAL_TOOTH_DIFFERENCE
-    ):
-        # Checked here rather than below because everything downstream divides
-        # by the centre distance, which goes to zero as the counts converge.
-        r.error(
-            "z2",
-            f"an internal pair needs the ring to have at least "
-            f"{MIN_INTERNAL_TOOTH_DIFFERENCE} more teeth than the pinion; "
-            f"{p.z2} - {p.z1} = {p.z2 - p.z1}",
-        )
     if _is_finite(p.rim_thickness) and p.internal and p.rim_thickness < 0:
         r.error("rim_thickness", "cannot be negative")
     if _is_finite(p.bore) and p.bore < 0:
@@ -302,6 +287,15 @@ def validate(p: SpurSetParams) -> ValidationResult:
 
     _check_operating_geometry(geo, result)
     _check_tip_alteration_geometry(geo, p, result)
+
+    if p.internal and p.z2 - p.z1 < MIN_INTERNAL_TOOTH_DIFFERENCE:
+        result.warn(
+            "z2",
+            f"internal tooth-count difference delta_z={p.z2 - p.z1} is below the "
+            f"non-normative {MIN_INTERNAL_TOOTH_DIFFERENCE}-tooth design "
+            "heuristic; ISO running-pair interference is decided from the "
+            "working geometry below",
+        )
 
     # An explicit working distance and the two x_i values are two descriptions
     # of the same pair condition.  Keep them from silently disagreeing.  The
@@ -583,6 +577,111 @@ def _check_tip_alteration_geometry(geo, p: SpurSetParams, result: ValidationResu
             )
 
 
+def _internal_running_interference(geo, p: SpurSetParams) -> dict[str, float | None | bool]:
+    """Evaluate the transverse running-pair interference quantities.
+
+    Margins are positive when the corresponding strict ISO inequality has
+    clearance. ``d_nf2_margin`` is only available when the current model can
+    derive a root-form radius for the ring; it is kept distinct from nominal
+    ``d_f`` and generated ``d_fE``.
+    """
+    pinion, ring = geo.pinion, geo.gear
+    a_w = geo.working_centre_distance
+
+    # ISO 21771-1:2024 §5.5.8.2 requires CA < CT1.  In the positive-radius
+    # convention used here, §5.5.4 line-of-action geometry reduces that
+    # condition to the following dimensionless margin:
+    #
+    #     z1/z2 >= 1 - tan(alpha_a2) / tan(alpha_wt)
+    #
+    # alpha_a2 is the transverse pressure angle at the ring tip.  This is a
+    # pair-running condition; it is not the Clause 11 pinion-cutter trimming
+    # condition.
+    ring_active_tip_r = (
+        ring.active_tip_r if ring.active_tip_r is not None else ring.tip_r
+    )
+    if ring_active_tip_r < ring.base_r - GEOMETRY_TOLERANCE:
+        ca_ct1_margin = None
+    else:
+        alpha_a2 = math.acos(min(1.0, ring.base_r / ring_active_tip_r))
+        ca_ct1_margin = pinion.z / ring.z - (
+            1.0
+            - math.tan(alpha_a2) / math.tan(geo.working_pressure_angle)
+        )
+
+    # The current internal root is deliberately not exposed as an ISO d_Ff:
+    # it is a legacy final-gear fillet, not a verified internal generating
+    # envelope.  Use d_Ff only if a future internal root implementation
+    # supplies it; never substitute nominal d_f.
+    root_form_2 = ring.root_form_r
+    d_nf2 = ring.start_active_profile_d
+    d_ff2 = None if root_form_2 is None else 2.0 * root_form_2
+    d_nf2_margin = (
+        None
+        if d_nf2 is None or d_ff2 is None
+        else d_ff2 - d_nf2
+    )
+
+    # ISO 21771-1:2024 §5.5.8.3, Eqs. (105)-(107) and the following
+    # theta_aa2/theta_a2 relations. These are the physical active tip
+    # circles, not a circle-overlap test: their intersection angles are used
+    # to compare the actual and limiting tooth rotations.
+    tip_to_tip_margin: float | None = None
+    omega_1: float | None = None
+    omega_2: float | None = None
+    tip_circle_intersection = False
+    r_a1: float | None = None
+    r_a2: float | None = None
+    if a_w > GEOMETRY_TOLERANCE:
+        # The active tip diameters are the usable tooth-end limits from
+        # ISO 21771-1:2024 5.5.2.  For the current internal legacy root they
+        # equal the nominal tip diameters; retaining the fallback keeps this
+        # check useful for any future geometry that cannot resolve d_Na.
+        r_a1 = (
+            pinion.active_tip_r if pinion.active_tip_r is not None else pinion.tip_r
+        )
+        r_a2 = (
+            ring.active_tip_r if ring.active_tip_r is not None else ring.tip_r
+        )
+        if (
+            r_a1 > 0.0
+            and r_a2 > 0.0
+            and pinion.base_r <= r_a1
+            and ring.base_r <= r_a2
+        ):
+            cosine_aa1 = (r_a2 * r_a2 - r_a1 * r_a1 - a_w * a_w) / (
+                2.0 * a_w * r_a1
+            )
+            if -1.0 <= cosine_aa1 <= 1.0:
+                tip_circle_intersection = True
+                theta_aa1 = math.acos(cosine_aa1)
+                sine_aa2 = min(
+                    1.0,
+                    max(0.0, r_a1 / r_a2 * math.sin(theta_aa1)),
+                )
+                theta_aa2 = math.asin(sine_aa2)
+                alpha_at1 = math.acos(min(1.0, pinion.base_r / r_a1))
+                alpha_at2 = math.acos(min(1.0, ring.base_r / r_a2))
+                theta_a1 = inv(alpha_at1) - inv(geo.working_pressure_angle)
+                theta_a2 = inv(geo.working_pressure_angle) - inv(alpha_at2)
+                omega_1 = theta_aa1 + theta_a1
+                omega_2 = theta_aa2 - theta_a2
+                tip_to_tip_margin = pinion.z * omega_1 - ring.z * omega_2
+
+    return {
+        "ca_ct1_margin": ca_ct1_margin,
+        "d_nf2": d_nf2,
+        "d_ff2": d_ff2,
+        "d_na1": None if r_a1 is None else 2.0 * r_a1,
+        "d_na2": None if r_a2 is None else 2.0 * r_a2,
+        "d_nf2_margin": d_nf2_margin,
+        "tip_to_tip_margin": tip_to_tip_margin,
+        "omega_1": omega_1,
+        "omega_2": omega_2,
+        "tip_circle_intersection": tip_circle_intersection,
+    }
+
+
 def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> None:
     """The clearances an internal pair has and an external one does not.
 
@@ -609,29 +708,68 @@ def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> Non
     far_reach = a + pinion.tip_r
     if far_reach >= ring.root_r:
         result.error(
-            "z2",
+            "internal_far_side_clearance",
             f"the pinion's tip reaches {far_reach:.2f} mm from the ring's axis "
             f"but the ring's root circle is at {ring.root_r:.2f} mm, so the two "
-            "collide on the far side of the mesh",
+            "collide on the far side of the mesh (nominal radial tip/root "
+            "collision, separate from tooth-flank interference)",
         )
 
-    # --- trimming (fighting) interference ----------------------------------
-    #
-    # NOT computed here, and it would be dishonest to pretend otherwise. The
-    # closed-form criterion involves the working pressure angle and both tip
-    # pressure angles, and every published form of it is easy to get backwards -
-    # the first version of this function shipped one that flagged the anchor
-    # pair as a collision because it compared the two tip circles directly, when
-    # a meshing internal pair's tip circles are *supposed* to overlap. That is
-    # where the mesh is.
-    #
-    # What guards it instead is MIN_INTERNAL_TOOTH_DIFFERENCE, checked in
-    # `_check_basics`. Ten teeth of difference is the standard rule of thumb
-    # precisely because it keeps a standard-proportioned pair clear of trimming,
-    # and a rule that is honest about being a rule beats a formula that might be
-    # inverted. If this ever needs to be exact, the way to get it right is to
-    # trace the ring's tip corner through a mesh cycle in the pinion's frame and
-    # measure - not to copy an unverified criterion out of a table.
+    metrics = _internal_running_interference(geo, p)
+    tolerance = 1e-10 * max(1.0, p.module)
+
+    # --- tip-to-dedendum interference, ISO 21771-1:2024 §5.5.8.2 ---------
+    ca_ct1_margin = metrics["ca_ct1_margin"]
+    if ca_ct1_margin is None:
+        result.error(
+            "internal_tip_to_dedendum",
+            "CA < CT1 cannot be satisfied because the ring active-tip "
+            "involute is not defined above its base circle",
+        )
+    elif ca_ct1_margin <= tolerance:
+        result.error(
+            "internal_tip_to_dedendum",
+            f"tip-to-dedendum interference: CA >= CT1 "
+            f"(dimensionless margin {ca_ct1_margin:.6g})",
+        )
+
+    d_nf2_margin = metrics["d_nf2_margin"]
+    if d_nf2_margin is None:
+        result.warn(
+            "internal_tip_to_dedendum",
+            "ISO d_Nf2 < d_Ff2 check is unavailable: this internal member "
+            "has no independently verified root-form diameter; nominal d_f "
+            "is not substituted for d_Ff",
+        )
+    elif d_nf2_margin <= tolerance:
+        result.error(
+            "internal_tip_to_dedendum",
+            f"tip-to-dedendum interference: d_Nf2={metrics['d_nf2']:.6g} mm "
+            f"is not below modelled d_Ff2={metrics['d_ff2']:.6g} mm",
+        )
+
+    # --- tip-to-tip interference, ISO 21771-1:2024 §5.5.8.3 -------------
+    tip_margin = metrics["tip_to_tip_margin"]
+    if tip_margin is not None and tip_margin <= tolerance:
+        result.error(
+            "internal_tip_to_tip",
+            f"tip-to-tip interference: z1*omega1 must exceed z2*omega2; "
+            f"margin is {tip_margin:.6g}",
+        )
+    elif tip_margin is not None and tip_margin <= 1e-6:
+        result.warn(
+            "internal_tip_to_tip",
+            f"tip-to-tip rotation margin is only {tip_margin:.6g}; "
+            "the pair is at the ISO boundary",
+        )
+
+    if abs(p.helix_angle) > GEOMETRY_TOLERANCE:
+        result.warn(
+            "internal_tip_to_tip",
+            "internal running-interference inequalities are evaluated in the "
+            "transverse section; no separate 3-D axial tip-interference claim "
+            "is made for the helical pair",
+        )
 
 
 def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
