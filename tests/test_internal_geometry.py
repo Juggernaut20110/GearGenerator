@@ -75,8 +75,9 @@ def _independent_internal_member(
     alpha_t = math.atan2(math.tan(alpha_n), math.cos(beta))
     reference_r = transverse_module * teeth / 2.0
     base_r = reference_r * math.cos(alpha_t)
+    shift_sign = -1.0 if internal else 1.0
     normal_thickness = normal_module * (
-        math.pi / 2.0 + 2.0 * shift * math.tan(alpha_n)
+        math.pi / 2.0 + shift_sign * 2.0 * shift * math.tan(alpha_n)
     )
     tooth_thickness = normal_thickness / math.cos(beta)
     if internal:

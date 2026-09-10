@@ -29,9 +29,9 @@ dedendum 1.25 m_n in the default rack. For an external pair, profile shift
 changes those member-specific depths and the reference tooth thickness. In a
 helical pair the tooth thickness is first calculated in the normal plane and
 then projected into the transverse plane; the involute still consumes the
-transverse result. An internal ring applies the same normal tooth-thickness
-equation to its tooth, then gives the complementary transverse space width to
-the internal involute generator.
+transverse result. An internal ring uses the opposite physical sign for its
+profile-shift tooth-thickness term, then gives the complementary transverse
+space width to the internal involute generator.
 
 The twist, and why the gear is wound the other way
 --------------------------------------------------
@@ -56,6 +56,7 @@ from ..involute import (
     FLANK_POINTS,
     MIN_TOP_LAND_FACTOR,
     inv,
+    internal_tooth_width,
     max_tip_radius,
     min_internal_tip_radius,
     rack_generated_root,
@@ -65,6 +66,7 @@ from ..involute import (
 from .params import (
     BASIC_RACK_ADDENDUM_FACTOR,
     BASIC_RACK_CLEARANCE_FACTOR,
+    BACKLASH_MODES,
     SpurSetParams,
 )
 
@@ -125,9 +127,13 @@ class SpurMemberGeometry:
     addendum: float
     dedendum: float
     geometric_tooth_thickness: float  # s_t before deliberate backlash thinning
-    reference_tooth_thickness: float  # s_t after the compatibility backlash split
+    reference_tooth_thickness: float  # s_t after the selected backlash allowance
     normal_geometric_tooth_thickness: float  # s_n before backlash
     normal_tooth_thickness: float           # s_n after backlash
+    reference_tooth_thickness_allowance: float
+    working_tooth_thickness: float          # s_wt at the working pitch circle
+    working_normal_tooth_thickness: float   # s_wn at the working pitch circle
+    working_tooth_thickness_allowance: float
     virtual_teeth: float        # z / cos(beta)**3, the equivalent spur gear
     twist: float                # total rotation over the face width, radians
     psi0: float                 # angular half-thickness constant at the base
@@ -318,6 +324,120 @@ class SpurSetGeometry:
         return self.transverse_contact_ratio + self.axial_contact_ratio
 
     @property
+    def requested_backlash(self) -> float:
+        """The single user input, with its meaning given by ``backlash_mode``."""
+        return self.params.backlash
+
+    @property
+    def backlash_mode(self) -> str:
+        """Backlash definition selected by the input model."""
+        return self.params.backlash_mode
+
+    @property
+    def backlash_allocation(self) -> float:
+        """Fraction of the working allowance assigned to the pinion."""
+        return self.params.backlash_allocation
+
+    @property
+    def working_circular_pitch(self) -> float:
+        """Working transverse circular pitch ``p_wt``."""
+        return 2.0 * math.pi * self.pinion.working_r / self.pinion.z
+
+    @property
+    def reference_circumferential_backlash(self) -> float:
+        """Resulting ``j_t`` at the reference circles."""
+        return self.circular_pitch - (
+            self.pinion.reference_tooth_thickness
+            + self.gear.reference_tooth_thickness
+        )
+
+    @property
+    def working_circumferential_backlash(self) -> float:
+        """Resulting ``j_wt`` at the working pitch circles."""
+        return self.working_circular_pitch - (
+            self.pinion.working_tooth_thickness
+            + self.gear.working_tooth_thickness
+        )
+
+    @property
+    def transverse_backlash(self) -> float:
+        """Transverse flank-normal backlash ``j_bt`` at the working circle."""
+        return self.working_circumferential_backlash * math.cos(
+            self.working_pressure_angle
+        )
+
+    @property
+    def base_helix_angle(self) -> float:
+        """Magnitude of the helix angle on the base cylinder."""
+        return math.atan(
+            math.tan(abs(self.params.beta))
+            * math.cos(self.reference_pressure_angle)
+        )
+
+    @property
+    def working_helix_angle(self) -> float:
+        """Magnitude of the helix angle on the working pitch cylinder."""
+        return math.atan(
+            math.tan(abs(self.params.beta))
+            * math.cos(self.working_pressure_angle)
+        )
+
+    @property
+    def normal_base_backlash(self) -> float:
+        """Normal-base backlash ``j_bn`` derived from ``j_bt``."""
+        return self.transverse_backlash * math.cos(self.base_helix_angle)
+
+    @property
+    def working_normal_backlash(self) -> float:
+        """Working normal backlash ``j_wn`` derived at the working cylinder."""
+        return self.working_circumferential_backlash * math.cos(
+            self.working_helix_angle
+        )
+
+    @property
+    def radial_backlash(self) -> float:
+        """Radial backlash ``j_r`` corresponding to ``j_wt``."""
+        return self.working_circumferential_backlash / (
+            2.0 * math.tan(self.working_pressure_angle)
+        )
+
+    @property
+    def angular_backlash_1(self) -> float:
+        """Pinion angular backlash ``phi_j1`` in radians."""
+        return self.working_circumferential_backlash / self.pinion.working_r
+
+    @property
+    def angular_backlash_2(self) -> float:
+        """Gear/ring angular backlash ``phi_j2`` in radians."""
+        return self.working_circumferential_backlash / self.gear.working_r
+
+    # ISO-style short aliases make the reported symbols directly inspectable,
+    # while the long names above remain unambiguous to API callers.
+    @property
+    def j_t(self) -> float:
+        return self.reference_circumferential_backlash
+
+    @property
+    def j_wt(self) -> float:
+        return self.working_circumferential_backlash
+
+    @property
+    def j_bt(self) -> float:
+        return self.transverse_backlash
+
+    @property
+    def j_bn(self) -> float:
+        return self.normal_base_backlash
+
+    @property
+    def j_wn(self) -> float:
+        return self.working_normal_backlash
+
+    @property
+    def j_r(self) -> float:
+        return self.radial_backlash
+
+    @property
     def actual_path_of_contact(self) -> float:
         """Clear-name alias for ISO ``g_alpha``."""
         return self.path_of_contact
@@ -333,6 +453,49 @@ class SpurSetGeometry:
         if which == "gear":
             return self.gear
         raise ValueError(f"member must be 'pinion' or 'gear', got {which!r}")
+
+
+def _working_helix_angle(beta: float, alpha: float) -> float:
+    """Helix angle on a cylinder whose transverse pressure angle is ``alpha``."""
+    return math.atan(math.tan(abs(beta)) * math.cos(alpha))
+
+
+def _working_backlash_target(p: SpurSetParams, alpha_wt: float) -> float | None:
+    """Return the requested working circumferential backlash ``j_wt``.
+
+    ``legacy_reference`` deliberately returns ``None`` because its historical
+    input is applied at the reference circles.  The other two modes convert
+    their named input only after the actual working pressure angle is known.
+    ``normal`` names the ISO normal-base quantity ``j_bn``; the conversion is
+    the flank-normal projection through the transverse and base-cylinder
+    angles used by the geometry model.
+    """
+    mode = p.backlash_mode
+    if mode == "legacy_reference":
+        return None
+    if mode == "working_circumferential":
+        return p.backlash
+    if mode == "normal":
+        beta_b = _working_helix_angle(p.beta, p.alpha_t)
+        return p.backlash / (
+            math.cos(alpha_wt) * math.cos(beta_b)
+        )
+    choices = ", ".join(BACKLASH_MODES)
+    raise ValueError(f"backlash_mode must be one of {choices}")
+
+
+def _tooth_width_at_radius(
+    member_internal: bool,
+    radius: float,
+    base_radius: float,
+    psi0: float,
+    half_pitch: float,
+) -> float:
+    """Return actual transverse tooth width at an involute radius."""
+    if member_internal:
+        return internal_tooth_width(radius, base_radius, psi0, half_pitch)
+    alpha_r = math.acos(min(1.0, base_radius / radius))
+    return 2.0 * radius * (psi0 - inv(alpha_r))
 
 
 def compute_set(p: SpurSetParams) -> SpurSetGeometry:
@@ -352,10 +515,12 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     rack_addendum = p.basic_rack_addendum_factor
     rack_dedendum = p.basic_rack_dedendum_factor
 
-    # Circular tooth thickness at the reference circle, measured in the transverse
-    # plane. Backlash is taken off the tooth, which is the convention that keeps
-    # the centre distance nominal.
+    # Circular tooth thickness at the reference circle, measured in the
+    # transverse plane.  The selected backlash definition is converted into
+    # member-specific reference-circle allowances below; this keeps the actual
+    # working-circle condition explicit instead of treating every input as j_t.
     standard_geometric_thickness = math.pi * m_t / 2.0
+    target_working_backlash = _working_backlash_target(p, working_pressure_angle)
     # The gear's hand. An external pair is cut with opposite hands and an
     # internal pair with the same one - see `SpurSetParams.hand`. Neither is a
     # convention: the placement has no flip in it either way, and what differs
@@ -380,18 +545,46 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         )
 
         member_shift = p.profile_shift_2 if name == "gear" else p.profile_shift_1
-        # ISO reference tooth thickness for either member. Profile shift x_i is
-        # defined in the normal system, so the normal form is
-        # s_n = m_n * (pi/2 + 2*x_i*tan(alpha_n)); the involute needs its
-        # transverse projection s_t = s_n / cos(beta). Backlash is a separate
-        # deliberate reduction, split symmetrically as before.
+        # ISO reference tooth thickness. Profile shift x_i is defined in the
+        # normal system; the involute needs its transverse projection. The
+        # internal ring uses the opposite physical tooth convention, so its
+        # x_i term has the opposite sign. Backlash is a separate deliberate
+        # reduction solved from the selected definition below.
         if member_shift == 0.0:
             geometric_thickness = standard_geometric_thickness
         else:
+            # A positive ring profile shift removes material from the inward
+            # addendum side.  In the ring tooth convention this reduces the
+            # ring tooth thickness, the opposite sign of the external member.
+            # This sign is required for x1 == x2 to preserve zero working
+            # backlash in an internal pair when a_w remains nominal.
+            shift_sign = -1.0 if internal else 1.0
             geometric_thickness = m_t * (
-                math.pi / 2.0 + 2.0 * member_shift * math.tan(p.alpha_n)
+                math.pi / 2.0
+                + shift_sign * 2.0 * member_shift * math.tan(p.alpha_n)
             )
-        reference_tooth_thickness = geometric_thickness - p.backlash / 2.0
+        if target_working_backlash is None:
+            # Compatibility behavior: old JSON means equal reference-circle
+            # thinning, irrespective of profile shift or working distance.
+            working_tooth_thickness_allowance = p.backlash / 2.0 * (
+                working_r / reference_r
+            )
+            reference_tooth_thickness_allowance = p.backlash / 2.0
+        else:
+            working_tooth_thickness_allowance = target_working_backlash * (
+                p.backlash_allocation if name == "pinion"
+                else 1.0 - p.backlash_allocation
+            )
+            # At fixed psi0, the circumferential width change is proportional
+            # to radius.  Solve the reference-circle tooth thickness that gives
+            # the requested allowance at the actual working circle.
+            reference_tooth_thickness_allowance = (
+                working_tooth_thickness_allowance * reference_r / working_r
+            )
+
+        reference_tooth_thickness = (
+            geometric_thickness - reference_tooth_thickness_allowance
+        )
         normal_geometric_thickness = geometric_thickness * math.cos(p.beta)
         normal_tooth_thickness = reference_tooth_thickness * math.cos(p.beta)
 
@@ -431,6 +624,16 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
             psi0 = reference_tooth_thickness / (2.0 * reference_r) + inv(alpha_t)
 
         half_pitch = math.pi / z
+        working_tooth_thickness = _tooth_width_at_radius(
+            internal,
+            working_r,
+            base_r,
+            psi0,
+            half_pitch,
+        )
+        working_normal_tooth_thickness = working_tooth_thickness * math.cos(
+            _working_helix_angle(beta, working_pressure_angle)
+        )
         generated_root_r = None
         root_form_r = None
         start_of_involute_angle = None
@@ -476,6 +679,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 reference_tooth_thickness=reference_tooth_thickness,
                 normal_geometric_tooth_thickness=normal_geometric_thickness,
                 normal_tooth_thickness=normal_tooth_thickness,
+                reference_tooth_thickness_allowance=reference_tooth_thickness_allowance,
+                working_tooth_thickness=working_tooth_thickness,
+                working_normal_tooth_thickness=working_normal_tooth_thickness,
+                working_tooth_thickness_allowance=working_tooth_thickness_allowance,
                 virtual_teeth=z / math.cos(beta) ** 3,
                 # The + 0.0 turns the gear's -0.0 into 0.0 when there is no
                 # helix. Harmless arithmetically, but -0.0 prints as "-0.0000"

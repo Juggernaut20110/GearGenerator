@@ -181,6 +181,14 @@ SPUR_FIELDS: tuple[Field, ...] = (
     Field("helix_angle", "Helix angle", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
     Field("backlash", "Backlash", float, "mm"),
+    Field(
+        "backlash_mode",
+        "Backlash definition",
+        str,
+        "",
+        ("working_circumferential", "normal", "legacy_reference"),
+    ),
+    Field("backlash_allocation", "Backlash to pinion", float),
     Field("face_width", "Face width", float, "mm"),
     Field("bore", "Bore diameter", float, "mm"),
     Field("hub_thickness", "Hub thickness", float, "mm"),
@@ -241,7 +249,8 @@ def _ordered_fields() -> tuple[Field, ...]:
         "pressure_angle", "profile_shift_1", "profile_shift_2",
         "tip_alteration_mode", "tip_alteration_coefficient", "shaft_angle",
         "trace_kind", "offset", "spiral_angle",
-        "helix_angle", "hand", "cutter_radius", "backlash",
+        "helix_angle", "hand", "cutter_radius", "backlash", "backlash_mode",
+        "backlash_allocation",
         "face_width", "bore", "hub_thickness", "rim_thickness",
         "min_root_thickness", "root_fillet_radius",
     )
@@ -404,7 +413,11 @@ class GearKind:
 
     def fallback(self):
         """A minimal set to fall back on before anything has been parsed."""
-        return self.params_cls.with_defaults(1.0, 12, 12)
+        overrides = (
+            {"backlash_mode": "working_circumferential"}
+            if self.key == "spur" else {}
+        )
+        return self.params_cls.with_defaults(1.0, 12, 12, **overrides)
 
 
 KINDS: dict[str, GearKind] = {
@@ -564,7 +577,13 @@ class App(ttk.Frame):
         if base is None or not isinstance(base, previous.params_cls):
             base, previous = kind.fallback(), kind
         first, second = previous.counts(base)
-        self.set_params(kind.params_cls.with_defaults(base.module, first, second))
+        overrides = (
+            {"backlash_mode": "working_circumferential"}
+            if kind.key == "spur" else {}
+        )
+        self.set_params(
+            kind.params_cls.with_defaults(base.module, first, second, **overrides)
+        )
 
     def _apply_kind(self) -> None:
         """Show the active type's rows and scenes; hide the other type's."""

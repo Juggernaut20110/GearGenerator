@@ -74,8 +74,9 @@ def _expected_pair(
     for z, x, ring in ((z1, x1, False), (z2, x2, internal)):
         r_ref = m_t * z / 2.0
         r_base = r_ref * math.cos(alpha_t)
+        shift_sign = -1.0 if ring else 1.0
         s_n_geometric = module * (
-            math.pi / 2.0 + 2.0 * x * math.tan(alpha_n)
+            math.pi / 2.0 + shift_sign * 2.0 * x * math.tan(alpha_n)
         )
         s_t_geometric = s_n_geometric / cos_beta
         s_t_actual = s_t_geometric - backlash / 2.0

@@ -632,11 +632,15 @@ supported, with the internal ring using its explicit tooth-space geometry;
 straight and helical pairs are supported with the repository's external
 opposite-hand and internal same-hand conventions.
 
-Backlash is the user-facing circular backlash at the applicable reference
-pitch circle. It is subtracted once from the pair by splitting it between the
-two member thicknesses; it is not added to the centre distance. This deliberate
-tooth-thinning allowance is kept separate from the geometric tooth thickness
-created by profile shift.
+Spur backlash is an explicit ISO-terminology input. `backlash_mode=
+"legacy_reference"` preserves the old reference-circle tooth-thinning policy;
+`"working_circumferential"` requests `j_wt` at the actual working pitch
+circles; and `"normal"` requests normal-base `j_bn`. The working mode solves
+the member reference-circle allowances from `a_w`, `alpha_wt`, and each
+member's `r_w/r` ratio, rather than treating a reference-circle subtraction as
+working backlash. The 50/50 split is a configurable default, not an ISO
+requirement. Profile shift and geometric tooth thickness remain separate from
+the deliberate manufactured/backlash allowance.
 
 Above the base circle the flank is an analytical involute. The default
 `root_geometry="legacy"` mode retains the existing radial-below-base and
@@ -831,12 +835,16 @@ carrier held: ring / sun     -2.5000
 
 ## Backlash
 
-For spur, bevel and internal gears, `--backlash 0.1` is a circular backlash in
-millimetres at the applicable pitch circle. For hypoids it has a deliberately
-different, explicit convention: `--backlash 0.2` is the ISO outer transverse
-backlash `j_et2`, measured at the wheel outer pitch cone. The hypoid solver
-converts that one pair-level input to mean transverse and mean normal backlash
-using the two members' own spiral angles.
+For spur gears, `--backlash` has an explicit `--backlash-mode` definition:
+`legacy_reference` preserves old JSON/API behavior as a reference-circle
+allowance, `working_circumferential` requests ISO `j_wt` at the actual working
+pitch circles, and `normal` requests normal-base `j_bn`. The working mode is
+the recommended new choice when profile shift or a modified working distance
+is present. Bevel and internal legacy callers retain their existing
+type-specific conventions. For hypoids, `--backlash 0.2` remains the ISO outer
+transverse backlash `j_et2` at the wheel outer pitch cone; the hypoid solver
+converts that to mean transverse and mean normal backlash using the members'
+spiral angles.
 
 **Taken off the tooth, not added to the centre distance.** Both are real ways to
 build backlash into a pair and only one of them leaves the rest of the model
@@ -844,15 +852,21 @@ alone: thinning the tooth keeps the centre distance, the mounting distances and
 the cone angles at their nominal values, so every other number in the report
 still means what it said.
 
-**Split evenly, so the mesh sees it once.** Each member loses `backlash / 2` of
-arc thickness. The failure worth guarding against is applying the whole figure to
-each member — which doubles the play while every single-member check still
-passes — so the test states it as a property of the *pair*: the two tooth
-thicknesses at the pitch circles plus the backlash come to exactly one circular
-pitch. An internal pair reaches the same place from the other side, because a
-ring gear's `psi0` is built from its **space** width: the backlash widens the
-ring's space rather than thinning its tooth directly, and the pair sum is what
-says the two descriptions agree.
+**Split explicitly, so the mesh sees it once.** The compatibility
+`legacy_reference` mode removes `backlash / 2` from each reference-circle tooth
+width. The standards-oriented working mode allocates the requested `j_wt`
+between the members (default 50/50, configurable) and solves the corresponding
+reference-circle allowances from each member's actual `r_w/r` ratio. It then
+checks the pair at the working pitch circles, where the two tooth widths plus
+`j_wt` equal one working circular pitch. An internal pair reaches the same
+closure from the other side because a ring gear's `psi0` is built from its
+**space** width; its physical profile-shift sign is also opposite to the
+external tooth-thickness sign.
+
+The spur report exposes the requested definition and resulting `j_t`, `j_wt`,
+`j_bt`, `j_bn`, `j_wn`, `j_r`, angular backlash, working tooth thickness, and
+member allowances. Profile shift, generated tooth thickness, manufactured
+tooth thickness, and backlash remain separate quantities.
 
 **On a bevel set it is quoted at the outer end**, like the module it is measured
 against. Every inner section is a uniform scaling of the outer one by

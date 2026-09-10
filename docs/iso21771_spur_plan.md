@@ -78,9 +78,9 @@ The ISO symbol `z` is signed for internal gears in ISO 21771-1. In the table,
 | `h_fP*` | `basic_rack_dedendum_factor` property | Derived as `h_aP* + c_P*`; default `1.25`. |
 | `c_P*` | `basic_rack_clearance_factor` | Explicit field, default `0.25`, used to derive the rack dedendum. |
 | `rho_fP*` | `basic_rack_root_radius_factor` | Explicit field, default `0.38`; used by external straight rack-generated mode only. It is distinct from legacy `fillet_factor`. |
-| `s` / tooth thickness | `reference_tooth_thickness` | Stored as derived per-member transverse thickness after the compatibility backlash split. |
-| `s_n` normal tooth thickness | `normal_tooth_thickness` | Stored derived quantity, with normal/transverse conversion explicit. |
-| `s_t` transverse tooth thickness | `reference_tooth_thickness` | Stored derived quantity including profile shift and the existing symmetric backlash policy. |
+| `s` / tooth thickness | `reference_tooth_thickness`, `working_tooth_thickness` | Derived per-member transverse thicknesses at the reference and working circles; backlash definition is explicit. |
+| `s_n` normal tooth thickness | `normal_tooth_thickness`, `working_normal_tooth_thickness` | Derived reference/working quantities, with normal/transverse conversion explicit. |
+| `s_t` transverse tooth thickness | `reference_tooth_thickness`, `working_tooth_thickness` | Derived quantities including profile shift and the selected backlash allowance. |
 | reference circle/cylinder | `member.reference_r` | Fixed by `m_t` and tooth count, not by working centre distance. |
 | base circle/cylinder | `member.base_r` | Keep as the involute base circle. |
 | tip circle/cylinder | `member.tip_r` | Keep as the tooth-end circle, with directional labels for an internal gear. |
@@ -384,32 +384,76 @@ the nominal root circle, so it must not overwrite `r_f` when reporting nominal
 ISO dimensions. The physical formula above agrees with the current defaults and
 with the independently checked internal sign behavior at `x2=0`.
 
-### Reference tooth thickness
+### Reference and working tooth thickness
 
-The proposed ideal reference thickness for either member in a transverse
-section is:
+ISO 21771-1:2024 §5.6 distinguishes circumferential backlash at the reference
+circle (`j_t`) from circumferential backlash at the working pitch circle
+(`j_wt`), and also distinguishes transverse, normal, radial, and angular
+forms. ISO 21771-2:2025 Clause 13 covers the corresponding parallel-axis
+calculation cases, including §13.3, §13.4, and §13.7.1--§13.7.6.
+
+The ideal external reference thickness in a transverse section is:
 
 ```text
-s_n,i = M * (pi/2 + 2*x_i*tan(alpha_n))
+s_n,i = m_n * (pi/2 + 2*x_i*tan(alpha_n))
 s_t,i = s_n,i / cos(beta)
       = m_t * (pi/2 + 2*x_i*tan(alpha_n))
 ```
 
-The repository's current backlash input is a circular/transverse allowance at
-the reference circle. For compatibility, the first implementation continues
-to subtract half from each member:
+For the positive-radius internal ring convention used by this repository, a
+positive ring shift removes material from the inward tooth addendum and the
+ring tooth thickness uses the opposite `x_2` sign:
 
 ```text
-s_t,i,actual = s_t,i - backlash/2
-s_n,i,actual = s_t,i,actual*cos(beta)
+s_t,ring = m_t * (pi/2 - 2*x_2*tan(alpha_n))
 ```
 
-This is an implementation policy, not a claim that every ISO backlash and
-tolerance case is represented. A later tolerance API should distinguish
-reference circumferential backlash, transverse backlash, normal backlash, and
-working backlash. The internal ring space is formed from the complement of its
-transverse tooth thickness at the reference circle, with the same compatibility
-backlash policy.
+This is required for equal internal shifts to preserve the nominal working
+condition; it is not a mechanical reuse of the external member equation. The
+ring involute is still generated from the complement of its tooth thickness,
+so its reference space is `pi*m_t - s_t,ring`.
+
+The JSON/API field `backlash` is now interpreted through one explicit
+`backlash_mode`:
+
+```text
+legacy_reference         input is the historical reference-circle allowance;
+                         subtract backlash/2 from each reference tooth width
+working_circumferential  input is j_wt at the actual working pitch circles
+normal                   input is normal-base j_bn
+```
+
+The legacy mode remains the default for old JSON and deterministic API
+compatibility. It is not relabelled as working backlash. For the two
+standards-oriented modes, the requested working circumferential allowance is
+allocated between the two members and solved back to their reference-circle
+thicknesses:
+
+```text
+Delta_s_wt,1 = allocation * j_wt
+Delta_s_wt,2 = (1-allocation) * j_wt
+Delta_s_t,i  = Delta_s_wt,i * r_i/r_wi
+```
+
+The default allocation is 0.5 only as an explicit implementation default; ISO
+does not require an equal split. The resulting working tooth widths are then
+evaluated independently from the involute angular law and the pair closes on
+the actual working circular pitch:
+
+```text
+j_wt = p_wt - s_wt,1 - s_wt,2
+```
+
+For `normal`, the current implementation converts `j_bn` through the working
+transverse pressure angle and base-cylinder helix angle before applying the
+same solve. The report exposes both the requested definition and the derived
+`j_t`, `j_wt`, `j_bt`, `j_bn`, `j_wn`, `j_r`, and per-member angular quantities.
+The exact published ISO 21771-2 equation pages were not available in the
+public preview used for this review; these conversion equations are therefore
+documented as the repository's analytical geometry derivation from the ISO
+definitions, not as a claim of complete ISO 21771-2 equation-by-equation
+conformance. The internal ring space continues to be formed from the
+complement of its transverse tooth thickness.
 
 The base-circle half-angle constants then become, for an external member,
 
@@ -423,8 +467,9 @@ and, for the internal ring,
 psi0 = (pi*m_t - s_t,actual)/(2*r_2) + inv(alpha_t)
 ```
 
-The existing `psi0` construction is therefore correct at zero shift and must be
-extended rather than replaced by a new arbitrary angular offset.
+The existing `psi0` construction is therefore retained, but it consumes the
+actual member tooth/space thickness produced by the selected backlash mode;
+the working backlash is not created by moving `psi0` after the fact.
 
 ### Working pressure angle and distance
 

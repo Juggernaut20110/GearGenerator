@@ -24,7 +24,12 @@ from .geometry import (
     tooth_space_section,
     undercut_limit,
 )
-from .params import ROOT_GEOMETRY_MODES, TIP_ALTERATION_MODES, SpurSetParams
+from .params import (
+    BACKLASH_MODES,
+    ROOT_GEOMETRY_MODES,
+    TIP_ALTERATION_MODES,
+    SpurSetParams,
+)
 
 __all__ = ["Issue", "ValidationResult", "validate"]
 
@@ -125,6 +130,15 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
         r.error("hub_thickness", "cannot be negative")
     if _is_finite(p.backlash) and p.backlash < 0:
         r.error("backlash", "cannot be negative")
+    if p.backlash_mode not in BACKLASH_MODES:
+        r.error(
+            "backlash_mode",
+            "must be one of " + ", ".join(BACKLASH_MODES),
+        )
+    if not _is_finite(p.backlash_allocation):
+        r.error("backlash_allocation", "must be finite")
+    elif not 0.0 <= p.backlash_allocation <= 1.0:
+        r.error("backlash_allocation", "must be between 0 and 1")
     if _is_finite(p.fillet_factor) and p.fillet_factor < 0:
         r.error("fillet_factor", "cannot be negative")
     if not _is_finite(p.profile_shift_1):
@@ -321,12 +335,46 @@ def validate(p: SpurSetParams) -> ValidationResult:
 
     # --- backlash ----------------------------------------------------------
     if p.backlash > MAX_BACKLASH_FRACTION * geo.circular_pitch:
+        definition = {
+            "legacy_reference": "reference-circle j_t",
+            "working_circumferential": "working-circle j_wt",
+            "normal": "normal-base j_bn",
+        }.get(p.backlash_mode, p.backlash_mode)
         result.warn(
             "backlash",
             f"{p.backlash:.3f} mm is "
             f"{p.backlash / geo.circular_pitch:.1%} of the circular pitch "
-            f"({geo.circular_pitch:.2f} mm); each member loses half of it off "
-            "its tooth thickness",
+            f"({geo.circular_pitch:.2f} mm) as {definition}",
+        )
+
+    # Pair closure is checked from the actual member widths, rather than from
+    # the input label. This catches an impossible thickness or a future change
+    # that accidentally applies a working request at the reference circle.
+    for field, value in (
+        ("reference_circumferential_backlash", geo.j_t),
+        ("working_circumferential_backlash", geo.j_wt),
+        ("transverse_backlash", geo.j_bt),
+        ("normal_base_backlash", geo.j_bn),
+        ("working_normal_backlash", geo.j_wn),
+        ("radial_backlash", geo.j_r),
+    ):
+        if not _is_finite(value):
+            result.error(field, "is not finite")
+    if p.backlash_mode == "working_circumferential" and not math.isclose(
+        geo.j_wt, p.backlash, rel_tol=0.0, abs_tol=1e-9
+    ):
+        result.error(
+            "backlash",
+            f"working tooth-space closure gives j_wt={geo.j_wt:.6g} mm, "
+            f"not requested {p.backlash:.6g} mm",
+        )
+    if p.backlash_mode == "normal" and not math.isclose(
+        geo.j_bn, p.backlash, rel_tol=0.0, abs_tol=1e-9
+    ):
+        result.error(
+            "backlash",
+            f"normal-base closure gives j_bn={geo.j_bn:.6g} mm, "
+            f"not requested {p.backlash:.6g} mm",
         )
 
     # --- undercut ----------------------------------------------------------
@@ -601,6 +649,12 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
                 field,
                 f"{member.name}'s reference tooth thickness is "
                 f"{member.reference_tooth_thickness:.6g} mm; it must be positive",
+            )
+        if member.working_tooth_thickness <= GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"{member.name}'s working tooth thickness is "
+                f"{member.working_tooth_thickness:.6g} mm; it must be positive",
             )
 
         # These are warnings, not arbitrary x limits.  A profile shift that

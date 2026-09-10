@@ -23,7 +23,7 @@ from .validate import validate
 
 FLAGS = (
     "alpha", "beta", "face_width", "bore", "hub", "member", "backlash",
-    "internal", "rim", "x1", "x2", "tip_alteration_mode",
+    "backlash_mode", "backlash_allocation", "internal", "rim", "x1", "x2", "tip_alteration_mode",
     "tip_alteration_coefficient",
 )
 
@@ -34,7 +34,22 @@ def add_arguments(ap) -> None:
     )
     ap.add_argument(
         "--backlash", type=float, default=0.0,
-        help="backlash allowance, mm (hypoid: outer transverse at wheel outer cone)",
+        help="spur backlash input; meaning is selected by --backlash-mode, mm",
+    )
+    ap.add_argument(
+        "--backlash-mode",
+        choices=("legacy_reference", "working_circumferential", "normal"),
+        default="legacy_reference",
+        help=(
+            "backlash definition: reference-circle compatibility j_t, "
+            "working circumferential j_wt, or normal-base j_bn"
+        ),
+    )
+    ap.add_argument(
+        "--backlash-allocation",
+        type=float,
+        default=0.5,
+        help="fraction of working backlash assigned to the pinion (default 0.5)",
     )
     ap.add_argument(
         "--x1", type=float, default=0.0,
@@ -71,6 +86,8 @@ def params_from_args(args) -> SpurSetParams:
         "helix_angle": args.beta,
         "hand": args.hand,
         "backlash": args.backlash,
+        "backlash_mode": args.backlash_mode,
+        "backlash_allocation": args.backlash_allocation,
         "internal": args.internal,
         "profile_shift_1": args.x1,
         "profile_shift_2": args.x2,
@@ -113,7 +130,9 @@ def print_report(geo) -> None:
     print(_row("hub thickness", f(p.hub_thickness), "", "mm"))
     if p.internal:
         print(_row("ring rim thickness", f(p.rim_thickness), "", "mm"))
-    print(_row("backlash", f(p.backlash), "", "mm"))
+    print(_row("backlash input", f(p.backlash), "", "mm"))
+    print(_row("backlash definition", geo.backlash_mode))
+    print(_row("backlash allocation to pinion", f(geo.backlash_allocation)))
     print(_row("root geometry", p.root_geometry))
 
     print("\nREFERENCE GEOMETRY (SET)")
@@ -163,6 +182,20 @@ def print_report(geo) -> None:
         )
     )
     print(_row("minimum tip clearance", f(geo.minimum_tip_clearance), "", "mm"))
+    print(_row("reference circumferential backlash j_t", f(geo.j_t), "", "mm"))
+    print(_row("working circumferential backlash j_wt", f(geo.j_wt), "", "mm"))
+    print(_row("transverse backlash j_bt", f(geo.j_bt), "", "mm"))
+    print(_row("normal-base backlash j_bn", f(geo.j_bn), "", "mm"))
+    print(_row("working normal backlash j_wn", f(geo.j_wn), "", "mm"))
+    print(_row("radial backlash j_r", f(geo.j_r), "", "mm"))
+    print(
+        _row(
+            "angular backlash phi_j1 / phi_j2",
+            f(geo.angular_backlash_1),
+            f(geo.angular_backlash_2),
+            "rad",
+        )
+    )
 
     second = "RING" if p.internal else "GEAR"
     print(f"\nMEMBER GEOMETRY (MEMBERS){'':<12}{'PINION':>14}{second:>14}")
@@ -189,6 +222,38 @@ def print_report(geo) -> None:
             "normal tooth thickness s_n",
             f(a.normal_tooth_thickness),
             f(b.normal_tooth_thickness),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "working tooth thickness s_wt",
+            f(a.working_tooth_thickness),
+            f(b.working_tooth_thickness),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "working normal tooth thickness s_wn",
+            f(a.working_normal_tooth_thickness),
+            f(b.working_normal_tooth_thickness),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "reference tooth-thickness allowance",
+            f(a.reference_tooth_thickness_allowance),
+            f(b.reference_tooth_thickness_allowance),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "working tooth-thickness allowance",
+            f(a.working_tooth_thickness_allowance),
+            f(b.working_tooth_thickness_allowance),
             "mm",
         )
     )

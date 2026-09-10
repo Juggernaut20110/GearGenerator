@@ -42,6 +42,7 @@ BASIC_RACK_CLEARANCE_FACTOR = 0.25     # c_P*
 BASIC_RACK_ROOT_RADIUS_FACTOR = 0.38   # rho_fP*
 ROOT_GEOMETRY_MODES = ("legacy", "rack_generated")
 TIP_ALTERATION_MODES = ("legacy", "iso_clearance", "explicit")
+BACKLASH_MODES = ("legacy_reference", "working_circumferential", "normal")
 
 
 @dataclass(frozen=True)
@@ -86,12 +87,11 @@ class SpurSetParams(JsonParams):
     # Not exposed in the GUI, but part of the geometry.
     fillet_factor: float = 0.2  # root fillet radius as a multiple of module
 
-    # Circular backlash, mm, measured at the pitch circle. Taken off the
-    # **tooth** rather than added to the centre distance, which is the
-    # convention that keeps the centre distance nominal, and split evenly -
-    # each member loses half of it - so the mesh sees the stated number once.
-    # Zero leaves the flanks exactly tangent at the pitch point, which is what
-    # `sw.assembly_common.check_interference` is written to expect.
+    # Backlash input.  The meaning is explicit in `backlash_mode` below.
+    # `legacy_reference` preserves the historical JSON/API behavior: the
+    # requested j_t is removed from the two reference-circle tooth widths,
+    # half from each member.  It remains the default so old presets are
+    # deterministic and do not silently change geometry.
     backlash: float = 0.0
 
     # Rim standing outside a ring gear's root circle, mm. Ignored for an
@@ -131,6 +131,16 @@ class SpurSetParams(JsonParams):
     # silent default: the helical transverse projection and internal cutter
     # have separate generation geometry that is not yet verified here.
     root_geometry: str = "legacy"
+
+    # ISO 21771-1:2024 §5.6 / ISO 21771-2:2025 Clause 13 terminology.  The
+    # `normal` mode accepts normal-base backlash j_bn; the conversion to the
+    # working circumferential quantity is performed only after alpha_wt and
+    # the working helix geometry are known.  `backlash_allocation` is the
+    # fraction assigned to member 1 (the pinion) in the two-member tooth
+    # thickness solution.  0.5 is an explicit equal split, not an ISO
+    # requirement.
+    backlash_mode: str = "legacy_reference"
+    backlash_allocation: float = 0.5
 
     # --- radian and transverse accessors, so downstream code never repeats them ---
 
@@ -250,6 +260,11 @@ class SpurSetParams(JsonParams):
         # file opts into the explicitly named compatibility path.
         if "tip_alteration_mode" not in migrated:
             migrated["tip_alteration_mode"] = "legacy"
+        # A pre-ISO-21771-2 backlash field was a reference-circle allowance.
+        # Keep that meaning when loading old JSON rather than interpreting it
+        # as working circumferential backlash.
+        if "backlash_mode" not in migrated:
+            migrated["backlash_mode"] = "legacy_reference"
         return migrated
 
     @classmethod

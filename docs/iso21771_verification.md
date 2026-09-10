@@ -34,6 +34,12 @@ and independent radial/angular SOI coincidence checks.
 Mesh tests also verify the working-distance translation, external versus
 internal phase target, and the pair-level backlash split.
 
+`tests/test_spur_iso21771_2.py` independently recomputes working tooth widths
+for unshifted and shifted external spur, external helical, internal spur, and
+internal helical pairs. It verifies requested `j_wt`, explicit allocation,
+normal-base conversion, internal tooth/space complement behavior, and the
+distinction between legacy reference and working backlash.
+
 ## Equations and reference source
 
 The equations follow the terminology and implementation equations recorded in
@@ -55,14 +61,77 @@ inv(alpha_wt) = inv(alpha_t) + 2 X tan(alpha_n) / q
 a_w           = a cos(alpha_t) / cos(alpha_wt)
 r_wi          = r_bi / cos(alpha_wt)
 
-s_ni          = m_n (pi/2 + 2 x_i tan(alpha_n))
-s_ti          = s_ni / cos(beta) - backlash/2
+s_ni          = m_n (pi/2 + 2 x_i tan(alpha_n))       [external]
+s_t2,ring     = m_t (pi/2 - 2 x_2 tan(alpha_n))        [internal convention]
+s_ti,legacy   = s_ti - backlash/2                       [legacy_reference]
+
+Delta_s_wt,1  = allocation * j_wt
+Delta_s_wt,2  = (1-allocation) * j_wt
+Delta_s_t,i   = Delta_s_wt,i * r_i/r_wi
+s_wt           = p_wt - (member tooth/space complement)
+j_wt           = p_wt - s_wt,1 - s_wt,2
 
 epsilon_alpha = (B1 +/- B2 +/- a_w sin(alpha_wt)) /
                 (pi m_t cos(alpha_t))
 epsilon_beta  = face_width |sin(beta)| / (pi m_n)
 epsilon_gamma = epsilon_alpha + epsilon_beta
 ```
+
+### Backlash definitions and implementation boundary
+
+The primary terminology source is ISO 21771-1:2024 §5.6:
+
+- §5.6.2: transverse backlash `j_bt`;
+- §5.6.3: circumferential backlash, including reference `j_t` and working
+  circumferential `j_wt` quantities;
+- §5.6.4: normal/base backlash `j_bn` and the working normal quantity `j_wn`;
+- §5.6.5: radial backlash `j_r`;
+- §5.6.6: angular backlash `phi_j`.
+
+The published target for tooth-thickness/backlash calculation is
+[ISO 21771-2:2025](https://www.iso.org/cms/%20render/live/en/sites/isoorg/contents/data/standard/07/83/78378.html),
+Clause 13: §13.3 axis-related backlash, §13.4 non-datum
+backlash where applicable, and §13.7.1--§13.7.6 for circumferential,
+transverse, normal, axial, radial, and angular expressions. Clause 4.7.16 and
+4.7.17 are the published contents entries for tooth-thickness and space-width
+calculation. The publicly accessible [publisher sample]
+(https://standards.iteh.ai/catalog/standards/iso/861da4f1-daa6-49da-9846-3274d5f3869e/iso-21771-2-2025)
+was used to verify the edition and clause headings; it does not expose the
+full normative equation pages.
+
+The implementation evaluates actual involute tooth widths at `r_w` and sets
+the member reference widths so their working-pitch closure produces the
+requested definition. For `working_circumferential`, the independent identity
+checked by the tests is:
+
+```text
+s_wt,external = 2*r_w*(psi0 - inv(alpha_wt))
+s_wt,internal = 2*r_w*(pi/z - (psi0 - inv(alpha_wt)))
+j_wt          = p_wt - s_wt,1 - s_wt,2
+```
+
+The verified ISO 21771-1 equations used for the derived conversions are
+§5.6.2 Eq. (123), `j_bt = j_wt cos(alpha_wt)`; §5.6.3 Eq. (124),
+`j_wt = j_bn/(cos(alpha_wt) cos(beta_b))`; §5.6.4 Eq. (126),
+`j_bn = j_bt cos(beta_b)`; and §5.6.5 Eq. (127),
+`j_r ~= j_wt/(2 tan(alpha_wt))`. The working normal value `j_wn` is
+calculated from the working normal pitch and the two working normal tooth
+thicknesses, giving `j_wn = j_wt cos(beta_w)` for this unmodified pair model.
+Angular backlash follows §5.6.6 from the working circumferential arc and each
+member's working pitch radius.
+
+For `normal`, the input is explicitly `j_bn`; the implementation derives the
+working circumferential target through the transverse and base-cylinder
+projections and verifies the resulting `j_bn` independently. `j_t` remains a
+reported resulting reference-circle quantity and can differ from the input in
+shifted geometry because profile shift changes the natural reference tooth
+width sum.
+
+The published ISO 21771-2 formula pages were not present in the public sample
+preview available for this review. Therefore the clause references above are
+used for terminology and calculation scope, while the conversion equations
+implemented here are documented as analytical derivations from those
+definitions. This change does not claim full ISO 21771-2 conformance.
 
 ### Pair-level tip alteration and clearance
 
@@ -106,10 +175,10 @@ The plus/minus branch in the contact length is external
 positive-radius internal convention from the plan, so the ring tip is inward
 and its root is outward.
 
-Working tooth thickness is not a stored production field. Where checked, the
-test derives it from the reported working radius and `psi0` using the
-involute angular law, with the complementary ring-space expression for an
-internal member.
+Working tooth thickness is now exposed as a derived production quantity. The
+independent tests still derive it from the reported working radius and `psi0`
+using the involute angular law, with the complementary ring-space expression
+for an internal member.
 
 ### Active profile, path of contact, and generated-root references
 
@@ -225,9 +294,12 @@ from being realized. This implementation validates the resulting pair
 clearances, addendum, active form, and tip land, but does not claim a complete
 internal tip-to-tip interference analysis or manufacturing feasibility proof.
 
-The tests verify backlash as the current reference-circle tooth-thinning policy
-and verify the phase/working-distance algebra. They do not replace a physical
-tooth-contact analysis, elastic backlash calculation, or a SOLIDWORKS
-interference study. Sampled profiles are checked against their analytical
-circles and involute transition, but CAD loft tolerances and cutter
-manufacturability still require downstream validation.
+The tests verify the legacy reference-circle, working-circumferential, and
+normal-base input paths from analytical member widths, and verify the
+phase/working-distance algebra. They do not replace a physical tooth-contact
+analysis, elastic backlash calculation, or a SOLIDWORKS interference study.
+Sampled profiles are checked against their analytical circles and involute
+transition, but CAD loft tolerances and cutter manufacturability still require
+downstream validation. The publicly available ISO 21771-2:2025 preview did not
+expose its full equation pages, so the implemented conversion equations are
+not claimed as a complete equation-by-equation ISO conformance implementation.
