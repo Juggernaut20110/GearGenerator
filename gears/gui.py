@@ -19,6 +19,7 @@ Two things worth knowing about the wiring:
 from __future__ import annotations
 
 import dataclasses
+import math
 import queue
 import threading
 import tkinter as tk
@@ -43,6 +44,7 @@ from .spur.geometry import compute_set as spur_compute_set
 from .spur.params import SpurSetParams
 from .spur.validate import validate as spur_validate
 from .preview import Scene, View, draw_scale_bar, draw_scene, write_dxf
+from .preview3d import Camera, Scene3D, draw_scene3d, build_scene as build_scene3d
 from .validate import ValidationResult
 
 REFRESH_DELAY_MS = 120
@@ -522,17 +524,22 @@ class App(ttk.Frame):
         self.kind_key = tk.StringVar(value="bevel")
         self.member = tk.StringVar(value="pinion")
         self.scene_key = tk.StringVar(value=KINDS["bevel"].default_scene)
+        self.preview_mode = tk.StringVar(value="2d")
+        self.mesh_position = tk.DoubleVar(value=0.0)
 
         self._loading = False           # suppress refresh while writing Entries
         self._pending_refresh: str | None = None
         self._params = None
         self._geo = None
         self._scene: Scene | None = None
+        self._scene3d: Scene3D | None = None
         self._validation = ValidationResult()
 
         self._zoom = 1.0
         self._pan = [0.0, 0.0]
-        self._drag: tuple[float, float] | None = None
+        self._camera = Camera()
+        self._camera_needs_fit = True
+        self._drag: tuple[float, float, int] | None = None
 
         self._build_queue: queue.Queue = queue.Queue()
         self._build_thread: threading.Thread | None = None
@@ -601,24 +608,17 @@ class App(ttk.Frame):
                 row[0].configure(text=field.label)
                 row[2].configure(text=field.unit)
 
-        for button in self.member_buttons.values():
-            button.pack_forget()
-        for value in kind.members:
-            self.member_buttons[value].pack(side="left", padx=(4, 0))
         if self.member.get() not in kind.members:
             self.member.set(kind.members[0])
 
         wanted = [key for key, _ in kind.preview.SCENE_LABELS]
-        for button in self.scene_buttons.values():
-            button.pack_forget()
-        for key in wanted:
-            self.scene_buttons[key].pack(side="left", padx=(4, 0))
         if self.scene_key.get() not in wanted:
             self.scene_key.set(kind.default_scene)
 
         # Remembered so the *next* switch can read the counts out of the params
         # object this one leaves behind, whose field names are this type's.
         self._previous_kind = kind
+        self._apply_preview_mode()
 
     # -- widgets ------------------------------------------------------------
 
@@ -752,6 +752,16 @@ class App(ttk.Frame):
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
 
+        ttk.Label(bar, text="Preview").pack(side="left")
+        self.preview_mode_buttons: dict[str, ttk.Radiobutton] = {}
+        for key, label in (("3d", "3D Assembly"), ("2d", "2D Detail")):
+            self.preview_mode_buttons[key] = ttk.Radiobutton(
+                bar, text=label, value=key, variable=self.preview_mode,
+                command=self._on_preview_mode_change,
+            )
+
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
+
         ttk.Label(bar, text="View").pack(side="left")
         # One button per scene of either type; `_apply_kind` packs the right set.
         self.scene_buttons: dict[str, ttk.Radiobutton] = {}
@@ -764,6 +774,22 @@ class App(ttk.Frame):
                     command=self._on_view_change,
                 )
 
+        self.camera_buttons: dict[str, ttk.Button] = {}
+        for key, label in (
+            ("front", "Front"), ("top", "Top"), ("right", "Right"),
+            ("iso", "Iso"),
+        ):
+            self.camera_buttons[key] = ttk.Button(
+                bar, text=label, width=max(4, len(label) + 1),
+                command=lambda view=key: self._set_camera_view(view),
+            )
+
+        self.mesh_label = ttk.Label(bar, text="Mesh position")
+        self.mesh_scale = ttk.Scale(
+            bar, from_=0.0, to=1.0, variable=self.mesh_position,
+            command=self._on_mesh_position, length=100,
+        )
+
         self.build_button = ttk.Button(
             bar, text="Build in SOLIDWORKS", command=self.build_in_solidworks
         )
@@ -774,7 +800,8 @@ class App(ttk.Frame):
         ttk.Button(bar, text="Export DXF", command=self.export_dxf).pack(
             side="right", padx=(0, 6)
         )
-        ttk.Button(bar, text="Fit", command=self.fit_view).pack(side="right", padx=(0, 6))
+        self.fit_button = ttk.Button(bar, text="Fit", command=self.fit_view)
+        self.fit_button.pack(side="right", padx=(0, 6))
 
         self.scene_title = ttk.Label(parent, text="", anchor="w", foreground="#444444")
         self.scene_title.grid(row=1, column=0, sticky="ew", pady=(6, 2))
@@ -789,6 +816,12 @@ class App(ttk.Frame):
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_drag", None))
+        self.canvas.bind("<ButtonPress-3>", self._on_drag_start)
+        self.canvas.bind("<B3-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-3>", lambda _e: setattr(self, "_drag", None))
+        self.canvas.bind("<ButtonPress-2>", self._on_drag_start)
+        self.canvas.bind("<B2-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-2>", lambda _e: setattr(self, "_drag", None))
         self.canvas.bind("<Double-Button-1>", lambda _e: self.fit_view())
         self.canvas.bind("<MouseWheel>", self._on_wheel)
 
@@ -1103,13 +1136,56 @@ class App(ttk.Frame):
 
     # -- preview ------------------------------------------------------------
 
+    def _apply_preview_mode(self) -> None:
+        """Show either the established 2D controls or the assembly controls."""
+        if not hasattr(self, "member_buttons"):
+            return
+        for button in self.member_buttons.values():
+            button.pack_forget()
+        for button in self.scene_buttons.values():
+            button.pack_forget()
+        for button in self.preview_mode_buttons.values():
+            button.pack_forget()
+        for button in self.camera_buttons.values():
+            button.pack_forget()
+        self.mesh_label.pack_forget()
+        self.mesh_scale.pack_forget()
+        self.fit_button.pack_forget()
+
+        # The mode selector remains visible in both modes.
+        self.preview_mode_buttons["3d"].pack(side="left", padx=(4, 0))
+        self.preview_mode_buttons["2d"].pack(side="left", padx=(4, 0))
+
+        if self.preview_mode.get() == "3d":
+            for button in self.camera_buttons.values():
+                button.pack(side="left", padx=(3, 0))
+            self.mesh_label.pack(side="left", padx=(10, 3))
+            self.mesh_scale.pack(side="left", padx=(0, 4))
+            self.mesh_scale.state(
+                ["disabled"] if self.kind.key == "planetary" else ["!disabled"]
+            )
+        else:
+            for value in self.kind.members:
+                self.member_buttons[value].pack(side="left", padx=(4, 0))
+            wanted = [key for key, _ in self.kind.preview.SCENE_LABELS]
+            for key in wanted:
+                self.scene_buttons[key].pack(side="left", padx=(4, 0))
+
+        self.fit_button.pack(side="right", padx=(0, 6))
+
+    def _on_preview_mode_change(self) -> None:
+        self._apply_preview_mode()
+        self._refresh_scene(reset_view=True)
+        self._redraw()
+
     def _on_view_change(self) -> None:
         self._refresh_scene(reset_view=True)
         self._redraw()
 
-    def _refresh_scene(self, reset_view: bool) -> None:
+    def _refresh_scene(self, reset_view: bool, refit: bool = True) -> None:
         if self._geo is None:
             self._scene = None
+            self._scene3d = None
             return
         try:
             self._scene = self.kind.preview.build_scene(
@@ -1118,12 +1194,42 @@ class App(ttk.Frame):
         except Exception as exc:                     # unbuildable profile, not a bug
             self._scene = None
             self.scene_title.configure(text=f"preview unavailable: {exc}")
-            return
-        self.scene_title.configure(text=self._scene.title)
+
+        if self.preview_mode.get() == "3d":
+            try:
+                first, _second = self.kind.counts(self._params)
+                mesh_angle = (
+                    0.0 if self.kind.key == "planetary"
+                    else self.mesh_position.get() * math.tau / first
+                )
+                self._scene3d = build_scene3d(self._geo, mesh_position=mesh_angle)
+            except Exception as exc:                 # presentation boundary
+                self._scene3d = None
+                self.scene_title.configure(text=f"3D preview unavailable: {exc}")
+            else:
+                self.scene_title.configure(text=self._scene3d.title)
+        else:
+            self._scene3d = None
+            if self._scene is not None:
+                self.scene_title.configure(text=self._scene.title)
+
         if reset_view:
             self._zoom, self._pan = 1.0, [0.0, 0.0]
+            self._camera.set_view("iso")
+        if refit and self.preview_mode.get() == "3d":
+            self._camera_needs_fit = True
 
     def fit_view(self) -> None:
+        if self.preview_mode.get() == "3d":
+            if self._scene3d is not None:
+                self._camera.fit_scene(
+                    self._scene3d,
+                    self.canvas.winfo_width(),
+                    self.canvas.winfo_height(),
+                )
+                self._camera_needs_fit = False
+            self._redraw()
+            return
         self._zoom, self._pan = 1.0, [0.0, 0.0]
         self._redraw()
 
@@ -1140,6 +1246,20 @@ class App(ttk.Frame):
         if width <= 1 or height <= 1:
             return
 
+        if self.preview_mode.get() == "3d":
+            if self._scene3d is None:
+                self.canvas.create_text(
+                    width / 2, height / 2,
+                    text="no 3D preview - fix the inputs listed under Validation",
+                    fill="#888888",
+                )
+                return
+            if self._camera_needs_fit:
+                self._camera.fit_scene(self._scene3d, width, height)
+                self._camera_needs_fit = False
+            draw_scene3d(self.canvas, self._scene3d, self._camera, width, height)
+            return
+
         if self._scene is None:
             self.canvas.create_text(
                 width / 2, height / 2,
@@ -1153,19 +1273,38 @@ class App(ttk.Frame):
         draw_scale_bar(self.canvas, view, width, height)
 
     def _on_drag_start(self, event) -> None:
-        self._drag = (event.x, event.y)
+        self._drag = (event.x, event.y, getattr(event, "num", 1))
 
     def _on_drag(self, event) -> None:
         if self._drag is None:
             return
-        x0, y0 = self._drag
+        x0, y0, button = self._drag
+        if self.preview_mode.get() == "3d":
+            dx, dy = event.x - x0, event.y - y0
+            if button == 1:
+                self._camera.orbit(dx, dy)
+            else:
+                self._camera.pan(dx, dy)
+            self._drag = (event.x, event.y, button)
+            self._redraw()
+            return
         self._pan[0] += event.x - x0
         self._pan[1] += event.y - y0
-        self._drag = (event.x, event.y)
+        self._drag = (event.x, event.y, button)
         self._redraw()
 
     def _on_wheel(self, event) -> None:
         """Zoom about the cursor, so the point under it stays put."""
+        if self.preview_mode.get() == "3d":
+            if self._scene3d is None:
+                return
+            step = 1.15 ** (event.delta / 120.0 if event.delta else 1.0)
+            self._camera.zoom_at(
+                step, event.x, event.y,
+                self.canvas.winfo_width(), self.canvas.winfo_height(),
+            )
+            self._redraw()
+            return
         if self._scene is None:
             return
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -1179,6 +1318,21 @@ class App(ttk.Frame):
         moved = after.to_canvas(*anchor)
         self._pan[0] += event.x - moved[0]
         self._pan[1] += event.y - moved[1]
+        self._redraw()
+
+    def _set_camera_view(self, view: str) -> None:
+        if self.preview_mode.get() != "3d":
+            return
+        self._camera.set_view(view)
+        self._camera_needs_fit = True
+        self._redraw()
+
+    def _on_mesh_position(self, _value=None) -> None:
+        if self._loading or self.preview_mode.get() != "3d" or self._geo is None:
+            return
+        # This rebuilds only the already-calculated profile scene; compute_set
+        # and validation are deliberately untouched by motion of the slider.
+        self._refresh_scene(reset_view=False, refit=False)
         self._redraw()
 
     # -- files --------------------------------------------------------------
