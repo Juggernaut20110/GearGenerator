@@ -1,0 +1,578 @@
+{
+  "fixtures": [
+    {
+      "derived": {
+        "alpha_n": 0.3490658503988659,
+        "alpha_t": 0.3490658503988659,
+        "beta": 0.0,
+        "circular_pitch": 6.283185307179586,
+        "gear": {
+          "base_r": 37.58770483143634,
+          "beta": -0.0,
+          "internal": false,
+          "reference_r": 40.0,
+          "root_r": 37.5,
+          "tip_r": 42.0,
+          "twist": 0.0,
+          "working_r": 40.0,
+          "z": 40
+        },
+        "pinion": {
+          "base_r": 18.79385241571817,
+          "beta": 0.0,
+          "internal": false,
+          "reference_r": 20.0,
+          "root_r": 17.5,
+          "tip_r": 22.0,
+          "twist": 0.0,
+          "working_r": 20.0,
+          "z": 20
+        },
+        "ratio": 2.0,
+        "reference_centre_distance": 60.0,
+        "transverse_module": 2.0,
+        "whole_depth": 4.5,
+        "working_centre_distance": 60.0,
+        "working_pressure_angle": 0.3490658503988659
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "backlash_allocation": 0.5,
+        "backlash_mode": "legacy_reference",
+        "basic_rack_addendum_factor": 1.0,
+        "basic_rack_clearance_factor": 0.25,
+        "basic_rack_root_radius_factor": 0.38,
+        "bore": 10.0,
+        "face_width": 20.0,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "helix_angle": 0.0,
+        "hub_thickness": 5.0,
+        "internal": false,
+        "module": 2.0,
+        "pressure_angle": 20.0,
+        "profile_shift_1": 0.0,
+        "profile_shift_2": 0.0,
+        "rim_thickness": 5.0,
+        "root_geometry": "legacy",
+        "tip_alteration_coefficient": null,
+        "tip_alteration_mode": "iso_clearance",
+        "working_centre_distance": null,
+        "z1": 20,
+        "z2": 40
+      },
+      "name": "spur_external",
+      "type": "spur",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": []
+      }
+    },
+    {
+      "derived": {
+        "alpha_n": 0.3490658503988659,
+        "alpha_t": 0.36035632401741163,
+        "beta": 0.2617993877991494,
+        "circular_pitch": 6.504832085625636,
+        "gear": {
+          "base_r": 41.657612050755816,
+          "beta": -0.2617993877991494,
+          "internal": false,
+          "reference_r": 44.51687575763357,
+          "root_r": 42.01687575763357,
+          "tip_r": 46.51687575763357,
+          "twist": -0.14614247476951636,
+          "working_r": 44.51687575763357,
+          "z": 43
+        },
+        "pinion": {
+          "base_r": 16.46928848518253,
+          "beta": 0.2617993877991494,
+          "internal": false,
+          "reference_r": 17.59969506697141,
+          "root_r": 15.09969506697141,
+          "tip_r": 19.59969506697141,
+          "twist": 0.36965449500524733,
+          "working_r": 17.59969506697141,
+          "z": 17
+        },
+        "ratio": 2.5294117647058822,
+        "reference_centre_distance": 62.11657082460498,
+        "transverse_module": 2.070552360820166,
+        "whole_depth": 4.5,
+        "working_centre_distance": 62.11657082460498,
+        "working_pressure_angle": 0.36035632401741163
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "backlash_allocation": 0.5,
+        "backlash_mode": "legacy_reference",
+        "basic_rack_addendum_factor": 1.0,
+        "basic_rack_clearance_factor": 0.25,
+        "basic_rack_root_radius_factor": 0.38,
+        "bore": 8.8,
+        "face_width": 24.28,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "helix_angle": 15.0,
+        "hub_thickness": 5.0,
+        "internal": false,
+        "module": 2.0,
+        "pressure_angle": 20.0,
+        "profile_shift_1": 0.0,
+        "profile_shift_2": 0.0,
+        "rim_thickness": 5.0,
+        "root_geometry": "legacy",
+        "tip_alteration_coefficient": null,
+        "tip_alteration_mode": "iso_clearance",
+        "working_centre_distance": null,
+        "z1": 17,
+        "z2": 43
+      },
+      "name": "spur_helical",
+      "type": "spur",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": []
+      }
+    },
+    {
+      "derived": {
+        "alpha_n": 0.3490658503988659,
+        "alpha_t": 0.3490658503988659,
+        "beta": 0.0,
+        "circular_pitch": 6.283185307179586,
+        "gear": {
+          "base_r": 56.381557247154504,
+          "beta": 0.0,
+          "internal": true,
+          "reference_r": 60.0,
+          "root_r": 62.5,
+          "tip_r": 57.96116021094402,
+          "twist": 0.0,
+          "working_r": 59.08737172992003,
+          "z": 60
+        },
+        "pinion": {
+          "base_r": 16.914467174146353,
+          "beta": 0.0,
+          "internal": false,
+          "reference_r": 18.0,
+          "root_r": 16.1,
+          "tip_r": 20.63883978905598,
+          "twist": 0.0,
+          "working_r": 17.72621151897601,
+          "z": 18
+        },
+        "ratio": 3.3333333333333335,
+        "reference_centre_distance": 42.0,
+        "transverse_module": 2.0,
+        "whole_depth": 4.5,
+        "working_centre_distance": 41.36116021094402,
+        "working_pressure_angle": 0.3038002189141681
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "backlash_allocation": 0.5,
+        "backlash_mode": "legacy_reference",
+        "basic_rack_addendum_factor": 1.0,
+        "basic_rack_clearance_factor": 0.25,
+        "basic_rack_root_radius_factor": 0.38,
+        "bore": 9.0,
+        "face_width": 20.0,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "helix_angle": 0.0,
+        "hub_thickness": 5.0,
+        "internal": true,
+        "module": 2.0,
+        "pressure_angle": 20.0,
+        "profile_shift_1": 0.3,
+        "profile_shift_2": 0.0,
+        "rim_thickness": 5.0,
+        "root_geometry": "legacy",
+        "tip_alteration_coefficient": null,
+        "tip_alteration_mode": "iso_clearance",
+        "working_centre_distance": null,
+        "z1": 18,
+        "z2": 60
+      },
+      "name": "spur_internal_profile_shift",
+      "type": "spur",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": [
+          {
+            "field": "internal_tip_to_dedendum",
+            "message": "ISO d_Nf2 < d_Ff2 check is unavailable: this internal member has no independently verified root-form diameter; nominal d_f is not substituted for d_Ff"
+          }
+        ]
+      }
+    },
+    {
+      "derived": {},
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "backlash_allocation": 0.5,
+        "backlash_mode": "legacy_reference",
+        "basic_rack_addendum_factor": 1.0,
+        "basic_rack_clearance_factor": 0.25,
+        "basic_rack_root_radius_factor": 0.38,
+        "bore": 10.0,
+        "face_width": 20.0,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "helix_angle": 0.0,
+        "hub_thickness": 5.0,
+        "internal": false,
+        "module": -1.0,
+        "pressure_angle": 30.0,
+        "profile_shift_1": 0.0,
+        "profile_shift_2": 0.0,
+        "rim_thickness": 5.0,
+        "root_geometry": "legacy",
+        "tip_alteration_coefficient": null,
+        "tip_alteration_mode": "iso_clearance",
+        "working_centre_distance": null,
+        "z1": 3,
+        "z2": 40
+      },
+      "name": "spur_invalid",
+      "type": "spur",
+      "validation": {
+        "advisories": [],
+        "errors": [
+          {
+            "field": "module",
+            "message": "must be greater than zero"
+          },
+          {
+            "field": "z1",
+            "message": "pinion needs at least 6 teeth"
+          },
+          {
+            "field": "pressure_angle",
+            "message": "must be between 14.5 and 25.0 degrees"
+          }
+        ],
+        "ok": false,
+        "warnings": []
+      }
+    },
+    {
+      "derived": {
+        "alpha": 0.3490658503988659,
+        "circular_pitch": 6.283185307179586,
+        "clearance": 0.376,
+        "gear_pitch_angle": 1.0121970114513341,
+        "gear_virtual_teeth": 75.47184905645283,
+        "inner_cone_dist": 31.449905660283022,
+        "is_curved": false,
+        "mean_cone_dist": 39.30990566028302,
+        "outer_cone_dist": 47.16990566028302,
+        "pinion_pitch_angle": 0.5585993153435624,
+        "pinion_virtual_teeth": 29.481191037676886,
+        "psi_m": 0.0,
+        "ratio": 1.6,
+        "sigma": 1.5707963267948966,
+        "trace_kind": "straight",
+        "whole_depth": 4.376,
+        "working_depth": 4.0
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "bore": 12.5,
+        "cutter_radius": null,
+        "face_width": 15.72,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "hub_thickness": 5.0,
+        "min_root_thickness": 0.5,
+        "module": 2.0,
+        "pressure_angle": 20.0,
+        "shaft_angle": 90.0,
+        "spiral_angle": 0.0,
+        "z1": 25,
+        "z2": 40
+      },
+      "name": "bevel_straight",
+      "type": "bevel",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": []
+      }
+    },
+    {
+      "derived": {
+        "alpha": 0.3490658503988659,
+        "circular_pitch": 6.283185307179586,
+        "clearance": 0.376,
+        "gear_pitch_angle": 1.0121970114513341,
+        "gear_virtual_teeth": 75.47184905645283,
+        "inner_cone_dist": 33.01990566028302,
+        "is_curved": true,
+        "mean_cone_dist": 40.09490566028302,
+        "outer_cone_dist": 47.16990566028302,
+        "pinion_pitch_angle": 0.5585993153435624,
+        "pinion_virtual_teeth": 29.481191037676886,
+        "psi_m": 0.6108652381980153,
+        "ratio": 1.6,
+        "sigma": 1.5707963267948966,
+        "trace_kind": "spiral",
+        "whole_depth": 4.376,
+        "working_depth": 4.0
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "bore": 12.5,
+        "cutter_radius": 40.0949,
+        "face_width": 14.15,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "hub_thickness": 5.0,
+        "min_root_thickness": 0.5,
+        "module": 2.0,
+        "pressure_angle": 20.0,
+        "shaft_angle": 90.0,
+        "spiral_angle": 35.0,
+        "z1": 25,
+        "z2": 40
+      },
+      "name": "bevel_spiral",
+      "type": "bevel",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": []
+      }
+    },
+    {
+      "derived": {
+        "alpha": 0.3490658503988659,
+        "circular_pitch": 6.283185307179586,
+        "clearance": 0.376,
+        "gear_pitch_angle": 1.0121970114513341,
+        "gear_virtual_teeth": 75.47184905645283,
+        "inner_cone_dist": 33.01990566028302,
+        "is_curved": true,
+        "mean_cone_dist": 40.09490566028302,
+        "outer_cone_dist": 47.16990566028302,
+        "pinion_pitch_angle": 0.5585993153435624,
+        "pinion_virtual_teeth": 29.481191037676886,
+        "psi_m": 0.0,
+        "ratio": 1.6,
+        "sigma": 1.5707963267948966,
+        "trace_kind": "zerol",
+        "whole_depth": 4.376,
+        "working_depth": 4.0
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "bore": 12.5,
+        "cutter_radius": 40.0949,
+        "face_width": 14.15,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "hub_thickness": 5.0,
+        "min_root_thickness": 0.5,
+        "module": 2.0,
+        "pressure_angle": 20.0,
+        "shaft_angle": 90.0,
+        "spiral_angle": 0.0,
+        "z1": 25,
+        "z2": 40
+      },
+      "name": "bevel_zerol",
+      "type": "bevel",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": [
+          {
+            "field": "cutter_radius",
+            "message": "the spiral angle runs 11.3 deg at the toe to 9.4 at the heel, a 20.7 deg swing; a cutter larger than the 40.09 mm one would flatten it"
+          }
+        ]
+      }
+    },
+    {
+      "derived": {
+        "alpha": 0.3490658503988659,
+        "effective_root_fillet_radius": 0.40476190476190477,
+        "psi1": 0.8726646259971648,
+        "ratio": 3.230769230769231,
+        "sigma": 1.5707963267948966,
+        "wheel_outer_diameter": 170.0
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "bore": 11.6,
+        "clearance_factor": 0.125,
+        "cutter_radius": 63.5,
+        "depth_factor": 2.0,
+        "face_width": 30.0,
+        "gear_addendum_angle": 1.0,
+        "gear_dedendum_angle": 4.0,
+        "gear_mean_addendum_factor": 0.35,
+        "hand": "right",
+        "hub_thickness": 10.12,
+        "min_root_thickness": 1.01,
+        "module": 4.0476190476190474,
+        "offset": 15.0,
+        "pressure_angle": 20.0,
+        "root_fillet_radius": null,
+        "shaft_angle": 90.0,
+        "spiral_angle": 50.0,
+        "thickness_factor": 0.1,
+        "z1": 13,
+        "z2": 42
+      },
+      "name": "hypoid_offset_sample",
+      "type": "hypoid",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": [
+          {
+            "field": "spiral_angle",
+            "message": "high spiral angle increases axial thrust"
+          }
+        ]
+      }
+    },
+    {
+      "derived": {},
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "bore": 12.0,
+        "face_width": 20.0,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "helix_angle": 0.0,
+        "hub_thickness": 5.0,
+        "module": 2.0,
+        "n_planets": 3,
+        "pressure_angle": 20.0,
+        "rim_thickness": 5.0,
+        "z_planet": 18,
+        "z_sun": 24
+      },
+      "name": "planetary_anchor",
+      "type": "planetary",
+      "validation": {
+        "advisories": [],
+        "errors": [
+          {
+            "field": "internal_tip_to_dedendum",
+            "message": "tip-to-dedendum interference: CA >= CT1 (dimensionless margin -0.0369844)"
+          }
+        ],
+        "ok": false,
+        "warnings": [
+          {
+            "field": "internal_tip_to_dedendum",
+            "message": "ISO d_Nf2 < d_Ff2 check is unavailable: this internal member has no independently verified root-form diameter; nominal d_f is not substituted for d_Ff"
+          }
+        ]
+      }
+    },
+    {
+      "derived": {
+        "alpha_n": 0.3490658503988659,
+        "alpha_t": 0.3490658503988659,
+        "assembly_remainder": 0,
+        "beta": 0.0,
+        "centre_distance": 50.0,
+        "circular_pitch": 6.283185307179586,
+        "planet": {
+          "base_r": 18.79385241571817,
+          "beta": -0.0,
+          "internal": false,
+          "reference_r": 20.0,
+          "root_r": 17.5,
+          "tip_r": 22.0,
+          "twist": 0.0,
+          "working_r": 20.0,
+          "z": 20
+        },
+        "ratio_carrier_to_sun": 3.3333333333333335,
+        "ratio_ring_to_sun": -2.3333333333333335,
+        "ring": {
+          "base_r": 65.77848345501359,
+          "beta": -0.0,
+          "internal": true,
+          "reference_r": 70.0,
+          "root_r": 72.5,
+          "tip_r": 68.0,
+          "twist": 0.0,
+          "working_r": 70.0,
+          "z": 70
+        },
+        "sun": {
+          "base_r": 28.190778623577252,
+          "beta": 0.0,
+          "internal": false,
+          "reference_r": 30.0,
+          "root_r": 27.5,
+          "tip_r": 32.0,
+          "twist": 0.0,
+          "working_r": 30.0,
+          "z": 30
+        },
+        "transverse_module": 2.0,
+        "whole_depth": 4.5,
+        "z_ring": 70
+      },
+      "geometry": {},
+      "inputs": {
+        "backlash": 0.0,
+        "bore": 15.0,
+        "face_width": 20.0,
+        "fillet_factor": 0.2,
+        "hand": "right",
+        "helix_angle": 0.0,
+        "hub_thickness": 5.0,
+        "module": 2.0,
+        "n_planets": 5,
+        "pressure_angle": 20.0,
+        "rim_thickness": 5.0,
+        "z_planet": 20,
+        "z_sun": 30
+      },
+      "name": "planetary_valid_five",
+      "type": "planetary",
+      "validation": {
+        "advisories": [],
+        "errors": [],
+        "ok": true,
+        "warnings": [
+          {
+            "field": "internal_tip_to_dedendum",
+            "message": "ISO d_Nf2 < d_Ff2 check is unavailable: this internal member has no independently verified root-form diameter; nominal d_f is not substituted for d_Ff"
+          }
+        ]
+      }
+    }
+  ],
+  "schema": 1
+}

@@ -4,10 +4,9 @@
 #include <cmath>
 #include <cstddef>
 
-namespace geargen::core {
+#include "core/common/numerics.hpp"
 
-constexpr double kPi = 3.141592653589793238462643383279502884;
-constexpr double kTau = 2.0 * kPi;
+namespace geargen::core {
 
 struct Point2 {
     double x{};
@@ -19,6 +18,9 @@ struct Point3 {
     double y{};
     double z{};
 };
+
+using Vector2 = Point2;
+using Vector3 = Point3;
 
 using Matrix3 = std::array<std::array<double, 3>, 3>;
 
@@ -36,6 +38,63 @@ constexpr Matrix3 identity_matrix() noexcept
 inline bool nearly_equal(double lhs, double rhs, double tolerance) noexcept
 {
     return std::abs(lhs - rhs) <= tolerance;
+}
+
+[[nodiscard]] inline Point2 operator+(Point2 lhs, Point2 rhs) noexcept
+{
+    return {lhs.x + rhs.x, lhs.y + rhs.y};
+}
+
+[[nodiscard]] inline Point2 operator-(Point2 lhs, Point2 rhs) noexcept
+{
+    return {lhs.x - rhs.x, lhs.y - rhs.y};
+}
+
+[[nodiscard]] inline Point2 operator*(Point2 value, double scale) noexcept
+{
+    return {value.x * scale, value.y * scale};
+}
+
+[[nodiscard]] inline Point3 operator+(Point3 lhs, Point3 rhs) noexcept
+{
+    return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+[[nodiscard]] inline Point3 operator-(Point3 lhs, Point3 rhs) noexcept
+{
+    return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
+[[nodiscard]] inline Point3 operator*(Point3 value, double scale) noexcept
+{
+    return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+[[nodiscard]] inline double dot(Point2 lhs, Point2 rhs) noexcept
+{
+    return lhs.x * rhs.x + lhs.y * rhs.y;
+}
+
+[[nodiscard]] inline double dot(Point3 lhs, Point3 rhs) noexcept
+{
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+[[nodiscard]] inline double norm(Point2 value) noexcept
+{
+    return std::hypot(value.x, value.y);
+}
+
+[[nodiscard]] inline double norm(Point3 value) noexcept
+{
+    return std::sqrt(dot(value, value));
+}
+
+[[nodiscard]] inline Point2 rotate(Point2 point, double angle_rad) noexcept
+{
+    const double c = std::cos(angle_rad);
+    const double s = std::sin(angle_rad);
+    return {c * point.x - s * point.y, s * point.x + c * point.y};
 }
 
 } // namespace geargen::core

@@ -1,5 +1,6 @@
 #include "core/bevel/bevel.hpp"
 #include "core/common/geometry_types.hpp"
+#include "core/common/serialization.hpp"
 #include "core/hypoid/hypoid.hpp"
 #include "core/involute/involute.hpp"
 #include "core/placement/placement.hpp"
@@ -33,14 +34,14 @@ int main()
 
     bool ok = true;
     const auto spur = spur::default_parameters(2.0, 17, 43);
-    ok &= check(spur.face_width_mm > 0.0 && spur.bore_mm > 0.0,
+    ok &= check(spur.face_width > 0.0 && spur.bore > 0.0,
                 "spur defaults are positive");
     const auto planetary = planetary::default_parameters(2.0, 24, 18);
     ok &= check(planetary.z_ring() == 60, "planetary ring count is derived");
     const auto bevel = bevel::default_parameters(2.0, 17, 43);
-    ok &= check(bevel.face_width_mm > 0.0, "bevel defaults are positive");
+    ok &= check(bevel.face_width > 0.0, "bevel defaults are positive");
     const auto hypoid = hypoid::default_parameters(170.0 / 42.0, 13, 42);
-    ok &= check(hypoid.face_width_mm > 0.0, "hypoid defaults are positive");
+    ok &= check(hypoid.face_width > 0.0, "hypoid defaults are positive");
 
     ValidationResult validation;
     validate_pair_basics(2.0, 17, 43, 20.0, validation);
@@ -63,6 +64,16 @@ int main()
                 "SOLIDWORKS transform packing is column-major");
     ok &= check(std::abs(involute::involute_function(0.0)) < 1e-12,
                 "involute primitive is available in core");
+    ok &= check(std::abs(degrees_to_radians(180.0) - kPi) < 1e-15 &&
+                    std::abs(radians_to_degrees(kPi) - 180.0) < 1e-12,
+                "angle boundary helpers use radians internally");
+    ok &= check(approximately_equal(1000.0, 1000.0 + 5e-10),
+                "reference tolerance combines absolute and relative terms");
+    ok &= check(parameters_json(spur).find("\"type\":\"spur\"") !=
+                    std::string::npos &&
+                    validation_json(validation).find("\"errors\"") !=
+                        std::string::npos,
+                "parameter and validation JSON helpers emit stable fields");
 
     geargen::preview::Scene2D scene;
     scene.polylines.push_back({{{0.0, 1.0}, {2.0, 3.0}}, "test", false});

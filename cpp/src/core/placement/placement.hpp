@@ -6,6 +6,8 @@
 
 namespace geargen::core::placement {
 
+// All placement angles are radians.  Placement consumes already-converted core
+// geometry values; degrees are accepted only by the parameter records.
 [[nodiscard]] double gear_clocking(int teeth) noexcept;
 [[nodiscard]] double angular_velocity_ratio(int z1, int z2,
                                              bool internal = false) noexcept;

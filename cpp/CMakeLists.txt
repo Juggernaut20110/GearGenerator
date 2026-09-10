@@ -8,6 +8,7 @@ project(GearGenerator
 
 option(GEARGEN_BUILD_GUI "Build the Qt Widgets application when Qt is available" ON)
 option(GEARGEN_BUILD_TESTS "Build the dependency-free native smoke tests" ON)
+option(GEARGEN_BUILD_REFERENCE_TESTS "Build Python-reference regression tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +20,7 @@ include(GearGenWarnings)
 add_library(geargen_core STATIC
     src/core/common/geometry_types.cpp
     src/core/common/parameters.cpp
+    src/core/common/serialization.cpp
     src/core/involute/involute.cpp
     src/core/placement/placement.cpp
     src/core/validation/validation.cpp
@@ -109,4 +111,20 @@ if(GEARGEN_BUILD_TESTS)
     target_compile_features(geargen_tests PRIVATE cxx_std_20)
     geargen_enable_warnings(geargen_tests)
     add_test(NAME geargen_tests COMMAND geargen_tests)
+
+    if(GEARGEN_BUILD_REFERENCE_TESTS)
+        file(TO_CMAKE_PATH
+             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/python_reference.json"
+             GEARGEN_REFERENCE_FIXTURE_PATH)
+        add_executable(geargen_reference_tests
+            tests/reference_regression.cpp
+        )
+        target_link_libraries(geargen_reference_tests PRIVATE geargen_core)
+        target_compile_definitions(geargen_reference_tests PRIVATE
+            GEARGEN_REFERENCE_FIXTURE_PATH="${GEARGEN_REFERENCE_FIXTURE_PATH}"
+        )
+        target_compile_features(geargen_reference_tests PRIVATE cxx_std_20)
+        geargen_enable_warnings(geargen_reference_tests)
+        add_test(NAME geargen_reference_tests COMMAND geargen_reference_tests)
+    endif()
 endif()

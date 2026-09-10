@@ -81,7 +81,7 @@ The first skeleton maps the conceptual modules as follows:
 | --- | --- | --- |
 | `Point2`, `Point3`, matrix helpers | `src/core/common/geometry_types.hpp` | Plain doubles; no Qt or CAD handles. |
 | Four parameter dataclasses | `src/core/common/parameters.hpp`, `src/core/{bevel,spur,hypoid,planetary}` | Value records first; JSON is an application-boundary concern. |
-| `JsonParams` | Planned `core/common/presets` | Use explicit schema/migration code; do not make the mathematical records depend on Qt JSON classes. |
+| `JsonParams` | `src/core/common/serialization.hpp/.cpp` plus `tools/cpp_reference` | Native emission is deterministic and dependency-free; file loading/migration remains an application-boundary task. |
 | `Issue`, `ValidationResult` | `src/core/validation` | Preserve ordered errors/warnings and the non-throwing validation contract. |
 | `involute.py` | `src/core/involute` | Preserve named profile segments and analytical parameters before sampling. |
 | `placement.py` and `*/mesh.py` | `src/core/placement`, then per-family mesh modules | Keep matrix convention and clocking tests independent of preview/CAD. |
@@ -92,9 +92,11 @@ The first skeleton maps the conceptual modules as follows:
 | `sw/session.py` | `src/solidworks` | COM ownership, call checking, VARIANT/SAFEARRAY helpers and unit conversion end at this boundary. |
 | `gui.py` | `src/gui` | Qt owns controls, event loop, workers and presentation; it calls core/preview interfaces. |
 
-The type-specific `.cpp` files currently implement only default-parameter seams
-and data-model contracts. They are intentionally not claims that the Python
-geometry has been ported.
+The type-specific `.cpp` files now implement the parameter records, the
+size-dependent `with_defaults` behavior, angle/transverse accessors, compact
+derived scalar projections, and the first validation rules. They intentionally
+do not claim that tooth-space generation or full hypoid Method 1 geometry has
+been ported.
 
 ## Parameters, defaults, and validation
 
@@ -118,9 +120,11 @@ from validation. Validation is an ordered report, not an exception path: it
 must collect basic errors, type-specific errors, and warnings while preserving
 field names/messages used by the UI and reports.
 
-The C++ skeleton includes only shared sanity rails. Full per-family validation
-will be ported before any native geometry result is allowed to drive a preview
-or a SOLIDWORKS build.
+The native validation result preserves ordered `errors`, `warnings`, and a
+separate `advisories` channel. The current family validators cover the basic
+Python rules and the first internal spur/planetary interference relationship;
+full generated-root, active-profile, bevel trace, and hypoid solver checks are
+still gated from preview/CAD use until their geometry ports land.
 
 ## Numerical and geometric conventions
 
@@ -150,11 +154,12 @@ These conventions are compatibility-critical:
 * SOLIDWORKS transform arrays are column-major: the first three values are the
   transformed local X basis, followed by Y and Z, then translation in metres.
 
-Sampling tolerances are not yet frozen. The Python reference currently uses
-  named limits such as `MAX_SECTION_SAGITTA_MM = 0.02`, `FLANK_POINTS = 40`,
-  analytical bisection limits, and explicit `1e-9`/`1e-11` checks. Each must
-  be recorded in a native compatibility test rather than replaced by a
-  renderer-dependent tessellation setting.
+The shared scalar comparison contract is `Tolerance{absolute=1e-9,
+relative=1e-12}` in `core/common/numerics.hpp`. Length tolerances are in mm and
+angle tolerances are in radians because those are the core units. The Python
+reference's named sampling limits such as `MAX_SECTION_SAGITTA_MM = 0.02` and
+`FLANK_POINTS = 40` will become separate geometry contracts; they are not
+silently substituted by renderer tessellation settings.
 
 ## Preview and export architecture
 
@@ -223,11 +228,14 @@ records/strings only.
 
 ## Compatibility strategy and tolerances
 
-The Python implementation is the oracle. Every native slice gets fixtures
-generated from the Python reference containing inputs, validation issues,
-derived scalar values, profile points, section points, placements and export
-topology. The fixture format must preserve ordering and distinguish `-0.0`
-where it affects hand/phase semantics.
+The Python implementation is the oracle. `tools/cpp_reference/export.py`
+currently emits ten compact fixtures covering external/helical/internal spur,
+straight/spiral/Zerol bevel, a hypoid offset sample, planetary valid/edge
+cases, and an invalid-input case. The committed JSON keeps `inputs`, ordered
+`validation`, `derived`, and a reserved `geometry` object. Large point arrays
+are intentionally deferred until the corresponding native profile topology is
+ported. The fixture format preserves ordering and can represent null for
+non-finite values.
 
 Comparison policy:
 
@@ -249,16 +257,18 @@ Comparison policy:
   articulation and interference. The live result outranks an approximate
   renderer preview.
 
-The first native tests intentionally cover only the contracts implemented in
-this skeleton: default seams, shared validation accumulation, involute scalar,
-clocking, column-major transform packing, scene bounds, DXF structure and the
-mm-to-m CAD boundary. They are not yet gear-parity tests.
+`geargen_reference_tests` parses those snapshots and compares native scalar
+results numerically; it does not compare formatted floating-point strings.
+Validation fields/messages are exact. The existing `geargen_tests` continues
+to cover the shared involute scalar, clocking, column-major transform packing,
+scene bounds, DXF structure, and the mm-to-m CAD boundary.
 
 ## Known risks and open questions
 
-* The exact JSON library/schema boundary is open. It must support the current
-  tolerant unknown-key behavior and explicit migrations without pulling Qt into
-  core.
+* Native preset loading is still open. The current serializer is intentionally
+  output-only so JSON emission and reference snapshots do not pull Qt or a JSON
+  dependency into core; unknown-key filtering and type-specific migrations
+  still need a checked parser at the GUI/file boundary.
 * Python uses double precision and stable `math` operations; compiler flags,
   fused multiply-add and libm differences need measured tolerances rather than
   assumed bit identity.
@@ -283,8 +293,11 @@ mm-to-m CAD boundary. They are not yet gear-parity tests.
 
 ## Current stage acceptance
 
-The native stage is complete when `cpp/CMakeLists.txt` configures with a
-Visual Studio/MSVC generator, the dependency-free libraries and
-`geargen_tests` build, `ctest` passes, and a Qt-enabled configuration builds
-`geargen_gui` and opens `GearGenerator`. No gear-math parity claim is made by
-this stage.
+The native foundation stage is complete when `cpp/CMakeLists.txt` configures
+with the verified Visual Studio 2022/MSVC generator, the dependency-free
+libraries plus `geargen_tests` and `geargen_reference_tests` build, the Python
+suite and CTest pass, and a Qt-enabled configuration builds `geargen_gui` and
+opens `GearGenerator`. No full tooth-profile or CAD parity claim is made by
+this stage. The largest remaining behavioral gaps are the complete spur
+involute/root geometry, bevel CrownTrace sections, the hypoid Method 1
+non-zero-offset solver, and all native preview/SOLIDWORKS construction bodies.
