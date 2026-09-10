@@ -62,6 +62,16 @@ def main(argv=None) -> int:
         help="gear/ring profile-shift coefficient x2 (normal-module units)",
     )
     ap.add_argument(
+        "--tip-alteration-mode",
+        choices=("iso_clearance", "legacy", "explicit"),
+        default="iso_clearance",
+        help="tip alteration: automatic ISO clearance, legacy k=0, or explicit k",
+    )
+    ap.add_argument(
+        "--tip-alteration-coefficient", type=float,
+        help="explicit pair-level ISO tip alteration coefficient k",
+    )
+    ap.add_argument(
         "--internal", action="store_true", help="z2 is an internal ring gear"
     )
     ap.add_argument("--rim", type=float, help="ring rim thickness, mm")
@@ -80,6 +90,8 @@ def main(argv=None) -> int:
         "internal": args.internal,
         "profile_shift_1": args.x1,
         "profile_shift_2": args.x2,
+        "tip_alteration_mode": args.tip_alteration_mode,
+        "tip_alteration_coefficient": args.tip_alteration_coefficient,
     }
     for key, value in (
         ("face_width", args.face_width),

@@ -68,7 +68,7 @@ def _inverse_independent_inv(value: float) -> float:
 
 
 def _independent_internal_member(
-    normal_module, teeth, shift, alpha_n, beta, internal
+    normal_module, teeth, shift, alpha_n, beta, internal, tip_alteration=0.0
 ):
     """Expected positive-radius internal geometry without production helpers."""
     transverse_module = normal_module / math.cos(beta)
@@ -80,14 +80,14 @@ def _independent_internal_member(
     )
     tooth_thickness = normal_thickness / math.cos(beta)
     if internal:
-        addendum = normal_module * (1.0 - shift)
+        addendum = normal_module * (1.0 - shift + tip_alteration)
         dedendum = normal_module * (1.25 + shift)
         tip_r = reference_r - addendum
         root_r = reference_r + dedendum
         space_width = math.pi * transverse_module - tooth_thickness
         psi0 = space_width / (2.0 * reference_r) + _independent_inv(alpha_t)
     else:
-        addendum = normal_module * (1.0 + shift)
+        addendum = normal_module * (1.0 + shift + tip_alteration)
         dedendum = normal_module * (1.25 - shift)
         tip_r = reference_r + addendum
         root_r = reference_r - dedendum
@@ -145,12 +145,18 @@ def test_internal_profile_shift_geometry_matches_independent_equations(
         * math.cos(alpha_t)
         / math.cos(expected_working_angle)
     )
+    tip_alteration = (
+        (expected_reference_distance - expected_working_distance) / normal_module
+        + (shift_2 - shift_1)
+    )
     expected_members = (
         _independent_internal_member(
-            normal_module, z1, shift_1, alpha_n, beta, internal=False
+            normal_module, z1, shift_1, alpha_n, beta, internal=False,
+            tip_alteration=tip_alteration,
         ),
         _independent_internal_member(
-            normal_module, z2, shift_2, alpha_n, beta, internal=True
+            normal_module, z2, shift_2, alpha_n, beta, internal=True,
+            tip_alteration=tip_alteration,
         ),
     )
 

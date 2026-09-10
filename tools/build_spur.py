@@ -45,6 +45,16 @@ def main(argv=None) -> int:
         "--x2", type=float, default=0.0,
         help="gear profile-shift coefficient x2 (normal-module units)",
     )
+    ap.add_argument(
+        "--tip-alteration-mode",
+        choices=("iso_clearance", "legacy", "explicit"),
+        default="iso_clearance",
+        help="tip alteration: automatic ISO clearance, legacy k=0, or explicit k",
+    )
+    ap.add_argument(
+        "--tip-alteration-coefficient", type=float,
+        help="explicit pair-level ISO tip alteration coefficient k",
+    )
     ap.add_argument("--member", choices=("pinion", "gear"), default="pinion")
     ap.add_argument("--save", help="path to save the part to")
     ap.add_argument("--close", action="store_true", help="close the part afterwards")
@@ -56,6 +66,8 @@ def main(argv=None) -> int:
         "hand": args.hand,
         "profile_shift_1": args.x1,
         "profile_shift_2": args.x2,
+        "tip_alteration_mode": args.tip_alteration_mode,
+        "tip_alteration_coefficient": args.tip_alteration_coefficient,
     }
     for key, value in (
         ("face_width", args.face_width),

@@ -23,7 +23,8 @@ from .validate import validate
 
 FLAGS = (
     "alpha", "beta", "face_width", "bore", "hub", "member", "backlash",
-    "internal", "rim", "x1", "x2",
+    "internal", "rim", "x1", "x2", "tip_alteration_mode",
+    "tip_alteration_coefficient",
 )
 
 
@@ -44,6 +45,17 @@ def add_arguments(ap) -> None:
         help="gear/ring profile-shift coefficient x2 (normal-module units)",
     )
     ap.add_argument(
+        "--tip-alteration-mode",
+        choices=("iso_clearance", "legacy", "explicit"),
+        default="iso_clearance",
+        help="tip alteration: automatic ISO clearance, legacy k=0, or explicit k",
+    )
+    ap.add_argument(
+        "--tip-alteration-coefficient",
+        type=float,
+        help="explicit pair-level ISO tip alteration coefficient k",
+    )
+    ap.add_argument(
         "--internal",
         action="store_true",
         help="z2 is an internal ring gear rather than an external one",
@@ -62,6 +74,8 @@ def params_from_args(args) -> SpurSetParams:
         "internal": args.internal,
         "profile_shift_1": args.x1,
         "profile_shift_2": args.x2,
+        "tip_alteration_mode": args.tip_alteration_mode,
+        "tip_alteration_coefficient": args.tip_alteration_coefficient,
     }
     if args.face_width is not None:
         overrides["face_width"] = args.face_width
@@ -85,6 +99,13 @@ def print_report(geo) -> None:
     print(_row("normal pressure angle alpha_n", f(p.pressure_angle), "", "deg"))
     print(_row("profile shift x1", f(p.profile_shift_1)))
     print(_row("profile shift x2", f(p.profile_shift_2)))
+    print(_row("tip alteration mode", p.tip_alteration_mode))
+    print(
+        _row(
+            "requested tip alteration k",
+            _optional(p.tip_alteration_coefficient),
+        )
+    )
     print(_row("helix angle beta", f(p.helix_angle), "", "deg"))
     print(_row("hand (pinion)", p.hand))
     print(_row("face width", f(p.face_width), "", "mm"))
@@ -129,6 +150,17 @@ def print_report(geo) -> None:
     axial = "inf" if math.isinf(geo.axial_pitch) else f(geo.axial_pitch)
     print(_row("axial pitch", axial, "", "mm"))
     print(_row("whole depth", f(geo.whole_depth), "", "mm"))
+    print(_row("tip alteration coefficient k", f(geo.tip_alteration_coefficient)))
+    print(_row("working depth h_w", f(geo.working_depth), "", "mm"))
+    print(
+        _row(
+            "tip clearance c_1 / c_2",
+            f(geo.tip_clearance_1),
+            f(geo.tip_clearance_2),
+            "mm",
+        )
+    )
+    print(_row("minimum tip clearance", f(geo.minimum_tip_clearance), "", "mm"))
 
     second = "RING" if p.internal else "GEAR"
     print(f"\nMEMBER GEOMETRY (MEMBERS){'':<12}{'PINION':>14}{second:>14}")

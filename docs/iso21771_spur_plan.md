@@ -71,6 +71,9 @@ The ISO symbol `z` is signed for internal gears in ISO 21771-1. In the table,
 | start of involute | `member.start_of_involute_r`, `member.start_of_involute_angle`, `member.involute_roll_parameter` | Available for the verified external straight rack-generated path. |
 | undercut condition | `member.undercut` | Available for the verified external straight rack-generated path; internal and helical generated roots remain out of scope. |
 | profile shift coefficient `x` | `profile_shift_1`, `profile_shift_2` | Dimensionless normal-module coefficients, both defaulting to zero. Transitional JSON spellings are migrated. |
+| `k` tip alteration coefficient | `geo.tip_alteration_coefficient` | One pair-level coefficient from Clause 5.3.9 Eq. (76), or an explicit user override; never another `x_i`. |
+| `h_w` working depth | `geo.working_depth` | Calculated from the actual operating centre distance and altered tip diameters using Clause 5.3.7 Eq. (73). |
+| `c_1`, `c_2` tip clearance | `geo.tip_clearance_1`, `geo.tip_clearance_2` | Separate pinion-tip and gear/ring-tip clearances; `minimum_tip_clearance` is their minimum. |
 | `h_aP*` | `basic_rack_addendum_factor` | User-editable data-model field, default `1.0`. |
 | `h_fP*` | `basic_rack_dedendum_factor` property | Derived as `h_aP* + c_P*`; default `1.25`. |
 | `c_P*` | `basic_rack_clearance_factor` | Explicit field, default `0.25`, used to derive the rack dedendum. |
@@ -110,6 +113,9 @@ the ordinary GUI exposes only the profile shifts. The important conversions are:
 - `profile_shift_combination = x1 + x2` externally and `x2 - x1` internally;
 - `alpha_wt` and `working_centre_distance` are solved from that combination,
   unless an explicit working distance is supplied.
+- `tip_alteration_mode="iso_clearance"` resolves one pair-level `k` from
+  Clause 5.3.9 Eq. (76); `legacy` means `k=0`, and `explicit` uses the
+  supplied coefficient. Old JSON without the mode is migrated to `legacy`.
 
 The normal/transverse conversions are used for a parallel-axis helical pair.
 `alpha_t` is the transverse reference pressure angle, not the working pressure
@@ -129,7 +135,9 @@ path is:
 
 1. `reference_r = m_t*z/2` and `base_r = reference_r*cos(alpha_t)`.
 2. Addendum and dedendum use `m_n` and the selected rack coefficients, with the
-   external and internal radial signs handled in separate branches.
+   external and internal radial signs handled in separate branches. The
+   pair-level `k` is added to both physical addenda after profile shift and
+   does not change reference/base/working circles.
 3. The reference tooth thickness is formed in the normal system from `x_i`,
    projected to the transverse plane, and then reduced by half the deliberate
    backlash on each member.
@@ -176,7 +184,9 @@ undercut case.
 
 `validate.py` checks the derived reference/working geometry, tooth thickness,
 lands, loop topology, contact ratios, blank wall, and profile-dependent
-external undercut. It retains a fixed ten-tooth internal difference as a
+external undercut. It also checks working depth, both ISO tip clearances,
+non-positive addendum, altered tip/form ordering, and pointed tips. Negative
+tip clearance is an error. It retains a fixed ten-tooth internal difference as a
 conservative fallback for unverified trimming/interference; exact internal
 involute, tip, and trimming interference is not implemented.
 
@@ -198,13 +208,12 @@ involute, tip, and trimming interference is not implemented.
 - `gears/sw/spur_assembly.py` mates the axes at the working distance. Gear
   clocking remains a reference-tooth phase operation, not a working-circle
   substitution.
-- `tools/build_spur.py` and `tools/build_spur_set.py` accept additive `--x1`
-  and `--x2` flags. Existing defaults and output filenames remain unchanged
-  for zero-shift legacy builds.
-- `gears/gui.py` owns the two ordinary profile-shift inputs, auto-sizing,
-  parsing, JSON load/save, and the derived readout. Rack mode and an explicit
-  working-distance override remain programmatic/CLI data-model options rather
-  than ordinary GUI inputs.
+- `tools/build_spur.py`, `tools/build_spur_set.py`, and the terminal report
+  accept additive `--x1`, `--x2`, `--tip-alteration-mode`, and explicit `k`
+  flags. Existing saved JSON without the new mode is migrated to legacy.
+- `gears/gui.py` exposes the automatic/legacy/explicit tip-alteration choice
+  and optional explicit `k`, alongside the profile-shift inputs and derived
+  readout.
 
 ## 4. Implemented parameter model
 
@@ -218,6 +227,8 @@ basic_rack_addendum_factor: float = 1.0
 basic_rack_clearance_factor: float = 0.25
 basic_rack_root_radius_factor: float = 0.38
 working_centre_distance: float | None = None
+tip_alteration_mode: str = "iso_clearance"
+tip_alteration_coefficient: float | None = None
 root_geometry: str = "legacy"
 ```
 

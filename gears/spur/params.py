@@ -41,6 +41,7 @@ BASIC_RACK_ADDENDUM_FACTOR = 1.0       # h_aP*
 BASIC_RACK_CLEARANCE_FACTOR = 0.25     # c_P*
 BASIC_RACK_ROOT_RADIUS_FACTOR = 0.38   # rho_fP*
 ROOT_GEOMETRY_MODES = ("legacy", "rack_generated")
+TIP_ALTERATION_MODES = ("legacy", "iso_clearance", "explicit")
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,14 @@ class SpurSetParams(JsonParams):
     # represented here as an input so a later validator can detect a conflict
     # between an explicit a_w and the two profile-shift coefficients.
     working_centre_distance: float | None = None
+
+    # Pair-level ISO 21771-1 tip alteration. New parameter sets use the
+    # standards-based estimate from Clause 5.3.9. ``legacy`` keeps the old
+    # k=0 geometry for presets written before this field existed; the JSON
+    # migration below selects it explicitly for such files. ``explicit`` uses
+    # the supplied coefficient and is intentionally separate from x_i.
+    tip_alteration_mode: str = "iso_clearance"
+    tip_alteration_coefficient: float | None = None
 
     # ``legacy`` preserves the existing radial-below-base/root-fillet
     # approximation.  ``rack_generated`` is an explicit opt-in for the
@@ -236,6 +245,11 @@ class SpurSetParams(JsonParams):
         for old_name, new_name in aliases.items():
             if new_name not in migrated and old_name in migrated:
                 migrated[new_name] = migrated[old_name]
+        # A pre-tip-alteration preset must remain reproducible. New callers of
+        # ``with_defaults`` get automatic ISO clearance, while an old JSON
+        # file opts into the explicitly named compatibility path.
+        if "tip_alteration_mode" not in migrated:
+            migrated["tip_alteration_mode"] = "legacy"
         return migrated
 
     @classmethod

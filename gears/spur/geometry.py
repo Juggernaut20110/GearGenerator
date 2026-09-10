@@ -257,6 +257,11 @@ class SpurSetGeometry:
     circular_pitch: float           # transverse, at the pitch circle
     axial_pitch: float              # inf for straight teeth
     whole_depth: float
+    tip_alteration_coefficient: float  # ISO k, pair-level
+    working_depth: float             # ISO h_w
+    tip_clearance_1: float           # ISO c_1, pinion-tip clearance
+    tip_clearance_2: float           # ISO c_2, gear-tip clearance
+    minimum_tip_clearance: float
     transverse_contact_ratio: float
     axial_contact_ratio: float
     pinion: SpurMemberGeometry
@@ -288,6 +293,11 @@ class SpurSetGeometry:
     def total_contact_ratio(self) -> float:
         return self.transverse_contact_ratio + self.axial_contact_ratio
 
+    @property
+    def tip_clearances(self) -> tuple[float, float]:
+        """The pair's two ISO tip clearances, ``(c_1, c_2)``."""
+        return self.tip_clearance_1, self.tip_clearance_2
+
     def member(self, which: str) -> SpurMemberGeometry:
         if which == "pinion":
             return self.pinion
@@ -305,6 +315,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
     working_pressure_angle, working_centre_distance = _working_geometry(
         p, reference_centre_distance, alpha_t
     )
+    tip_alteration = resolve_tip_alteration(p, working_centre_distance)
     # Profile shift is supported for both pair arrangements. The coefficients
     # x_i are normal quantities; the transverse tooth thickness below is their
     # projection into the plane in which the involute is built. Internal and
@@ -359,10 +370,14 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
             # The ring uses the opposite physical depth signs from an
             # external member: positive x2 removes material from its inward
             # addendum and adds it to the outward dedendum.
-            addendum = m_n * (rack_addendum - member_shift)
+            addendum = m_n * (
+                rack_addendum - member_shift + tip_alteration
+            )
             dedendum = m_n * (rack_dedendum + member_shift)
         else:
-            addendum = m_n * (rack_addendum + member_shift)
+            addendum = m_n * (
+                rack_addendum + member_shift + tip_alteration
+            )
             dedendum = m_n * (rack_dedendum - member_shift)
 
         if internal:
@@ -408,7 +423,7 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
             )
             if generated is not None:
                 soi = solve_start_of_involute(generated)
-                if soi is not None and tip_r > soi.start_of_involute_r + 1e-10:
+                if soi is not None:
                     generated_root_r = generated.generated_root_r
                     root_form_r = soi.start_of_involute_r
                     start_of_involute_angle = soi.start_of_involute_angle
@@ -450,6 +465,12 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
 
     pinion, gear = members
     sin_beta = abs(math.sin(p.beta))
+    working_depth = pair_working_depth(
+        pinion, gear, working_centre_distance, p.internal
+    )
+    tip_clearance_1, tip_clearance_2 = pair_tip_clearances(
+        pinion, gear, working_centre_distance, p.internal
+    )
 
     return SpurSetGeometry(
         params=p,
@@ -461,6 +482,11 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         circular_pitch=math.pi * m_t,
         axial_pitch=(math.pi * m_n / sin_beta) if sin_beta > 1e-12 else math.inf,
         whole_depth=(rack_addendum + rack_dedendum) * m_n,
+        tip_alteration_coefficient=tip_alteration,
+        working_depth=working_depth,
+        tip_clearance_1=tip_clearance_1,
+        tip_clearance_2=tip_clearance_2,
+        minimum_tip_clearance=min(tip_clearance_1, tip_clearance_2),
         transverse_contact_ratio=transverse_contact_ratio(
             pinion,
             gear,
@@ -474,6 +500,105 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
         ),
         pinion=pinion,
         gear=gear,
+    )
+
+
+def resolve_tip_alteration(p: SpurSetParams, working_centre_distance: float) -> float:
+    """Resolve the pair-level ISO tip alteration coefficient ``k``.
+
+    ISO 21771-1:2024 Clause 5.3.9 Eq. (76), for a parallel-axis pair, gives
+    the external signed-count form as
+
+        k = (a_w - a) / m_n - (x_1 + x_2).
+
+    This repository stores an internal ring tooth count as a positive
+    magnitude and uses ``X = x_2 - x_1`` for that branch.  Converting the ISO
+    signed internal count and centre distance to this positive-radius form
+    gives
+
+        k = (a - a_w) / m_n + X.
+
+    The result is one pair-level coefficient. It is not another profile-shift
+    coefficient and it does not change reference, base, or working circles.
+    """
+    mode = p.tip_alteration_mode
+    if mode == "legacy":
+        return 0.0
+    if mode == "explicit":
+        if p.tip_alteration_coefficient is None:
+            raise ValueError(
+                "explicit tip alteration mode requires a coefficient"
+            )
+        return float(p.tip_alteration_coefficient)
+    if mode != "iso_clearance":
+        choices = ", ".join(("legacy", "iso_clearance", "explicit"))
+        raise ValueError(f"tip_alteration_mode must be one of {choices}")
+
+    distance_change = (
+        working_centre_distance - p.reference_centre_distance
+    ) / p.module
+    if p.internal:
+        return distance_change * -1.0 + p.profile_shift_combination
+    return distance_change - p.profile_shift_combination
+
+
+def _root_clearance_radius(member: SpurMemberGeometry) -> float:
+    """Return the root radius used by ISO Eqs. (74) and (75).
+
+    External straight rack-generated members expose ``d_fE`` separately. The
+    other supported paths currently expose only their nominal root circle, so
+    that circle is used as an explicitly limited fallback rather than being
+    mislabeled as generated-root geometry.
+    """
+    return (
+        member.generated_root_r
+        if member.generated_root_r is not None
+        else member.root_r
+    )
+
+
+def pair_working_depth(
+    pinion: SpurMemberGeometry,
+    gear: SpurMemberGeometry,
+    working_centre_distance: float,
+    internal: bool,
+) -> float:
+    """Return ISO 21771-1 Clause 5.3.7 Eq. (73) in positive-radius form."""
+    if internal:
+        # ISO represents an internal gear and its centre distance with signed
+        # quantities. This is the equivalent positive-radius expression.
+        return working_centre_distance + pinion.tip_r - gear.tip_r
+    return pinion.tip_r + gear.tip_r - working_centre_distance
+
+
+def pair_tip_clearances(
+    pinion: SpurMemberGeometry,
+    gear: SpurMemberGeometry,
+    working_centre_distance: float,
+    internal: bool,
+) -> tuple[float, float]:
+    """Return ISO 21771-1 Clause 5.3.8 Eqs. (74) and (75).
+
+    ``c_1`` is associated with the pinion tip and ``c_2`` with the gear/ring
+    tip. For an internal pair both expressions are converted from ISO's
+    signed-radius convention; the two clearances remain separately visible.
+    """
+    if internal:
+        return (
+            _root_clearance_radius(gear)
+            - working_centre_distance
+            - pinion.tip_r,
+            gear.tip_r
+            - working_centre_distance
+            - pinion.root_r,
+        )
+    return (
+        working_centre_distance
+        - pinion.tip_r
+        - _root_clearance_radius(gear),
+        working_centre_distance
+        - gear.tip_r
+        - _root_clearance_radius(pinion),
     )
 
 

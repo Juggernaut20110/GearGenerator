@@ -642,7 +642,9 @@ def _inverse_reference_inv(value: float) -> float:
     return (lo + hi) / 2.0
 
 
-def _independent_shifted_values(module, teeth, shift, alpha, backlash):
+def _independent_shifted_values(
+    module, teeth, shift, alpha, backlash, tip_alteration=0.0
+):
     """Return expected straight external values without production helpers."""
     reference_r = module * teeth / 2.0
     base_r = reference_r * math.cos(alpha)
@@ -650,7 +652,7 @@ def _independent_shifted_values(module, teeth, shift, alpha, backlash):
         math.pi / 2.0 + 2.0 * shift * math.tan(alpha)
     )
     reference_thickness = geometric_thickness - backlash / 2.0
-    tip_r = reference_r + module * (1.0 + shift)
+    tip_r = reference_r + module * (1.0 + shift + tip_alteration)
     root_r = reference_r - module * (1.25 - shift)
     psi0 = reference_thickness / (2.0 * reference_r) + _reference_inv(alpha)
     return {
@@ -667,7 +669,8 @@ def _independent_shifted_values(module, teeth, shift, alpha, backlash):
 
 
 def _independent_helical_shifted_values(
-    normal_module, teeth, shift, alpha_n, beta, backlash=0.0
+    normal_module, teeth, shift, alpha_n, beta, backlash=0.0,
+    tip_alteration=0.0,
 ):
     """Return ISO helical values using only normal/transverse equations.
 
@@ -685,7 +688,7 @@ def _independent_helical_shifted_values(
     geometric_thickness = normal_geometric_thickness / math.cos(beta)
     reference_thickness = geometric_thickness - backlash / 2.0
     normal_thickness = reference_thickness * math.cos(beta)
-    tip_r = reference_r + normal_module * (1.0 + shift)
+    tip_r = reference_r + normal_module * (1.0 + shift + tip_alteration)
     root_r = reference_r - normal_module * (1.25 - shift)
     psi0 = reference_thickness / (2.0 * reference_r) + _reference_inv(alpha_t)
     return {
@@ -757,9 +760,16 @@ def test_external_straight_profile_shift_geometry_against_independent_equations(
         abs=1e-12,
     )
 
+    tip_alteration = (
+        expected_working_distance - expected_reference_distance
+    ) / module - total_shift
     expected_members = (
-        _independent_shifted_values(module, z1, shift_1, alpha, backlash),
-        _independent_shifted_values(module, z2, shift_2, alpha, backlash),
+        _independent_shifted_values(
+            module, z1, shift_1, alpha, backlash, tip_alteration
+        ),
+        _independent_shifted_values(
+            module, z2, shift_2, alpha, backlash, tip_alteration
+        ),
     )
     expected_action = 0.0
     for member, expected in zip((geo.pinion, geo.gear), expected_members):
@@ -847,10 +857,16 @@ def test_external_helical_profile_shift_geometry_against_independent_equations(
 
     expected_members = (
         _independent_helical_shifted_values(
-            normal_module, z1, shift_1, alpha_n, beta
+            normal_module, z1, shift_1, alpha_n, beta,
+            tip_alteration=(
+                expected_working_distance - expected_reference_distance
+            ) / normal_module - (shift_1 + shift_2),
         ),
         _independent_helical_shifted_values(
-            normal_module, z2, shift_2, alpha_n, beta
+            normal_module, z2, shift_2, alpha_n, beta,
+            tip_alteration=(
+                expected_working_distance - expected_reference_distance
+            ) / normal_module - (shift_1 + shift_2),
         ),
     )
     expected_action = 0.0
@@ -1085,8 +1101,11 @@ def test_old_json_without_iso_fields_loads_with_legacy_defaults(tmp_path):
     assert loaded.basic_rack_dedendum_factor == 1.25
     assert loaded.working_centre_distance is None
     assert loaded.root_geometry == "legacy"
+    assert loaded.tip_alteration_mode == "legacy"
     assert compute_set(loaded) == compute_set(
-        SpurSetParams.with_defaults(2.0, 17, 43)
+        SpurSetParams.with_defaults(
+            2.0, 17, 43, tip_alteration_mode="legacy"
+        )
     )
 
 

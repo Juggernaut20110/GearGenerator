@@ -63,6 +63,38 @@ epsilon_beta  = face_width |sin(beta)| / (pi m_n)
 epsilon_gamma = epsilon_alpha + epsilon_beta
 ```
 
+### Pair-level tip alteration and clearance
+
+The pair-level addendum/clearance implementation uses ISO 21771-1:2024
+Clause 4.6.4, Clause 4.6.5 Eq. (36), and Clauses 5.3.7–5.3.9. In particular:
+
+- Clause 5.3.7 Eq. (73): `h_w = (d_a1 + d_a2)/2 - a_w`.
+- Clause 5.3.8 Eqs. (74) and (75):
+  `c_1 = a_w - d_a1/2 - d_fE2/2` and
+  `c_2 = a_w - d_a2/2 - d_fE1/2` for the external signed-radius form.
+- Clause 5.3.9 Eq. (76): for an external pair,
+  `k = (a_w - a)/m_n - (x_1 + x_2)`; converting ISO's signed internal
+  tooth-count convention to this repository's positive-radius convention gives
+  `k = (a - a_w)/m_n + (x_2 - x_1)` for an internal pair.
+- Clause 4.6.5 Eq. (36): each tip diameter includes `+2 k m_n`.
+
+The implementation stores one pair-level `k`; it does not invent `k_1` and
+`k_2`. The physical internal expressions are converted explicitly: the ring
+tip radius decreases with positive `k`, while the pinion tip radius increases.
+The two internal clearances are therefore retained separately rather than
+reusing external signs. For non-generated legacy/helical/internal roots,
+nominal `d_f` is used as a documented fallback because this repository does
+not yet have the corresponding analytical `d_fE` construction.
+
+`x_i` remains generating/profile shift: it changes tooth thickness, dedendum,
+and the working pair condition. `k` is a later pair-level tip/addendum change:
+it changes addendum, tip diameter, working depth, and tip clearance, but not
+reference diameter, base diameter, reference tooth thickness, or working
+pressure angle. New parameter sets default to `tip_alteration_mode=
+"iso_clearance"`; JSON files that predate this field are migrated to the
+explicit `legacy` (`k=0`) mode so old saved geometry is not silently changed.
+`explicit` mode accepts a user-supplied coefficient.
+
 The plus/minus branch in the contact length is external
 `B1+B2-a_w sin(alpha_wt)` and internal
 `B1-B2+a_w sin(alpha_wt)`, with
@@ -81,7 +113,7 @@ The primary source for this change is ISO 21771-1:2024, Clauses 9.6, 9.7 and
 10.1–10.4. The publication record is
 [ISO 21771-1:2024](https://www.iso.org/standard/84949.html); the
 clause/equation text used for this review was checked against the
-publisher/sample preview of the same edition.
+[publisher/sample preview of the same edition](https://previewnorm.com/iso/ISO%2021771-1-2024%20PDF.pdf).
 
 The implementation uses these exact references:
 
@@ -111,6 +143,12 @@ generated root-circle boundary produced by the selected rack envelope, `d_f`
 is the nominal root diameter, and `d_Ff` is the root-form/start-of-involute
 diameter returned by the solved transition. They are not aliases.
 
+The pair-level tests independently verify `k`, `h_w`, `c_1`, `c_2`, `d_a1`,
+and `d_a2` for unshifted, positive/negative total shift, unequal shift
+distribution, helical, internal, and high-positive-shift cases. The high-shift
+case is also run in legacy mode to prove that negative clearance is reported
+as an error rather than returned as overlapping geometry.
+
 ## Tolerances
 
 Closed-form dimensions, angles, and ratios are checked to `1e-11` in the test
@@ -136,6 +174,12 @@ root geometry for helical and internal gears remains outside this
 implementation. Clause 10.4 curvature is not implemented. The nominal
 tip-circle contact-ratio formula is verified, but a complete active-profile
 contact-ratio calculation for every generated undercut form is not claimed.
+
+ISO 21771-1 Clause 5.3.9 describes Eq. (76) as an estimate for many gear sets
+and notes that internal-pair addendum limits can prevent the calculated `k`
+from being realized. This implementation validates the resulting pair
+clearances, addendum, active form, and tip land, but does not claim a complete
+internal tip-to-tip interference analysis or manufacturing feasibility proof.
 
 The tests verify backlash as the current reference-circle tooth-thinning policy
 and verify the phase/working-distance algebra. They do not replace a physical

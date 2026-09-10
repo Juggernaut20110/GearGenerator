@@ -108,6 +108,7 @@ def test_fractional_tooth_counts_are_not_rounded_into_a_different_gear():
         ({"basic_rack_clearance_factor": -0.1}, "basic_rack_clearance_factor"),
         ({"basic_rack_root_radius_factor": -0.1}, "basic_rack_root_radius_factor"),
         ({"root_geometry": "trochoid"}, "root_geometry"),
+        ({"tip_alteration_mode": "unknown"}, "tip_alteration_mode"),
         ({"hand": "sideways"}, "hand"),
         ({"helix_angle": MAX_HELIX_ANGLE}, "helix_angle"),
         ({"helix_angle": 60.0}, "helix_angle"),
@@ -169,6 +170,39 @@ def test_profile_shift_is_not_rejected_by_a_generic_minus_one_to_one_rail():
     assert result.ok
 
 
+def test_explicit_tip_alteration_requires_a_finite_coefficient():
+    missing = tweak(tip_alteration_mode="explicit")
+    assert "tip_alteration_coefficient" in fields_with_errors(missing)
+
+    ignored = tweak(tip_alteration_coefficient=0.1)
+    assert "tip_alteration_coefficient" in fields_with_errors(ignored)
+
+    invalid = tweak(
+        tip_alteration_mode="explicit", tip_alteration_coefficient=float("nan")
+    )
+    assert "tip_alteration_coefficient" in fields_with_errors(invalid)
+
+
+def test_small_positive_tip_clearance_is_a_warning_not_an_interference_error():
+    p = tweak(
+        tip_alteration_mode="explicit",
+        tip_alteration_coefficient=0.2499998,
+    )
+    result = validate(p)
+    assert result.ok
+    assert {issue.field for issue in result.warnings} >= {
+        "tip_clearance_1", "tip_clearance_2"
+    }
+
+
+def test_tip_alteration_cannot_remove_the_addendum():
+    p = tweak(
+        tip_alteration_mode="explicit",
+        tip_alteration_coefficient=-1.0,
+    )
+    assert "profile_shift_1" in fields_with_errors(p)
+
+
 def test_internal_tip_base_boundary_is_checked_from_the_actual_radii():
     normal_module = 2.0
     z2 = 60
@@ -178,10 +212,14 @@ def test_internal_tip_base_boundary_is_checked_from_the_actual_radii():
     x_boundary = 1.0 - (reference_r - base_r) / normal_module
 
     just_inside = dataclasses.replace(
-        ANCHOR_INTERNAL, profile_shift_2=x_boundary + 1e-6
+        ANCHOR_INTERNAL,
+        profile_shift_2=x_boundary + 1e-6,
+        tip_alteration_mode="legacy",
     )
     just_outside = dataclasses.replace(
-        ANCHOR_INTERNAL, profile_shift_2=x_boundary - 1e-6
+        ANCHOR_INTERNAL,
+        profile_shift_2=x_boundary - 1e-6,
+        tip_alteration_mode="legacy",
     )
     assert "z2" not in fields_with_errors(just_inside)
     assert "z2" in fields_with_errors(just_outside)

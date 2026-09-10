@@ -612,6 +612,17 @@ reference tooth form outward: it increases reference tooth thickness and
 addendum while reducing dedendum; negative shift does the reverse. The two
 coefficients also determine the pair's working centre-distance modification.
 
+Profile shift `x` and ISO tip alteration `k` are separate quantities. For new
+parameter sets, `tip_alteration_mode="iso_clearance"` applies the pair-level
+Clause 5.3.9 Eq. (76) estimate so the actual tip clearances remain valid at
+`a_w`; `k` changes addendum and tip diameter, not reference/base diameter,
+tooth thickness, or working pressure angle. The derived report exposes `k`,
+working depth `h_w`, both clearances `c_1`/`c_2`, and their minimum. Use
+`tip_alteration_mode="legacy"` for the former `k=0` behavior or
+`"explicit"` with `tip_alteration_coefficient` for a deliberate override.
+Preset JSON written before this field existed is migrated to legacy mode so it
+does not change silently.
+
 Reference circles remain distinct from working circles. In particular,
 `d = m_t z` is the reference diameter, `d_b = d cos(alpha_t)` is the base
 diameter, and `d_w` and `a_w` are the working pitch diameter and working centre

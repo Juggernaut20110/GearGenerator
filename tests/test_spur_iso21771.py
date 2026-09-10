@@ -14,6 +14,7 @@ import pytest
 from gears.spur import mesh
 from gears.spur.geometry import compute_set, tooth_space_section
 from gears.spur.params import SpurSetParams
+from gears.spur.validate import validate
 
 
 def _inv(alpha: float) -> float:
@@ -63,6 +64,11 @@ def _expected_pair(
     target = _inv(alpha_t) + 2.0 * combination * math.tan(alpha_n) / q
     alpha_w = alpha_t if abs(combination) <= 1e-15 else _inverse_inv(target)
     a_work = a_ref * math.cos(alpha_t) / math.cos(alpha_w)
+    tip_alteration = (
+        (a_ref - a_work) / module + combination
+        if internal
+        else (a_work - a_ref) / module - combination
+    )
 
     members = []
     for z, x, ring in ((z1, x1, False), (z2, x2, internal)):
@@ -75,14 +81,14 @@ def _expected_pair(
         s_t_actual = s_t_geometric - backlash / 2.0
         s_n_actual = s_t_actual * cos_beta
         if ring:
-            addendum = module * (1.0 - x)
+            addendum = module * (1.0 - x + tip_alteration)
             dedendum = module * (1.25 + x)
             r_tip = r_ref - addendum
             r_root = r_ref + dedendum
             space_width = math.pi * m_t - s_t_actual
             psi0 = space_width / (2.0 * r_ref) + _inv(alpha_t)
         else:
-            addendum = module * (1.0 + x)
+            addendum = module * (1.0 + x + tip_alteration)
             dedendum = module * (1.25 - x)
             r_tip = r_ref + addendum
             r_root = r_ref - dedendum
@@ -130,15 +136,27 @@ def _expected_pair(
         if abs(beta) > 1e-15
         else 0.0
     )
+    if internal:
+        working_depth = a_work + members[0]["tip_r"] - members[1]["tip_r"]
+        tip_clearance_1 = members[1]["root_r"] - a_work - members[0]["tip_r"]
+        tip_clearance_2 = members[1]["tip_r"] - a_work - members[0]["root_r"]
+    else:
+        working_depth = members[0]["tip_r"] + members[1]["tip_r"] - a_work
+        tip_clearance_1 = a_work - members[0]["tip_r"] - members[1]["root_r"]
+        tip_clearance_2 = a_work - members[1]["tip_r"] - members[0]["root_r"]
     return {
         "m_t": m_t,
         "alpha_t": alpha_t,
         "a_ref": a_ref,
         "a_work": a_work,
+        "tip_alteration": tip_alteration,
         "alpha_w": alpha_w,
         "epsilon_alpha": epsilon_alpha,
         "epsilon_beta": epsilon_beta,
         "epsilon_gamma": epsilon_alpha + epsilon_beta,
+        "working_depth": working_depth,
+        "tip_clearance_1": tip_clearance_1,
+        "tip_clearance_2": tip_clearance_2,
         "members": members,
     }
 
@@ -164,6 +182,20 @@ def _assert_pair_matches_expected(geo, expected, internal: bool) -> None:
     assert geo.overlap_ratio == pytest.approx(expected["epsilon_beta"], abs=1e-11)
     assert geo.total_contact_ratio == pytest.approx(
         expected["epsilon_gamma"], abs=1e-11
+    )
+    assert geo.working_depth == pytest.approx(expected["working_depth"], abs=1e-11)
+    assert geo.tip_clearance_1 == pytest.approx(
+        expected["tip_clearance_1"], abs=1e-11
+    )
+    assert geo.tip_clearance_2 == pytest.approx(
+        expected["tip_clearance_2"], abs=1e-11
+    )
+    assert geo.minimum_tip_clearance == pytest.approx(
+        min(expected["tip_clearance_1"], expected["tip_clearance_2"]),
+        abs=1e-11,
+    )
+    assert geo.tip_alteration_coefficient == pytest.approx(
+        expected["tip_alteration"], abs=1e-11
     )
 
     for actual, reference in zip(
@@ -308,6 +340,107 @@ def test_internal_helical_profile_shift_matches_independent_equations():
     )
     _assert_pair_matches_expected(geo, expected, internal=True)
     assert geo.pinion.beta == pytest.approx(geo.gear.beta, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "internal,beta,z1,z2,x1,x2",
+    [
+        (False, 0.0, 18, 18, 0.0, 0.0),
+        (False, 0.0, 18, 18, 0.8, 0.8),
+        (False, 0.0, 18, 18, -0.3, -0.2),
+        (False, 15.0, 17, 43, 0.4, 0.2),
+        (True, 0.0, 18, 60, 0.0, 0.3),
+    ],
+)
+def test_tip_alteration_matrix_is_independent_and_pair_level(
+    internal, beta, z1, z2, x1, x2
+):
+    """Check k, h_w, c1/c2, and both actual tip diameters independently."""
+    p = SpurSetParams.with_defaults(
+        2.0,
+        z1,
+        z2,
+        internal=internal,
+        helix_angle=beta,
+        profile_shift_1=x1,
+        profile_shift_2=x2,
+    )
+    geo = compute_set(p)
+    expected = _expected_pair(
+        2.0,
+        z1,
+        z2,
+        20.0,
+        beta,
+        x1,
+        x2,
+        internal=internal,
+        face_width=p.face_width,
+    )
+    _assert_pair_matches_expected(geo, expected, internal=internal)
+    assert geo.pinion.tip_d == pytest.approx(
+        2.0 * expected["members"][0]["tip_r"], abs=1e-11
+    )
+    assert geo.gear.tip_d == pytest.approx(
+        2.0 * expected["members"][1]["tip_r"], abs=1e-11
+    )
+
+
+def test_automatic_clearance_prevents_the_high_positive_shift_interference_case():
+    automatic = SpurSetParams.with_defaults(
+        2.0, 18, 18, profile_shift_1=0.8, profile_shift_2=0.8
+    )
+    geo = compute_set(automatic)
+    expected = _expected_pair(2.0, 18, 18, 20.0, 0.0, 0.8, 0.8)
+
+    assert geo.tip_alteration_coefficient < 0.0
+    assert geo.minimum_tip_clearance == pytest.approx(0.5, abs=1e-11)
+    assert validate(automatic).ok
+    _assert_pair_matches_expected(geo, expected, internal=False)
+
+    legacy = SpurSetParams.with_defaults(
+        2.0,
+        18,
+        18,
+        profile_shift_1=0.8,
+        profile_shift_2=0.8,
+        tip_alteration_mode="legacy",
+    )
+    legacy_geo = compute_set(legacy)
+    assert legacy_geo.minimum_tip_clearance < 0.0
+    assert not validate(legacy).ok
+    assert {issue.field for issue in validate(legacy).errors} >= {
+        "tip_clearance_1", "tip_clearance_2"
+    }
+
+
+def test_explicit_tip_alteration_override_is_separate_from_profile_shift():
+    automatic = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 18, 18, profile_shift_1=0.8, profile_shift_2=0.8
+        )
+    )
+    explicit = compute_set(
+        SpurSetParams.with_defaults(
+            2.0,
+            18,
+            18,
+            profile_shift_1=0.8,
+            profile_shift_2=0.8,
+            tip_alteration_mode="explicit",
+            tip_alteration_coefficient=automatic.tip_alteration_coefficient,
+        )
+    )
+    for field in (
+        "reference_r", "base_r", "working_r", "reference_tooth_thickness"
+    ):
+        assert getattr(explicit.pinion, field) == pytest.approx(
+            getattr(automatic.pinion, field), abs=1e-12
+        )
+    assert explicit.working_pressure_angle == pytest.approx(
+        automatic.working_pressure_angle, abs=1e-12
+    )
+    assert explicit.pinion.tip_d == pytest.approx(automatic.pinion.tip_d, abs=1e-12)
 
 
 def test_profile_shift_sign_for_internal_pair_is_not_external_sum():
@@ -706,9 +839,13 @@ def test_profile_segments_respect_the_independent_circles_and_involute_transitio
             math.cos(math.radians(beta)),
         )
         expected_tip = (
-            reference_r - p.module * (1.0 - member_shift)
+            reference_r - p.module * (
+                1.0 - member_shift + geo.tip_alteration_coefficient
+            )
             if member.internal
-            else reference_r + p.module * (1.0 + member_shift)
+            else reference_r + p.module * (
+                1.0 + member_shift + geo.tip_alteration_coefficient
+            )
         )
         expected_root = (
             reference_r + p.module * (1.25 + member_shift)

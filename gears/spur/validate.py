@@ -24,7 +24,7 @@ from .geometry import (
     tooth_space_section,
     undercut_limit,
 )
-from .params import ROOT_GEOMETRY_MODES, SpurSetParams
+from .params import ROOT_GEOMETRY_MODES, TIP_ALTERATION_MODES, SpurSetParams
 
 __all__ = ["Issue", "ValidationResult", "validate"]
 
@@ -47,6 +47,7 @@ MIN_INTERNAL_TOOTH_DIFFERENCE = 10
 # CAD consumers and is only used to distinguish a collapsed ordering from a
 # valid, very small clearance.
 GEOMETRY_TOLERANCE = 1e-9
+CLEARANCE_WARNING_TOLERANCE = 1e-6
 
 
 def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
@@ -151,6 +152,29 @@ def _check_basics(p: SpurSetParams, r: ValidationResult) -> None:
     if p.root_geometry not in ROOT_GEOMETRY_MODES:
         choices = ", ".join(ROOT_GEOMETRY_MODES)
         r.error("root_geometry", f"must be one of {choices}")
+    if p.tip_alteration_mode not in TIP_ALTERATION_MODES:
+        choices = ", ".join(TIP_ALTERATION_MODES)
+        r.error("tip_alteration_mode", f"must be one of {choices}")
+    if p.tip_alteration_coefficient is not None and not _is_finite(
+        p.tip_alteration_coefficient
+    ):
+        r.error("tip_alteration_coefficient", "must be finite")
+    if (
+        p.tip_alteration_mode == "explicit"
+        and p.tip_alteration_coefficient is None
+    ):
+        r.error(
+            "tip_alteration_coefficient",
+            "is required when tip_alteration_mode is explicit",
+        )
+    if (
+        p.tip_alteration_mode != "explicit"
+        and p.tip_alteration_coefficient is not None
+    ):
+        r.error(
+            "tip_alteration_coefficient",
+            "is only accepted when tip_alteration_mode is explicit",
+        )
     if p.working_centre_distance is not None:
         if not _is_finite(p.working_centre_distance):
             r.error("working_centre_distance", "must be finite")
@@ -263,6 +287,7 @@ def validate(p: SpurSetParams) -> ValidationResult:
         return result
 
     _check_operating_geometry(geo, result)
+    _check_tip_alteration_geometry(geo, p, result)
 
     # An explicit working distance and the two x_i values are two descriptions
     # of the same pair condition.  Keep them from silently disagreeing.  The
@@ -470,6 +495,36 @@ def validate(p: SpurSetParams) -> ValidationResult:
     return result
 
 
+def _check_tip_alteration_geometry(geo, p: SpurSetParams, result: ValidationResult) -> None:
+    """Validate ISO working depth, tip clearances, and altered tip form."""
+    if not _is_finite(geo.working_depth) or geo.working_depth <= 0.0:
+        result.error(
+            "tip_alteration_coefficient",
+            f"tip alteration gives a non-positive working depth "
+            f"({geo.working_depth!r})",
+        )
+
+    warning_limit = CLEARANCE_WARNING_TOLERANCE * max(1.0, p.module)
+    for field, clearance in (
+        ("tip_clearance_1", geo.tip_clearance_1),
+        ("tip_clearance_2", geo.tip_clearance_2),
+    ):
+        if not _is_finite(clearance):
+            result.error(field, "is not finite")
+        elif clearance < -GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"is negative ({clearance:.6g} mm); tip/root interference "
+                "is not supported",
+            )
+        elif clearance <= warning_limit:
+            result.warn(
+                field,
+                f"is only {clearance:.6g} mm; the tip/root condition is "
+                "at the numerical or manufacturing limit",
+            )
+
+
 def _check_internal_mesh(geo, p: SpurSetParams, result: ValidationResult) -> None:
     """The clearances an internal pair has and an external one does not.
 
@@ -546,10 +601,11 @@ def _check_tooth_form(geo, p: SpurSetParams, result: ValidationResult) -> None:
             "profile_shift_1" if member.name == "pinion" else "profile_shift_2"
         )
         if member.addendum <= GEOMETRY_TOLERANCE:
-            result.warn(
+            result.error(
                 shift_field,
                 f"{member.name}'s nominal addendum is {member.addendum:.6g} mm; "
-                "the selected profile shift gives no positive addendum",
+                "the selected profile shift and tip alteration give no "
+                "positive addendum",
             )
         if member.dedendum <= GEOMETRY_TOLERANCE:
             result.warn(
@@ -649,6 +705,16 @@ def _check_member_radii(member, field: str, result: ValidationResult) -> bool:
                 field,
                 f"{member.name}'s generated root radius lies outside its nominal "
                 "root radius",
+            )
+    if member.root_form_r is not None:
+        if not _is_finite(member.root_form_r) or member.root_form_r <= 0.0:
+            result.error(field, f"{member.name}'s root-form radius is invalid")
+        elif member.tip_r <= member.root_form_r + GEOMETRY_TOLERANCE:
+            result.error(
+                field,
+                f"{member.name}'s altered tip radius ({member.tip_r:.6g} mm) "
+                f"does not clear its active root-form radius "
+                f"({member.root_form_r:.6g} mm)",
             )
     return True
 

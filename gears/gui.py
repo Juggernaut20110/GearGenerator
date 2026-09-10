@@ -165,6 +165,19 @@ SPUR_FIELDS: tuple[Field, ...] = (
     Field("pressure_angle", "Normal pressure angle", float, "deg"),
     Field("profile_shift_1", "Pinion profile shift x1", float),
     Field("profile_shift_2", "Gear/ring profile shift x2", float),
+    Field(
+        "tip_alteration_mode",
+        "Tip alteration mode",
+        str,
+        "",
+        ("iso_clearance", "legacy", "explicit"),
+    ),
+    Field(
+        "tip_alteration_coefficient",
+        "Explicit tip alteration k",
+        float,
+        optional=True,
+    ),
     Field("helix_angle", "Helix angle", float, "deg"),
     Field("hand", "Hand (pinion)", str, "", ("right", "left")),
     Field("backlash", "Backlash", float, "mm"),
@@ -225,7 +238,8 @@ def _ordered_fields() -> tuple[Field, ...]:
     # they are the ones "Auto-size blank" rewrites as a group.
     order = (
         "module", "z1", "z2", "z_sun", "z_planet", "n_planets", "internal",
-        "pressure_angle", "profile_shift_1", "profile_shift_2", "shaft_angle",
+        "pressure_angle", "profile_shift_1", "profile_shift_2",
+        "tip_alteration_mode", "tip_alteration_coefficient", "shaft_angle",
         "trace_kind", "offset", "spiral_angle",
         "helix_angle", "hand", "cutter_radius", "backlash",
         "face_width", "bore", "hub_thickness", "rim_thickness",
