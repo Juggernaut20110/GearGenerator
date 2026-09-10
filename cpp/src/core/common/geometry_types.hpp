@@ -55,6 +55,16 @@ inline bool nearly_equal(double lhs, double rhs, double tolerance) noexcept
     return {value.x * scale, value.y * scale};
 }
 
+[[nodiscard]] inline Point2 operator*(double scale, Point2 value) noexcept
+{
+    return value * scale;
+}
+
+[[nodiscard]] inline Point2 operator/(Point2 value, double scale) noexcept
+{
+    return {value.x / scale, value.y / scale};
+}
+
 [[nodiscard]] inline Point3 operator+(Point3 lhs, Point3 rhs) noexcept
 {
     return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
@@ -88,6 +98,16 @@ inline bool nearly_equal(double lhs, double rhs, double tolerance) noexcept
 [[nodiscard]] inline double norm(Point3 value) noexcept
 {
     return std::sqrt(dot(value, value));
+}
+
+[[nodiscard]] inline double distance(Point2 lhs, Point2 rhs) noexcept
+{
+    return norm(lhs - rhs);
+}
+
+[[nodiscard]] inline double distance(Point3 lhs, Point3 rhs) noexcept
+{
+    return norm(lhs - rhs);
 }
 
 [[nodiscard]] inline Point2 rotate(Point2 point, double angle_rad) noexcept

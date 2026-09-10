@@ -3,6 +3,7 @@
 #include "core/common/geometry_types.hpp"
 
 #include <array>
+#include <utility>
 
 namespace geargen::core::placement {
 
@@ -11,6 +12,9 @@ namespace geargen::core::placement {
 [[nodiscard]] double gear_clocking(int teeth) noexcept;
 [[nodiscard]] double angular_velocity_ratio(int z1, int z2,
                                              bool internal = false) noexcept;
+[[nodiscard]] std::pair<double, double> gear_mate_ratio(int z1,
+                                                         int z2) noexcept;
+[[nodiscard]] Matrix3 pinion_placement() noexcept;
 [[nodiscard]] Matrix3 rot_y(double angle_rad) noexcept;
 [[nodiscard]] Matrix3 rot_z(double angle_rad) noexcept;
 [[nodiscard]] Matrix3 matmul(const Matrix3& lhs, const Matrix3& rhs) noexcept;

@@ -30,6 +30,16 @@ double angular_velocity_ratio(int z1, int z2, bool internal) noexcept
            static_cast<double>(z1);
 }
 
+std::pair<double, double> gear_mate_ratio(int z1, int z2) noexcept
+{
+    return {static_cast<double>(z1), static_cast<double>(z2)};
+}
+
+Matrix3 pinion_placement() noexcept
+{
+    return identity_matrix();
+}
+
 Matrix3 rot_y(double angle_rad) noexcept
 {
     const double c = std::cos(angle_rad);

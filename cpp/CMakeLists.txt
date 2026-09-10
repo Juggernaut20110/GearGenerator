@@ -25,9 +25,11 @@ add_library(geargen_core STATIC
     src/core/placement/placement.cpp
     src/core/validation/validation.cpp
     src/core/spur/spur.cpp
+    src/core/spur/mesh.cpp
     src/core/bevel/bevel.cpp
     src/core/hypoid/hypoid.cpp
     src/core/planetary/planetary.cpp
+    src/core/planetary/mesh.cpp
 )
 target_include_directories(geargen_core
     PUBLIC

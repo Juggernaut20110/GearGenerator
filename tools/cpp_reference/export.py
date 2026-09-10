@@ -28,7 +28,10 @@ from gears.hypoid.validate import validate as validate_hypoid
 from gears.planetary.geometry import compute_set as compute_planetary
 from gears.planetary.params import PlanetarySetParams
 from gears.planetary.validate import validate as validate_planetary
+from gears.placement import gear_clocking
+from gears.involute import flank_points, internal_flank_points
 from gears.spur.geometry import compute_set as compute_spur
+from gears.spur.geometry import tooth_space_section
 from gears.spur.params import SpurSetParams
 from gears.spur.validate import validate as validate_spur
 
@@ -71,24 +74,93 @@ def member_snapshot(member):
         "root_r": member.root_r,
         "twist": member.twist,
         "internal": member.internal,
+        "psi0": member.psi0,
+        "half_pitch": member.half_pitch,
+        "addendum": member.addendum,
+        "dedendum": member.dedendum,
+        "generated_root_r": member.generated_root_r,
+        "root_form_r": member.root_form_r,
+        "start_of_involute_angle": member.start_of_involute_angle,
+        "involute_roll_parameter": member.involute_roll_parameter,
+        "undercut": member.undercut,
     }
 
 
 def spur_snapshot(params: SpurSetParams):
     geometry = compute_spur(params)
+    member_name = "gear" if params.internal else "pinion"
+    member = geometry.member(member_name)
+    if member.internal:
+        flank = internal_flank_points(
+            member.base_r, member.root_r, member.tip_r, member.psi0, 5
+        )
+    else:
+        flank = flank_points(
+            member.base_r,
+            member.root_r,
+            member.tip_r,
+            member.psi0,
+            member.half_pitch,
+            5,
+        )
+    section = tooth_space_section(
+        geometry, member_name, z=0.0, n_flank=8, split_cap=True
+    )
+    segment_names = (
+        "fillet_neg",
+        "generated_root_neg",
+        "flank_neg",
+        "riser_neg",
+        "cap_neg",
+        "cap_pos",
+        "riser_pos",
+        "flank_pos",
+        "fillet_pos",
+        "generated_root_pos",
+        "root",
+    )
+    section_segments = {
+        name: section.segments.get(name, []) for name in segment_names
+    }
     return {
-        "transverse_module": params.transverse_module,
-        "alpha_n": params.alpha_n,
-        "alpha_t": params.alpha_t,
-        "beta": params.beta,
-        "ratio": params.ratio,
-        "reference_centre_distance": params.reference_centre_distance,
-        "working_centre_distance": geometry.working_centre_distance,
-        "working_pressure_angle": geometry.working_pressure_angle,
-        "circular_pitch": geometry.circular_pitch,
-        "whole_depth": geometry.whole_depth,
-        "pinion": member_snapshot(geometry.pinion),
-        "gear": member_snapshot(geometry.gear),
+        "derived": {
+            "transverse_module": params.transverse_module,
+            "alpha_n": params.alpha_n,
+            "alpha_t": params.alpha_t,
+            "beta": params.beta,
+            "ratio": params.ratio,
+            "reference_centre_distance": params.reference_centre_distance,
+            "working_centre_distance": geometry.working_centre_distance,
+            "working_pressure_angle": geometry.working_pressure_angle,
+            "circular_pitch": geometry.circular_pitch,
+            "whole_depth": geometry.whole_depth,
+            "tip_alteration_coefficient": geometry.tip_alteration_coefficient,
+            "working_depth": geometry.working_depth,
+            "tip_clearance_1": geometry.tip_clearance_1,
+            "tip_clearance_2": geometry.tip_clearance_2,
+            "minimum_tip_clearance": geometry.minimum_tip_clearance,
+            "path_of_contact": geometry.path_of_contact,
+            "contact_ratio_basis": geometry.contact_ratio_basis,
+            "transverse_contact_ratio": geometry.transverse_contact_ratio,
+            "axial_contact_ratio": geometry.axial_contact_ratio,
+            "pinion": member_snapshot(geometry.pinion),
+            "gear": member_snapshot(geometry.gear),
+        },
+        "geometry": {
+            "member": member_name,
+            "flank_count": 5,
+            "involute_flank": flank,
+            "section_flank_count": 8,
+            "section_filleted": section.filleted,
+            "section_rack_generated": section.rack_generated,
+            "section_generated_root_r": section.generated_root_r,
+            "section_root_form_r": section.root_form_r,
+            "section_start_of_involute_angle": section.start_of_involute_angle,
+            "section_involute_roll_parameter": section.involute_roll_parameter,
+            "section_undercut": section.undercut,
+            "section_loop": section.loop_2d,
+            "section_segments": section_segments,
+        },
     }
 
 
@@ -133,20 +205,44 @@ def hypoid_snapshot(params: HypoidSetParams):
 def planetary_snapshot(params: PlanetarySetParams):
     geometry = compute_planetary(params)
     return {
-        "z_ring": params.z_ring,
-        "alpha_n": params.alpha_n,
-        "alpha_t": params.alpha_t,
-        "beta": params.beta,
-        "transverse_module": params.transverse_module,
-        "centre_distance": params.centre_distance,
-        "assembly_remainder": params.assembly_remainder,
-        "ratio_carrier_to_sun": params.ratio_carrier_to_sun,
-        "ratio_ring_to_sun": params.ratio_ring_to_sun,
-        "circular_pitch": geometry.circular_pitch,
-        "whole_depth": geometry.whole_depth,
-        "sun": member_snapshot(geometry.sun),
-        "planet": member_snapshot(geometry.planet),
-        "ring": member_snapshot(geometry.ring),
+        "derived": {
+            "z_ring": params.z_ring,
+            "alpha_n": params.alpha_n,
+            "alpha_t": params.alpha_t,
+            "beta": params.beta,
+            "transverse_module": params.transverse_module,
+            "centre_distance": params.centre_distance,
+            "assembly_remainder": params.assembly_remainder,
+            "ratio_carrier_to_sun": params.ratio_carrier_to_sun,
+            "ratio_ring_to_sun": params.ratio_ring_to_sun,
+            "circular_pitch": geometry.circular_pitch,
+            "whole_depth": geometry.whole_depth,
+            "sun": member_snapshot(geometry.sun),
+            "planet": member_snapshot(geometry.planet),
+            "ring": member_snapshot(geometry.ring),
+        },
+        "geometry": {
+            "planet_angles": geometry.planet_angles,
+            "planet_translations": [
+                [
+                    geometry.centre_distance * math.cos(phi),
+                    geometry.centre_distance * math.sin(phi),
+                    0.0,
+                ]
+                for phi in geometry.planet_angles
+            ],
+            "planet_clocking": [
+                phi * (params.z_sun + params.z_planet) / params.z_planet
+                + gear_clocking(params.z_planet)
+                for phi in geometry.planet_angles
+            ],
+            "ring_clocking": [
+                phi * (params.z_ring + params.z_sun) / params.z_ring
+                + gear_clocking(params.z_planet) * params.z_planet / params.z_ring
+                + math.pi / params.z_ring
+                for phi in geometry.planet_angles
+            ],
+        },
     }
 
 
@@ -155,7 +251,13 @@ def snapshot(name, kind, params, validator, calculator):
     # Geometry is intentionally computed only for valid fixtures. Invalid
     # inputs still provide their complete validation contract without asking a
     # calculator to divide by a bad module or tooth count.
-    derived = calculator(params) if result.ok else {}
+    calculated = calculator(params) if result.ok else {}
+    if isinstance(calculated, dict) and "derived" in calculated:
+        derived = calculated["derived"]
+        geometry = calculated.get("geometry", {})
+    else:
+        derived = calculated
+        geometry = {}
     return clean(
         {
             "name": name,
@@ -163,7 +265,7 @@ def snapshot(name, kind, params, validator, calculator):
             "inputs": dataclasses.asdict(params),
             "validation": validation_snapshot(result),
             "derived": derived,
-            "geometry": {},
+            "geometry": geometry,
         }
     )
 
@@ -193,6 +295,15 @@ def fixtures():
             "spur",
             SpurSetParams.with_defaults(
                 2.0, 18, 60, internal=True, profile_shift_1=0.3
+            ),
+            validate_spur,
+            spur_snapshot,
+        ),
+        snapshot(
+            "spur_rack_generated",
+            "spur",
+            SpurSetParams.with_defaults(
+                2.0, 12, 43, root_geometry="rack_generated"
             ),
             validate_spur,
             spur_snapshot,

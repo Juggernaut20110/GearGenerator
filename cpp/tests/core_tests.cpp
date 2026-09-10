@@ -5,7 +5,9 @@
 #include "core/involute/involute.hpp"
 #include "core/placement/placement.hpp"
 #include "core/planetary/planetary.hpp"
+#include "core/planetary/mesh.hpp"
 #include "core/spur/spur.hpp"
+#include "core/spur/mesh.hpp"
 #include "core/validation/validation.hpp"
 #include "preview/export/export.hpp"
 #include "preview/scene2d/scene.hpp"
@@ -64,6 +66,94 @@ int main()
                 "SOLIDWORKS transform packing is column-major");
     ok &= check(std::abs(involute::involute_function(0.0)) < 1e-12,
                 "involute primitive is available in core");
+    const auto involute_point = involute::external_point(10.0, 0.5, 0.1);
+    const double expected_involute_radius = 10.0 * std::sqrt(1.25);
+    const double expected_involute_angle = 0.1 + 0.5 - std::atan(0.5);
+    ok &= check(std::abs(norm(involute_point.point) - expected_involute_radius) <
+                    1e-12 &&
+                    std::abs(std::atan2(involute_point.point.y,
+                                        involute_point.point.x) -
+                             expected_involute_angle) < 1e-12,
+                "involute point uses the analytical roll equation");
+
+    const auto standard_geometry = spur::compute_set(spur);
+    SpurDefaultOverrides shifted_overrides;
+    shifted_overrides.profile_shift_1 = 0.3;
+    const auto shifted_params = SpurSetParams::with_defaults(
+        2.0, 20, 40, shifted_overrides);
+    const auto shifted_geometry = spur::compute_set(shifted_params);
+    ok &= check(shifted_geometry.working_centre_distance_mm >
+                    shifted_geometry.reference_centre_distance_mm &&
+                    shifted_geometry.pinion.tip_radius_mm >
+                        standard_geometry.pinion.tip_radius_mm,
+                "profile shift changes working distance and addendum");
+
+    SpurDefaultOverrides backlash_overrides;
+    backlash_overrides.backlash = 0.2;
+    backlash_overrides.backlash_mode = "working_circumferential";
+    const auto backlash_geometry = spur::compute_set(
+        SpurSetParams::with_defaults(2.0, 20, 40, backlash_overrides));
+    ok &= check(std::abs(backlash_geometry.working_circular_pitch() -
+                             (backlash_geometry.pinion.working_tooth_thickness_mm +
+                              backlash_geometry.gear.working_tooth_thickness_mm) -
+                             0.2) <
+                    1e-12,
+                "working circumferential backlash is preserved");
+
+    SpurDefaultOverrides internal_overrides;
+    internal_overrides.internal = true;
+    const auto internal_geometry = spur::compute_set(
+        SpurSetParams::with_defaults(2.0, 18, 60, internal_overrides));
+    const auto internal_section = spur::tooth_space_section(
+        internal_geometry, "gear", 0.0, 8, true);
+    ok &= check(internal_geometry.gear.internal &&
+                    internal_section.loop_2d.size() > 10 &&
+                    internal_section.rack_generated() == false &&
+                    spur::mesh::gear_translation(internal_geometry).x < 0.0 &&
+                    std::abs(spur::mesh::clocking_for(internal_geometry) -
+                             kPi / 60.0) < 1e-12,
+                "internal tooth space and placement use ring conventions");
+
+    SpurDefaultOverrides helical_overrides;
+    helical_overrides.helix_angle = 15.0;
+    const auto helical_geometry = spur::compute_set(
+        SpurSetParams::with_defaults(2.0, 17, 43, helical_overrides));
+    ok &= check(helical_geometry.reference_pressure_angle_rad >
+                    helical_geometry.parameters.alpha_n() &&
+                    helical_geometry.gear.beta_rad < 0.0 &&
+                    std::isfinite(helical_geometry.axial_pitch_mm) &&
+                    spur::section_count(helical_geometry, "pinion") > 2 &&
+                    std::abs(spur::phase_at(
+                                 helical_geometry, "pinion",
+                                 helical_geometry.parameters.face_width / 2.0) -
+                             helical_geometry.pinion.twist_rad / 2.0) <
+                        1e-12,
+                "helical conversion and section phase follow the reference");
+
+    SpurDefaultOverrides generated_overrides;
+    generated_overrides.root_geometry = "rack_generated";
+    const auto generated_geometry = spur::compute_set(
+        SpurSetParams::with_defaults(2.0, 12, 43, generated_overrides));
+    const auto generated_section = spur::tooth_space_section(
+        generated_geometry, "pinion", 0.0, 8, true);
+    ok &= check(generated_geometry.pinion.generated_root_radius_mm.has_value() &&
+                    generated_geometry.pinion.root_form_radius_mm.has_value() &&
+                    generated_geometry.pinion.undercut.value_or(false) &&
+                    generated_section.rack_generated() &&
+                    generated_section.filleted,
+                "rack-generated root retains the analytical undercut envelope");
+
+    const auto planetary_geometry = planetary::compute_set(planetary);
+    ok &= check(std::abs(planetary_geometry.centre_distance_mm -
+                             planetary::centre_distance_from_ring(planetary)) <
+                    1e-12 &&
+                    std::abs(planetary::mesh::carrier_angle(planetary_geometry, 1) -
+                             kTau / 3.0) <
+                        1e-12 &&
+                    planetary::mesh::planet_translation(planetary_geometry, 1).y >
+                        0.0 &&
+                    planetary_geometry.ring.internal,
+                "planetary members share centre distance and orbit conventions");
     ok &= check(std::abs(degrees_to_radians(180.0) - kPi) < 1e-15 &&
                     std::abs(radians_to_degrees(kPi) - 180.0) < 1e-12,
                 "angle boundary helpers use radians internally");

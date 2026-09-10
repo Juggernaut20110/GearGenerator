@@ -287,6 +287,28 @@ ValidationResult validate(const SpurSetParams& p)
             "no independently verified root-form diameter; nominal d_f is not "
             "substituted for d_Ff");
     }
+    if (std::abs(p.beta()) <= 1e-12 && !p.internal) {
+        const double sine = std::sin(p.alpha_t());
+        const double effective_depth =
+            p.basic_rack_dedendum_factor() -
+            p.basic_rack_root_radius_factor * (1.0 - sine);
+        const double limit = 2.0 * effective_depth / (sine * sine);
+        if (p.z1 < limit) {
+            std::ostringstream message;
+            message << "pinion has " << p.z1
+                    << " teeth, below the undercut limit of " << std::fixed
+                    << std::setprecision(1) << limit << " for a "
+                    << std::setprecision(1) << radians_to_degrees(p.alpha_t())
+                    << " degree transverse pressure angle at x="
+                    << std::defaultfloat << std::setprecision(3)
+                    << p.profile_shift_1
+                    << "; a real cutter would undercut the flank near the root, and "
+                    << (p.root_geometry == "rack_generated"
+                            ? "the selected rack-generated root shows that form limit"
+                            : "the selected root approximation does not show the generated undercut");
+            result.warning("z1", message.str());
+        }
+    }
     return result;
 }
 

@@ -2,7 +2,10 @@
 #include "core/common/numerics.hpp"
 #include "core/hypoid/hypoid.hpp"
 #include "core/planetary/planetary.hpp"
+#include "core/planetary/mesh.hpp"
 #include "core/spur/spur.hpp"
+#include "core/spur/mesh.hpp"
+#include "core/involute/involute.hpp"
 #include "core/validation/validation.hpp"
 
 #include <fstream>
@@ -236,8 +239,143 @@ void compare_validation(const geargen::core::ValidationResult& actual,
     for (std::size_t i = 0; i < actual.warnings.size() && i < warnings.size(); ++i) {
         ok &= check(actual.warnings[i].field == string(warnings[i].at("field")),
                     name + " validation warning field");
-        ok &= check(actual.warnings[i].message == string(warnings[i].at("message")),
-                    name + " validation warning message");
+        if (actual.warnings[i].message != string(warnings[i].at("message"))) {
+            std::cerr << "FAIL: " << name
+                      << " warning native=" << actual.warnings[i].message
+                      << " python=" << string(warnings[i].at("message")) << '\n';
+            ok = false;
+        }
+    }
+}
+
+void compare_points(const std::vector<geargen::core::Point2>& actual,
+                    const Json& expected, bool& ok,
+                    const std::string& label)
+{
+    const auto& points = std::get<Json::Array>(expected.value);
+    ok &= check(actual.size() == points.size(), label + " point count");
+    for (std::size_t i = 0; i < actual.size() && i < points.size(); ++i) {
+        const auto& point = std::get<Json::Array>(points[i].value);
+        ok &= compare(actual[i].x, point.at(0), label + "[x]");
+        ok &= compare(actual[i].y, point.at(1), label + "[y]");
+    }
+}
+
+void compare_numbers(const std::vector<double>& actual, const Json& expected,
+                     bool& ok, const std::string& label)
+{
+    const auto& values = std::get<Json::Array>(expected.value);
+    ok &= check(actual.size() == values.size(), label + " count");
+    for (std::size_t i = 0; i < actual.size() && i < values.size(); ++i) {
+        ok &= compare(actual[i], values[i], label + "[" + std::to_string(i) + "]");
+    }
+}
+
+void compare_points3(const std::vector<geargen::core::Point3>& actual,
+                     const Json& expected, bool& ok,
+                     const std::string& label)
+{
+    const auto& points = std::get<Json::Array>(expected.value);
+    ok &= check(actual.size() == points.size(), label + " count");
+    for (std::size_t i = 0; i < actual.size() && i < points.size(); ++i) {
+        const auto& point = std::get<Json::Array>(points[i].value);
+        ok &= compare(actual[i].x, point.at(0), label + "[x]");
+        ok &= compare(actual[i].y, point.at(1), label + "[y]");
+        ok &= compare(actual[i].z, point.at(2), label + "[z]");
+    }
+}
+
+void compare_optional_number(const std::optional<double>& actual,
+                             const Json& expected, bool& ok,
+                             const std::string& label)
+{
+    if (std::holds_alternative<std::nullptr_t>(expected.value)) {
+        ok &= check(!actual.has_value(), label + " is absent");
+    } else {
+        ok &= check(actual.has_value(), label + " is present");
+        if (actual.has_value()) {
+            ok &= compare(*actual, expected, label);
+        }
+    }
+}
+
+void compare_optional_bool(const std::optional<bool>& actual,
+                           const Json& expected, bool& ok,
+                           const std::string& label)
+{
+    if (std::holds_alternative<std::nullptr_t>(expected.value)) {
+        ok &= check(!actual.has_value(), label + " is absent");
+    } else {
+        ok &= check(actual.has_value(), label + " is present");
+        if (actual.has_value()) {
+            ok &= check(*actual == boolean(expected), label + " value");
+        }
+    }
+}
+
+void compare_spur_geometry(const geargen::core::spur::SetGeometry& geometry,
+                           const Json& snapshot, bool& ok,
+                           const std::string& name)
+{
+    const std::string member_name = string(snapshot.at("member"));
+    const auto& member = geometry.member(member_name);
+    const int flank_count = static_cast<int>(number(snapshot.at("flank_count")));
+    std::vector<geargen::core::Point2> flank;
+    if (member.internal) {
+        flank = geargen::core::involute::internal_flank_points(
+            member.base_radius_mm, member.root_radius_mm,
+            member.tip_radius_mm, member.psi0_rad, flank_count);
+    } else {
+        flank = geargen::core::involute::flank_points(
+            member.base_radius_mm, member.root_radius_mm,
+            member.tip_radius_mm, member.psi0_rad, member.half_pitch_rad,
+            flank_count);
+    }
+    compare_points(flank, snapshot.at("involute_flank"), ok,
+                   name + " involute flank");
+
+    const int section_flank_count = static_cast<int>(
+        number(snapshot.at("section_flank_count")));
+    const auto section = geargen::core::spur::tooth_space_section(
+        geometry, member_name, 0.0, section_flank_count, true);
+    ok &= check(section.filleted == boolean(snapshot.at("section_filleted")),
+                name + " section fillet flag");
+    ok &= check(section.rack_generated() ==
+                    boolean(snapshot.at("section_rack_generated")),
+                name + " section generated-root flag");
+    compare_optional_number(section.generated_root_radius_mm,
+                            snapshot.at("section_generated_root_r"), ok,
+                            name + " section generated root");
+    compare_optional_number(section.root_form_radius_mm,
+                            snapshot.at("section_root_form_r"), ok,
+                            name + " section root form");
+    compare_optional_number(section.start_of_involute_angle_rad,
+                            snapshot.at("section_start_of_involute_angle"), ok,
+                            name + " section start angle");
+    compare_optional_number(section.involute_roll_parameter,
+                            snapshot.at("section_involute_roll_parameter"), ok,
+                            name + " section roll");
+    compare_optional_bool(section.undercut, snapshot.at("section_undercut"),
+                          ok, name + " section undercut");
+    compare_points(section.loop_2d, snapshot.at("section_loop"), ok,
+                   name + " section loop");
+
+    const auto& expected_segments =
+        std::get<Json::Object>(snapshot.at("section_segments").value);
+    for (const auto& [segment_name, expected] : expected_segments) {
+        const auto* segment = section.segments.empty()
+                                  ? nullptr
+                                  : [&]() -> const std::vector<geargen::core::Point2>* {
+                                        for (const auto& item : section.segments) {
+                                            if (item.name == segment_name) {
+                                                return &item.points;
+                                            }
+                                        }
+                                        return nullptr;
+                                    }();
+        const std::vector<geargen::core::Point2> empty;
+        compare_points(segment == nullptr ? empty : *segment, expected, ok,
+                       name + " segment " + segment_name);
     }
 }
 
@@ -256,6 +394,10 @@ void compare_spur(const Json& fixture, bool& ok)
         o.internal = true;
         o.profile_shift_1 = 0.3;
         p = geargen::core::SpurSetParams::with_defaults(2.0, 18, 60, o);
+    } else if (name == "spur_rack_generated") {
+        geargen::core::SpurDefaultOverrides o;
+        o.root_geometry = "rack_generated";
+        p = geargen::core::SpurSetParams::with_defaults(2.0, 12, 43, o);
     } else {
         p = geargen::core::SpurSetParams::with_defaults(2.0, 20, 40);
         p.module = -1.0;
@@ -278,6 +420,29 @@ void compare_spur(const Json& fixture, bool& ok)
     ok &= compare(geometry.working_pressure_angle_rad, derived.at("working_pressure_angle"), name + " working angle");
     ok &= compare(geometry.circular_pitch_mm, derived.at("circular_pitch"), name + " circular pitch");
     ok &= compare(geometry.whole_depth_mm, derived.at("whole_depth"), name + " whole depth");
+    ok &= compare(geometry.tip_alteration_coefficient,
+                  derived.at("tip_alteration_coefficient"),
+                  name + " tip alteration");
+    ok &= compare(geometry.working_depth_mm, derived.at("working_depth"),
+                  name + " working depth");
+    ok &= compare(geometry.tip_clearance_1_mm, derived.at("tip_clearance_1"),
+                  name + " tip clearance 1");
+    ok &= compare(geometry.tip_clearance_2_mm, derived.at("tip_clearance_2"),
+                  name + " tip clearance 2");
+    ok &= compare(geometry.minimum_tip_clearance_mm,
+                  derived.at("minimum_tip_clearance"),
+                  name + " minimum tip clearance");
+    ok &= compare(geometry.path_of_contact_mm, derived.at("path_of_contact"),
+                  name + " path of contact");
+    ok &= check(geometry.contact_ratio_basis ==
+                    string(derived.at("contact_ratio_basis")),
+                name + " contact ratio basis");
+    ok &= compare(geometry.transverse_contact_ratio,
+                  derived.at("transverse_contact_ratio"),
+                  name + " transverse contact ratio");
+    ok &= compare(geometry.axial_contact_ratio,
+                  derived.at("axial_contact_ratio"),
+                  name + " axial contact ratio");
     for (const auto& item : {std::pair{"pinion", &geometry.pinion},
                              std::pair{"gear", &geometry.gear}}) {
         const auto& expected = derived.at(item.first);
@@ -288,6 +453,7 @@ void compare_spur(const Json& fixture, bool& ok)
         ok &= compare(item.second->root_radius_mm, expected.at("root_r"), name + " " + item.first + " root");
         ok &= compare(item.second->twist_rad, expected.at("twist"), name + " " + item.first + " twist");
     }
+    compare_spur_geometry(geometry, fixture.at("geometry"), ok, name);
 }
 
 void compare_bevel(const Json& fixture, bool& ok)
@@ -380,6 +546,31 @@ void compare_planetary(const Json& fixture, bool& ok)
     ok &= compare(p.ratio_ring_to_sun(), derived.at("ratio_ring_to_sun"), name + " ring ratio");
     ok &= compare(geometry.circular_pitch_mm, derived.at("circular_pitch"), name + " circular pitch");
     ok &= compare(geometry.whole_depth_mm, derived.at("whole_depth"), name + " whole depth");
+
+    const auto& snapshot_geometry = fixture.at("geometry");
+    std::vector<double> planet_angles;
+    std::vector<geargen::core::Point3> translations;
+    std::vector<double> planet_clockings;
+    std::vector<double> ring_clockings;
+    for (int index = 0; index < p.n_planets; ++index) {
+        planet_angles.push_back(
+            geargen::core::planetary::mesh::carrier_angle(geometry, index));
+        translations.push_back(
+            geargen::core::planetary::mesh::planet_translation(geometry, index));
+        planet_clockings.push_back(
+            geargen::core::planetary::mesh::planet_clocking(geometry, index));
+        ring_clockings.push_back(
+            geargen::core::planetary::mesh::ring_clocking(geometry, index));
+    }
+    compare_numbers(planet_angles, snapshot_geometry.at("planet_angles"), ok,
+                    name + " planet angles");
+    compare_points3(translations, snapshot_geometry.at("planet_translations"),
+                    ok, name + " planet translations");
+    compare_numbers(planet_clockings,
+                    snapshot_geometry.at("planet_clocking"), ok,
+                    name + " planet clocking");
+    compare_numbers(ring_clockings, snapshot_geometry.at("ring_clocking"), ok,
+                    name + " ring clocking");
 }
 
 } // namespace

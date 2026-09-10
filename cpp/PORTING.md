@@ -2,8 +2,10 @@
 
 This document records the architecture observed on `master` and the native
 boundary chosen on `feature/cpp-port`. The Python implementation remains the
-behavioral reference. This stage establishes contracts and a buildable native
-skeleton; it deliberately does not translate the gear solvers line by line.
+behavioral reference. The native core now includes the common numerical
+foundation, analytical cylindrical involute/root profiles, complete spur pair
+derivation, and planetary composition; it remains independent of Qt and
+SOLIDWORKS.
 
 ## Python architecture discovered
 
@@ -92,11 +94,12 @@ The first skeleton maps the conceptual modules as follows:
 | `sw/session.py` | `src/solidworks` | COM ownership, call checking, VARIANT/SAFEARRAY helpers and unit conversion end at this boundary. |
 | `gui.py` | `src/gui` | Qt owns controls, event loop, workers and presentation; it calls core/preview interfaces. |
 
-The type-specific `.cpp` files now implement the parameter records, the
-size-dependent `with_defaults` behavior, angle/transverse accessors, compact
-derived scalar projections, and the first validation rules. They intentionally
-do not claim that tooth-space generation or full hypoid Method 1 geometry has
-been ported.
+The type-specific `.cpp` files implement the parameter records,
+size-dependent `with_defaults` behavior, angle/transverse accessors, spur
+derived dimensions, analytical involute/root geometry, section sampling,
+placement, clocking, and planetary mesh composition. Bevel remains a scalar
+foundation and hypoid remains a scalar foundation; neither is claimed to have
+full native tooth geometry yet.
 
 ## Parameters, defaults, and validation
 
@@ -157,9 +160,16 @@ These conventions are compatibility-critical:
 The shared scalar comparison contract is `Tolerance{absolute=1e-9,
 relative=1e-12}` in `core/common/numerics.hpp`. Length tolerances are in mm and
 angle tolerances are in radians because those are the core units. The Python
-reference's named sampling limits such as `MAX_SECTION_SAGITTA_MM = 0.02` and
-`FLANK_POINTS = 40` will become separate geometry contracts; they are not
+reference's named sampling limits such as `MAX_SECTION_SAGITTA_MM = 0.02`
+and `FLANK_POINTS = 40` are separate geometry contracts; they are not
 silently substituted by renderer tessellation settings.
+
+The involute port keeps `inv(alpha) = tan(alpha) - alpha`, samples the curve
+in roll parameter, and retains the Python distinction between an external
+space, an internal space, and a generated rack root. The rack root is an
+analytical rolling envelope; the start of involute is solved by a bounded
+intersection search before sampling. Circular fillets are used only for the
+legacy path or when the analytical generated-root path does not apply.
 
 ## Preview and export architecture
 
@@ -229,13 +239,14 @@ records/strings only.
 ## Compatibility strategy and tolerances
 
 The Python implementation is the oracle. `tools/cpp_reference/export.py`
-currently emits ten compact fixtures covering external/helical/internal spur,
-straight/spiral/Zerol bevel, a hypoid offset sample, planetary valid/edge
-cases, and an invalid-input case. The committed JSON keeps `inputs`, ordered
-`validation`, `derived`, and a reserved `geometry` object. Large point arrays
-are intentionally deferred until the corresponding native profile topology is
-ported. The fixture format preserves ordering and can represent null for
-non-finite values.
+currently emits eleven fixtures covering external/helical/internal/profile-
+shifted/rack-generated spur, straight/spiral/Zerol bevel, a hypoid offset
+sample, planetary valid/edge cases, and an invalid-input case. The committed
+JSON keeps `inputs`, ordered `validation`, `derived`, and a compact `geometry`
+object. Geometry fixtures contain representative flank samples, named section
+segments, loop topology, generated-root metadata, and planetary
+station/clocking values rather than unbounded tessellations. The fixture
+format preserves ordering and can represent null for non-finite values.
 
 Comparison policy:
 
@@ -275,8 +286,9 @@ scene bounds, DXF structure, and the mm-to-m CAD boundary.
 * Python's banker rounding in a few default/clocking paths must be reproduced
   intentionally where it affects a boundary case.
 * Root fillets, generated roots, internal flanks and undercut start-of-involute
-  intersections are the highest-risk topology ports. A profile that merely
-  looks similar is not compatible.
+  intersections remain the highest-risk topology areas even though the first
+  cylindrical fixtures now pass. A profile that merely looks similar is not
+  compatible.
 * Bevel crown trace signs, Zerol hand at zero mean angle, and hypoid signed
   contact azimuth are convention traps.
 * Section sample count is derived from sagitta limits and must not be chosen by
@@ -287,17 +299,14 @@ scene bounds, DXF structure, and the mm-to-m CAD boundary.
 * The spur external gear Reverse flag, internal pair Reverse flag, and
   catalogue naming of bevel hand remain measured/live-CAD questions in the
   reference project; do not infer them from a convenient sign.
-* Qt was not discoverable in the current environment. CMake therefore makes
-  the GUI conditional while preserving a real Qt Widgets target when Qt 5/6 is
-  installed.
+* Qt is available as a MinGW Qt 6 installation while MSVC is provided by the
+  Visual Studio 2022 Build Tools. The GUI remains conditional so the verified
+  MSVC core build does not depend on mixing toolchains.
 
 ## Current stage acceptance
 
-The native foundation stage is complete when `cpp/CMakeLists.txt` configures
-with the verified Visual Studio 2022/MSVC generator, the dependency-free
-libraries plus `geargen_tests` and `geargen_reference_tests` build, the Python
-suite and CTest pass, and a Qt-enabled configuration builds `geargen_gui` and
-opens `GearGenerator`. No full tooth-profile or CAD parity claim is made by
-this stage. The largest remaining behavioral gaps are the complete spur
-involute/root geometry, bevel CrownTrace sections, the hypoid Method 1
-non-zero-offset solver, and all native preview/SOLIDWORKS construction bodies.
+The cylindrical involute stage is complete when the verified Visual Studio
+2022/MSVC build, native tests, Python suite, and fixture comparisons pass. The
+largest remaining behavioral gaps are bevel CrownTrace sections, the hypoid
+Method 1 non-zero-offset solver, native preview scene parity, and all native
+SOLIDWORKS construction bodies.
