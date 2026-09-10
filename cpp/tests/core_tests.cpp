@@ -64,14 +64,14 @@ int main()
     ok &= check(std::abs(involute::involute_function(0.0)) < 1e-12,
                 "involute primitive is available in core");
 
-    preview::Scene2D scene;
+    geargen::preview::Scene2D scene;
     scene.polylines.push_back({{{0.0, 1.0}, {2.0, 3.0}}, "test", false});
     const auto bounds = scene.bounds();
     ok &= check(bounds[0] == 0.0 && bounds[3] == 3.0,
                 "2D preview scene computes bounds");
-    ok &= check(preview::exporter::dxf_lines(scene).size() > 4,
+    ok &= check(geargen::preview::exporter::dxf_lines(scene).size() > 4,
                 "DXF export has a complete section");
-    ok &= check(std::abs(solidworks::millimeters_to_meters(2.0) - 0.002) < 1e-12,
+    ok &= check(std::abs(geargen::solidworks::millimeters_to_meters(2.0) - 0.002) < 1e-12,
                 "SOLIDWORKS unit boundary converts millimetres");
 
     return ok ? 0 : 1;
