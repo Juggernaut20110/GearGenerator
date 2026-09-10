@@ -42,7 +42,12 @@ geargen_enable_warnings(geargen_core)
 
 add_library(geargen_preview STATIC
     src/preview/scene2d/scene.cpp
+    src/preview/scene2d/spur_scene.cpp
+    src/preview/scene2d/bevel_scene.cpp
+    src/preview/scene2d/hypoid_scene.cpp
+    src/preview/scene2d/planetary_scene.cpp
     src/preview/scene3d/scene.cpp
+    src/preview/scene3d/assembly.cpp
     src/preview/export/export.cpp
 )
 target_link_libraries(geargen_preview PUBLIC geargen_core)

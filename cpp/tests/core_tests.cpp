@@ -12,10 +12,18 @@
 #include "core/spur/mesh.hpp"
 #include "core/validation/validation.hpp"
 #include "preview/export/export.hpp"
+#include "preview/scene2d/bevel_scene.hpp"
+#include "preview/scene2d/hypoid_scene.hpp"
+#include "preview/scene2d/planetary_scene.hpp"
 #include "preview/scene2d/scene.hpp"
+#include "preview/scene2d/spur_scene.hpp"
+#include "preview/scene3d/assembly.hpp"
+#include "preview/scene3d/scene.hpp"
 #include "solidworks/solidworks.hpp"
 
 #include <cmath>
+#include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -253,6 +261,87 @@ int main()
                 "2D preview scene computes bounds");
     ok &= check(geargen::preview::exporter::dxf_lines(scene).size() > 4,
                 "DXF export has a complete section");
+    const auto view = geargen::preview::View2D::fit({0.0, 0.0, 10.0, 5.0},
+                                                     200.0, 100.0);
+    ok &= check(std::abs(view.scale - 12.0) < 1e-12 &&
+                    distance(view.to_canvas({0.0, 0.0}), {40.0, 80.0}) < 1e-12 &&
+                    distance(
+                        view.from_canvas(view.to_canvas({5.5, 1.25})),
+                        {5.5, 1.25}) < 1e-12,
+                "2D view fit, Y inversion, and inverse conversion match Python");
+
+    const auto spur_transverse = geargen::preview::spur::build_scene(
+        standard_geometry, "pinion", "transverse");
+    const auto spur_twist = geargen::preview::spur::build_scene(
+        standard_geometry, "gear", "twist");
+    const auto spur_blank = geargen::preview::spur::build_scene(
+        standard_geometry, "pinion", "blank");
+    ok &= check(spur_transverse.polylines.size() > 5 &&
+                    spur_twist.polylines.size() > 10 &&
+                    spur_blank.polylines.size() == 6,
+                "spur preview exposes transverse, twist, and blank scenes");
+    const auto bevel_developed = geargen::preview::bevel::build_scene(
+        bevel_straight, "pinion", "developed");
+    const auto bevel_axial = geargen::preview::bevel::build_scene(
+        bevel_straight, "gear", "axial");
+    const auto bevel_blank = geargen::preview::bevel::build_scene(
+        bevel_straight, "pinion", "blank");
+    ok &= check(!bevel_developed.polylines.empty() &&
+                    !bevel_axial.polylines.empty() &&
+                    bevel_blank.polylines.size() == 7,
+                "bevel preview exposes developed, axial, and blank geometry");
+    const auto hypoid_contact = geargen::preview::hypoid::build_scene(
+        hypoid_geometry, "pinion", "contact");
+    const auto hypoid_section_scene = geargen::preview::hypoid::build_scene(
+        hypoid_geometry, "gear", "section");
+    const auto hypoid_blank = geargen::preview::hypoid::build_scene(
+        hypoid_geometry, "gear", "blank");
+    ok &= check(!hypoid_contact.polylines.empty() &&
+                    !hypoid_section_scene.polylines.empty() &&
+                    !hypoid_blank.polylines.empty(),
+                "hypoid preview exposes contact, section, and blank scenes");
+    const auto train = geargen::preview::planetary::build_scene(
+        planetary_geometry, "sun", "train");
+    ok &= check(train.polylines.size() >
+                    static_cast<std::size_t>(planetary.n_planets),
+                "planetary preview places sun, planets, ring, and references");
+    const auto scene3d_spur = geargen::preview::scene3d::build_scene(standard_geometry);
+    const auto scene3d_bevel = geargen::preview::scene3d::build_scene(bevel_straight);
+    const auto scene3d_hypoid = geargen::preview::scene3d::build_scene(hypoid_geometry);
+    const auto scene3d_planetary = geargen::preview::scene3d::build_scene(planetary_geometry);
+    ok &= check(!scene3d_spur.polylines.empty() && !scene3d_bevel.polylines.empty() &&
+                    !scene3d_hypoid.polylines.empty() && !scene3d_planetary.polylines.empty() &&
+                    scene3d_spur.bounds()[3] > scene3d_spur.bounds()[0],
+                "3D assembly scenes are available for every gear family");
+    geargen::preview::Camera camera;
+    camera.front();
+    ok &= check(distance(camera.project({1.0, 2.0, 3.0}, 100.0, 80.0),
+                         {51.0, 38.0}) < 1e-12,
+                "3D camera front projection matches Python convention");
+
+    const auto r12 = geargen::preview::exporter::dxf_lines(spur_transverse);
+    ok &= check(std::find(r12.begin(), r12.end(), "AC1009") != r12.end() &&
+                    std::find(r12.begin(), r12.end(), "POLYLINE") != r12.end() &&
+                    std::find(r12.begin(), r12.end(), "LWPOLYLINE") == r12.end(),
+                "DXF export uses the Python-compatible R12 polyline format");
+    ok &= check(geargen::preview::spur::csv_lines(helical_geometry, "pinion").front() ==
+                    "member,section,index,x,y,z" &&
+                    geargen::preview::bevel::csv_lines(bevel_straight, "pinion").front() ==
+                    "member,end,loop,index,x_dev,y_dev,x,y,z" &&
+                    geargen::preview::hypoid::csv_lines(hypoid_geometry, "pinion").front() ==
+                    "member,section_kind,index,x_dev,y_dev,x,y,z" &&
+                    geargen::preview::planetary::csv_lines(planetary_geometry, "sun").front() ==
+                    "member,index,x,y,z",
+                "CSV exporters preserve each Python header and coordinate contract");
+
+    const auto preset_path = std::filesystem::temp_directory_path() /
+                             "geargen_native_preset_test.json";
+    save_preset(preset_path, shifted_params);
+    const auto loaded_spur = load_spur_preset(preset_path);
+    ok &= check(loaded_spur.z1 == shifted_params.z1 &&
+                    std::abs(loaded_spur.profile_shift_1 - shifted_params.profile_shift_1) < 1e-12,
+                "JSON preset save/load preserves typed spur overrides");
+    std::filesystem::remove(preset_path);
     ok &= check(std::abs(geargen::solidworks::millimeters_to_meters(2.0) - 0.002) < 1e-12,
                 "SOLIDWORKS unit boundary converts millimetres");
 

@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
 
@@ -9,21 +10,32 @@ namespace geargen::preview::exporter {
 
 std::vector<std::string> dxf_lines(const Scene2D& scene)
 {
-    std::vector<std::string> lines{"0", "SECTION", "2", "ENTITIES"};
+    // Match gears.preview.dxf_lines: a minimal AutoCAD R12 file. R12's
+    // POLYLINE/VERTEX form is intentionally used for broad CAD compatibility.
+    std::vector<std::string> lines{
+        "0", "SECTION", "2", "HEADER", "9", "$ACADVER", "1", "AC1009",
+        "9", "$INSUNITS", "70", "4", "0", "ENDSEC", "0", "SECTION",
+        "2", "ENTITIES"};
+    const auto number = [](double value) {
+        std::ostringstream stream;
+        stream.imbue(std::locale::classic());
+        stream << std::fixed << std::setprecision(6) << value;
+        return stream.str();
+    };
     for (const auto& polyline : scene.polylines) {
         if (polyline.points.size() < 2) {
             continue;
         }
-        lines.insert(lines.end(), {"0", "LWPOLYLINE", "8", polyline.style,
-                                   "90", std::to_string(polyline.points.size()),
-                                   "70", polyline.closed ? "1" : "0"});
+        lines.insert(lines.end(), {"0", "POLYLINE", "8", polyline.style,
+                                   "66", "1", "70", polyline.closed ? "1" : "0",
+                                   "10", "0.000000", "20", "0.000000",
+                                   "30", "0.000000"});
         for (const auto& point : polyline.points) {
-            std::ostringstream x;
-            std::ostringstream y;
-            x << std::setprecision(17) << point.x;
-            y << std::setprecision(17) << point.y;
-            lines.insert(lines.end(), {"10", x.str(), "20", y.str()});
+            lines.insert(lines.end(), {"0", "VERTEX", "8", polyline.style,
+                                       "10", number(point.x), "20", number(point.y),
+                                       "30", "0.000000"});
         }
+        lines.insert(lines.end(), {"0", "SEQEND", "8", polyline.style});
     }
     lines.insert(lines.end(), {"0", "ENDSEC", "0", "EOF"});
     return lines;

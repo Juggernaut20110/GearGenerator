@@ -83,7 +83,7 @@ The first skeleton maps the conceptual modules as follows:
 | --- | --- | --- |
 | `Point2`, `Point3`, matrix helpers | `src/core/common/geometry_types.hpp` | Plain doubles; no Qt or CAD handles. |
 | Four parameter dataclasses | `src/core/common/parameters.hpp`, `src/core/{bevel,spur,hypoid,planetary}` | Value records first; JSON is an application-boundary concern. |
-| `JsonParams` | `src/core/common/serialization.hpp/.cpp` plus `tools/cpp_reference` | Native emission is deterministic and dependency-free; file loading/migration remains an application-boundary task. |
+| `JsonParams` | `src/core/common/serialization.hpp/.cpp` plus `tools/cpp_reference` | Native emission and flat JSON loading are deterministic, dependency-free, and tolerant of unknown keys. |
 | `Issue`, `ValidationResult` | `src/core/validation` | Preserve ordered errors/warnings and the non-throwing validation contract. |
 | `involute.py` | `src/core/involute` | Preserve named profile segments and analytical parameters before sampling. |
 | `placement.py` and `*/mesh.py` | `src/core/placement`, then per-family mesh modules | Keep matrix convention and clocking tests independent of preview/CAD. |
@@ -186,6 +186,16 @@ The 2D preview should port as a pipeline:
 4. Export consumes the same scene/profile points. DXF/CSV must never recreate
    geometry from display pixels.
 
+The native implementation now has four renderer-neutral 2D builders under
+`src/preview/scene2d`: spur (`transverse`, `twist`, `blank`), bevel
+(`developed`, `axial`, `trace`, `blank`), hypoid (`contact`, `section`,
+`blank`), and planetary (`train`, `transverse`, `blank`). They use the same
+named involute segments as the core for both the visible tooth and the cut
+boundary. `Scene2D::bounds`, `View2D`, and the style/legend records contain no
+Qt types. The DXF writer follows the Python R12 contract (`AC1009`, millimetre
+units, `POLYLINE`/`VERTEX`/`SEQEND`, one layer per style); CSV writers preserve
+the Python family-specific headers and coordinate columns.
+
 The 3D preview follows the Python implementation: section samples come from
 the core section function, are placed by the per-family mesh module, and are
 returned as a renderer-neutral `Scene3D`. Camera operations are UI-neutral;
@@ -228,8 +238,9 @@ records/strings only.
    the external straight spur anchor and its internal counterpart.
 4. Port spur derived geometry, backlash modes, profile shifts, active limits,
    section sampling, and placement/clocking; compare every named field.
-5. Port 2D scenes and DXF/CSV, then the sampled 3D scene/camera.
-6. Port planetary as a composition of the verified spur core: ring derivation,
+5. **Complete:** port 2D scenes, DXF/CSV, presets, and the sampled 3D
+   scene/camera.
+6. **Complete:** port planetary as a composition of the verified spur core: ring derivation,
    station arithmetic, clocking, and train interference invariants.
 7. Port bevel straight geometry, then CrownTrace/spiral/Zerol sections and
    cone placement. **Complete on `feature/cpp-port`.**
@@ -283,10 +294,11 @@ CAD boundary.
 
 ## Known risks and open questions
 
-* Native preset loading is still open. The current serializer is intentionally
-  output-only so JSON emission and reference snapshots do not pull Qt or a JSON
-  dependency into core; unknown-key filtering and type-specific migrations
-  still need a checked parser at the GUI/file boundary.
+* Preset migration hooks beyond Python's current unknown-key tolerance remain
+  open. The native flat-object parser intentionally covers the present JSON
+  schema without pulling Qt or a third-party JSON dependency into core; a
+  future versioned migration layer should be added if the file schema becomes
+  nested.
 * Python uses double precision and stable `math` operations; compiler flags,
   fused multiply-add and libm differences need measured tolerances rather than
   assumed bit identity.
@@ -317,11 +329,11 @@ CAD boundary.
 
 ## Current stage acceptance
 
-The bevel/hypoid mathematical-core stage is complete when the verified Visual
-Studio 2022/MSVC build, native tests, Python suite, and fixture comparisons
-pass. The largest remaining behavioral gaps are native preview scene parity,
-full type-specific validation-message parity for unusual invalid inputs, and
-native SOLIDWORKS construction bodies. The native hypoid section deliberately
-retains Python's documented Tredgold approximation boundary; replacing it with
-a true cutter-envelope model would be a separate geometry decision, not a
-compatibility fix.
+The non-SOLIDWORKS presentation stage is complete when the verified Visual
+Studio 2022/MSVC and Qt builds, native tests, Python suite, and fixture
+comparisons pass. Remaining gaps are full type-specific validation-message
+parity for unusual invalid inputs, richer derived-row coverage, and native
+SOLIDWORKS construction bodies. The native hypoid section deliberately
+retains Python's documented Tredgold approximation boundary; replacing it
+with a true cutter-envelope model would be a separate geometry decision, not
+a compatibility fix.

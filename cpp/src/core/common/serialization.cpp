@@ -1,7 +1,11 @@
 #include "core/common/serialization.hpp"
 
 #include <iomanip>
+#include <cctype>
+#include <fstream>
 #include <limits>
+#include <map>
+#include <stdexcept>
 #include <sstream>
 
 namespace geargen::core {
@@ -37,6 +41,130 @@ std::string issues(const std::vector<Issue>& values)
     }
     stream << ']';
     return stream.str();
+}
+
+using JsonFields = std::map<std::string, std::string>;
+
+JsonFields parse_flat_object(const std::string& text)
+{
+    std::size_t cursor = 0;
+    const auto skip = [&]() {
+        while (cursor < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[cursor]))) ++cursor;
+    };
+    const auto string_value = [&]() {
+        if (cursor >= text.size() || text[cursor] != '"')
+            throw std::runtime_error("preset JSON expected a string");
+        ++cursor;
+        std::string result;
+        while (cursor < text.size()) {
+            const char c = text[cursor++];
+            if (c == '"') return result;
+            if (c != '\\') { result += c; continue; }
+            if (cursor >= text.size()) throw std::runtime_error("invalid JSON escape");
+            const char escaped = text[cursor++];
+            switch (escaped) {
+            case '"': result += '"'; break;
+            case '\\': result += '\\'; break;
+            case '/': result += '/'; break;
+            case 'b': result += '\b'; break;
+            case 'f': result += '\f'; break;
+            case 'n': result += '\n'; break;
+            case 'r': result += '\r'; break;
+            case 't': result += '\t'; break;
+            default: throw std::runtime_error("unsupported JSON escape in preset");
+            }
+        }
+        throw std::runtime_error("unterminated JSON string in preset");
+    };
+    skip();
+    if (cursor >= text.size() || text[cursor++] != '{')
+        throw std::runtime_error("preset JSON must contain an object");
+    JsonFields fields;
+    skip();
+    if (cursor < text.size() && text[cursor] == '}') return fields;
+    while (cursor < text.size()) {
+        skip();
+        const std::string key = string_value();
+        skip();
+        if (cursor >= text.size() || text[cursor++] != ':')
+            throw std::runtime_error("preset JSON expected ':'");
+        skip();
+        std::string value;
+        if (cursor < text.size() && text[cursor] == '"') {
+            value = string_value();
+        } else {
+            const std::size_t start = cursor;
+            while (cursor < text.size() && text[cursor] != ',' && text[cursor] != '}') ++cursor;
+            value = text.substr(start, cursor - start);
+            while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
+        }
+        fields[key] = value;
+        skip();
+        if (cursor >= text.size()) break;
+        if (text[cursor] == '}') { ++cursor; return fields; }
+        if (text[cursor++] != ',') throw std::runtime_error("preset JSON expected ','");
+    }
+    throw std::runtime_error("unterminated preset JSON object");
+}
+
+JsonFields read_fields(const std::filesystem::path& path)
+{
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("could not open preset: " + path.string());
+    return parse_flat_object({std::istreambuf_iterator<char>(input), {}});
+}
+
+const std::string& required(const JsonFields& fields, const char* key)
+{
+    const auto found = fields.find(key);
+    if (found == fields.end() || found->second.empty() || found->second == "null")
+        throw std::runtime_error(std::string("preset is missing required field '") + key + "'");
+    return found->second;
+}
+
+std::optional<double> optional_number(const JsonFields& fields, const char* key)
+{
+    const auto found = fields.find(key);
+    if (found == fields.end() || found->second == "null" || found->second.empty()) return std::nullopt;
+    return std::stod(found->second);
+}
+
+int integer_or(const JsonFields& fields, const char* key, int fallback)
+{
+    const auto found = fields.find(key);
+    return found == fields.end() || found->second == "null" ? fallback : std::stoi(found->second);
+}
+
+bool boolean_or(const JsonFields& fields, const char* key, bool fallback)
+{
+    const auto found = fields.find(key);
+    if (found == fields.end() || found->second == "null") return fallback;
+    if (found->second == "true") return true;
+    if (found->second == "false") return false;
+    throw std::runtime_error(std::string("preset field '") + key + "' is not boolean");
+}
+
+std::string string_or(const JsonFields& fields, const char* key, std::string fallback)
+{
+    const auto found = fields.find(key);
+    return found == fields.end() || found->second == "null" ? std::move(fallback) : found->second;
+}
+
+Hand hand_or(const JsonFields& fields, const char* key, Hand fallback)
+{
+    const auto value = string_or(fields, key, hand_name(fallback));
+    if (value == "right") return Hand::Right;
+    if (value == "left") return Hand::Left;
+    throw std::runtime_error(std::string("preset field '") + key + "' has invalid hand");
+}
+
+void write_preset(const std::filesystem::path& path, const std::string& json)
+{
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) throw std::runtime_error("could not write preset: " + path.string());
+    output << json << '\n';
 }
 
 } // namespace
@@ -201,5 +329,110 @@ std::string validation_json(const ValidationResult& result)
         {"advisories", issues(result.advisories)},
     });
 }
+
+SpurSetParams load_spur_preset(const std::filesystem::path& path)
+{
+    const auto fields = read_fields(path);
+    SpurDefaultOverrides o;
+    o.face_width = optional_number(fields, "face_width");
+    o.bore = optional_number(fields, "bore");
+    o.hub_thickness = optional_number(fields, "hub_thickness");
+    o.pressure_angle = optional_number(fields, "pressure_angle");
+    o.helix_angle = optional_number(fields, "helix_angle");
+    o.hand = hand_or(fields, "hand", Hand::Right);
+    o.internal = boolean_or(fields, "internal", false);
+    o.fillet_factor = optional_number(fields, "fillet_factor");
+    o.backlash = optional_number(fields, "backlash");
+    o.rim_thickness = optional_number(fields, "rim_thickness");
+    o.profile_shift_1 = optional_number(fields, "profile_shift_1");
+    o.profile_shift_2 = optional_number(fields, "profile_shift_2");
+    o.basic_rack_addendum_factor = optional_number(fields, "basic_rack_addendum_factor");
+    o.basic_rack_clearance_factor = optional_number(fields, "basic_rack_clearance_factor");
+    o.basic_rack_root_radius_factor = optional_number(fields, "basic_rack_root_radius_factor");
+    o.working_centre_distance = optional_number(fields, "working_centre_distance");
+    o.tip_alteration_coefficient = optional_number(fields, "tip_alteration_coefficient");
+    o.tip_alteration_mode = string_or(fields, "tip_alteration_mode", "iso_clearance");
+    o.root_geometry = string_or(fields, "root_geometry", "legacy");
+    o.backlash_mode = string_or(fields, "backlash_mode", "legacy_reference");
+    o.backlash_allocation = optional_number(fields, "backlash_allocation");
+    return SpurSetParams::with_defaults(std::stod(required(fields, "module")),
+                                        std::stoi(required(fields, "z1")),
+                                        std::stoi(required(fields, "z2")), o);
+}
+
+BevelSetParams load_bevel_preset(const std::filesystem::path& path)
+{
+    const auto fields = read_fields(path);
+    BevelDefaultOverrides o;
+    o.face_width = optional_number(fields, "face_width");
+    o.bore = optional_number(fields, "bore");
+    o.hub_thickness = optional_number(fields, "hub_thickness");
+    o.min_root_thickness = optional_number(fields, "min_root_thickness");
+    o.pressure_angle = optional_number(fields, "pressure_angle");
+    o.shaft_angle = optional_number(fields, "shaft_angle");
+    o.spiral_angle = optional_number(fields, "spiral_angle");
+    o.hand = hand_or(fields, "hand", Hand::Right);
+    o.cutter_radius = optional_number(fields, "cutter_radius");
+    o.fillet_factor = optional_number(fields, "fillet_factor");
+    o.backlash = optional_number(fields, "backlash");
+    return BevelSetParams::with_defaults(std::stod(required(fields, "module")),
+                                         std::stoi(required(fields, "z1")),
+                                         std::stoi(required(fields, "z2")), false, o);
+}
+
+HypoidSetParams load_hypoid_preset(const std::filesystem::path& path)
+{
+    const auto fields = read_fields(path);
+    HypoidDefaultOverrides o;
+    o.face_width = optional_number(fields, "face_width");
+    o.bore = optional_number(fields, "bore");
+    o.hub_thickness = optional_number(fields, "hub_thickness");
+    o.pressure_angle = optional_number(fields, "pressure_angle");
+    o.shaft_angle = optional_number(fields, "shaft_angle");
+    o.offset = optional_number(fields, "offset");
+    o.spiral_angle = optional_number(fields, "spiral_angle");
+    o.hand = hand_or(fields, "hand", Hand::Right);
+    o.cutter_radius = optional_number(fields, "cutter_radius");
+    o.backlash = optional_number(fields, "backlash");
+    o.min_root_thickness = optional_number(fields, "min_root_thickness");
+    o.gear_mean_addendum_factor = optional_number(fields, "gear_mean_addendum_factor");
+    o.depth_factor = optional_number(fields, "depth_factor");
+    o.clearance_factor = optional_number(fields, "clearance_factor");
+    o.thickness_factor = optional_number(fields, "thickness_factor");
+    o.gear_addendum_angle = optional_number(fields, "gear_addendum_angle");
+    o.gear_dedendum_angle = optional_number(fields, "gear_dedendum_angle");
+    o.root_fillet_radius = optional_number(fields, "root_fillet_radius");
+    return HypoidSetParams::with_defaults(std::stod(required(fields, "module")),
+                                          std::stoi(required(fields, "z1")),
+                                          std::stoi(required(fields, "z2")), o);
+}
+
+PlanetarySetParams load_planetary_preset(const std::filesystem::path& path)
+{
+    const auto fields = read_fields(path);
+    PlanetaryDefaultOverrides o;
+    o.n_planets = integer_or(fields, "n_planets", 3);
+    o.face_width = optional_number(fields, "face_width");
+    o.bore = optional_number(fields, "bore");
+    o.hub_thickness = optional_number(fields, "hub_thickness");
+    o.rim_thickness = optional_number(fields, "rim_thickness");
+    o.pressure_angle = optional_number(fields, "pressure_angle");
+    o.helix_angle = optional_number(fields, "helix_angle");
+    o.hand = hand_or(fields, "hand", Hand::Right);
+    o.fillet_factor = optional_number(fields, "fillet_factor");
+    o.backlash = optional_number(fields, "backlash");
+    return PlanetarySetParams::with_defaults(std::stod(required(fields, "module")),
+                                             std::stoi(required(fields, "z_sun")),
+                                             std::stoi(required(fields, "z_planet")), o);
+}
+
+void save_preset(const std::filesystem::path& path, const SpurSetParams& p)
+{ write_preset(path, parameters_json(p)); }
+void save_preset(const std::filesystem::path& path, const BevelSetParams& p)
+{ write_preset(path, parameters_json(p)); }
+void save_preset(const std::filesystem::path& path, const HypoidSetParams& p)
+{ write_preset(path, parameters_json(p)); }
+void save_preset(const std::filesystem::path& path, const PlanetarySetParams& p)
+{ write_preset(path, parameters_json(p)); }
 
 } // namespace geargen::core
