@@ -175,6 +175,107 @@ def _independent_rack_root_point(
     return raw[0] * cp - raw[1] * sp, raw[0] * sp + raw[1] * cp
 
 
+def _independent_rack_soi_phi(member, module, rho):
+    """Solve the rack/trochoid-vs-involute intersection without production SOI code."""
+    reference_r = member.reference_r
+    alpha = math.acos(member.base_r / reference_r)
+    depth = member.dedendum
+    centre_v = -depth + rho
+    centre_u = math.tan(alpha) * centre_v - rho / math.cos(alpha)
+    phi_root = centre_u / reference_r
+    tangent_v = centre_v - rho * math.sin(alpha)
+    phi_transition = tangent_v * (1.0 + math.tan(alpha) ** 2) / (
+        math.tan(alpha) * reference_r
+    )
+    base_space_angle = member.half_pitch - member.psi0
+
+    def residual(phi):
+        point = _independent_rack_root_point(
+            reference_r,
+            alpha,
+            depth,
+            rho,
+            member.psi0,
+            member.half_pitch,
+            phi,
+        )
+        radius = math.hypot(*point)
+        if radius < member.base_r:
+            return None
+        roll = math.sqrt((radius / member.base_r) ** 2 - 1.0)
+        return math.atan2(point[1], point[0]) - (
+            base_space_angle + roll - math.atan(roll)
+        )
+
+    previous = None
+    bracket = None
+    for i in range(4097):
+        phi = phi_transition + (phi_root - phi_transition) * i / 4096.0
+        value = residual(phi)
+        if value is None:
+            if previous is not None:
+                lo, hi, f_lo = previous[0], phi, previous[1]
+                for _ in range(100):
+                    mid = 0.5 * (lo + hi)
+                    if math.hypot(
+                        *_independent_rack_root_point(
+                            reference_r,
+                            alpha,
+                            depth,
+                            rho,
+                            member.psi0,
+                            member.half_pitch,
+                            mid,
+                        )
+                    ) >= member.base_r:
+                        lo = mid
+                    else:
+                        hi = mid
+                boundary = 0.5 * (lo + hi)
+                point = _independent_rack_root_point(
+                    reference_r,
+                    alpha,
+                    depth,
+                    rho,
+                    member.psi0,
+                    member.half_pitch,
+                    boundary,
+                )
+                boundary_value = math.atan2(point[1], point[0]) - base_space_angle
+                if f_lo * boundary_value <= 0.0:
+                    bracket = (previous[0], boundary)
+                    break
+                previous = None
+            continue
+        if previous is not None and previous[1] * value <= 0.0:
+            bracket = (previous[0], phi)
+            break
+        previous = (phi, value)
+
+    assert bracket is not None
+    lo, hi = bracket
+    f_lo = residual(lo)
+    f_hi = residual(hi)
+    if f_hi is None:
+        point = _independent_rack_root_point(
+            reference_r, alpha, depth, rho, member.psi0, member.half_pitch, hi
+        )
+        f_hi = math.atan2(point[1], point[0]) - base_space_angle
+    for _ in range(120):
+        mid = 0.5 * (lo + hi)
+        f_mid = residual(mid)
+        if f_mid is None:
+            hi = mid
+            continue
+        if abs(f_mid) < 1e-14:
+            return mid
+        if f_lo * f_mid <= 0.0:
+            hi, f_hi = mid, f_mid
+        else:
+            lo, f_lo = mid, f_mid
+    return 0.5 * (lo + hi)
+
+
 def test_rack_generated_root_is_the_rolling_envelope_not_a_radial_flank():
     p = SpurSetParams.with_defaults(
         2.0, 12, 43, root_geometry="rack_generated"
@@ -203,7 +304,8 @@ def test_rack_generated_root_is_the_rolling_envelope_not_a_radial_flank():
     i = len(generated) // 2
     # The positive side is traversed from the tip back to the root, so its
     # generated-root segment is transition-to-root.
-    phi = phi_transition + (phi_root - phi_transition) * i / (
+    phi_soi = _independent_rack_soi_phi(member, p.module, rho)
+    phi = phi_soi + (phi_root - phi_soi) * i / (
         len(generated) - 1
     )
     assert generated[i] == pytest.approx(
@@ -227,6 +329,170 @@ def test_rack_generated_root_is_the_rolling_envelope_not_a_radial_flank():
         member.root_r * math.sin(member.half_pitch - member.psi0 + inv(alpha)),
     )
     assert math.dist(generated[0], old_radial) > 1e-3
+
+
+def test_undercut_soi_is_not_the_old_rack_flank_tangency_point():
+    p = SpurSetParams.with_defaults(2.0, 12, 43, root_geometry="rack_generated")
+    geo = compute_set(p)
+    member = geo.pinion
+    rho = p.basic_rack_root_radius_factor * p.module
+    soi_phi = _independent_rack_soi_phi(member, p.module, rho)
+
+    alpha = math.acos(member.base_r / member.reference_r)
+    depth = member.dedendum
+    centre_v = -depth + rho
+    tangent_v = centre_v - rho * math.sin(alpha)
+    tangent_phi = tangent_v * (1.0 + math.tan(alpha) ** 2) / (
+        math.tan(alpha) * member.reference_r
+    )
+    soi = _independent_rack_root_point(
+        member.reference_r,
+        alpha,
+        depth,
+        rho,
+        member.psi0,
+        member.half_pitch,
+        soi_phi,
+    )
+    tangent = _independent_rack_root_point(
+        member.reference_r,
+        alpha,
+        depth,
+        rho,
+        member.psi0,
+        member.half_pitch,
+        tangent_phi,
+    )
+    assert member.undercut is True
+    assert math.dist(soi, tangent) > 1e-4
+    assert member.start_of_involute_r == pytest.approx(math.hypot(*soi), abs=1e-10)
+
+
+@pytest.mark.parametrize(
+    "z, expected_undercut",
+    [(30, False), (12, True), (17, True), (18, False)],
+)
+def test_rack_soi_reports_the_clause_10_boundary_cases(z, expected_undercut):
+    p = SpurSetParams.with_defaults(2.0, z, 43, root_geometry="rack_generated")
+    geo = compute_set(p)
+    member = geo.pinion
+    section = tooth_space_section(geo, "pinion")
+
+    assert member.undercut is expected_undercut
+    assert section.undercut is expected_undercut
+    assert member.root_form_d == pytest.approx(2.0 * member.start_of_involute_r)
+    assert member.generated_root_d == pytest.approx(2.0 * member.generated_root_r)
+
+    if expected_undercut:
+        rho = p.basic_rack_root_radius_factor * p.module
+        phi = _independent_rack_soi_phi(member, p.module, rho)
+        point = _independent_rack_root_point(
+            member.reference_r,
+            math.acos(member.base_r / member.reference_r),
+            member.dedendum,
+            rho,
+            member.psi0,
+            member.half_pitch,
+            phi,
+        )
+        radius = math.hypot(*point)
+        roll = math.sqrt((radius / member.base_r) ** 2 - 1.0)
+        involute_angle = member.half_pitch - member.psi0 + roll - math.atan(roll)
+        assert radius == pytest.approx(member.start_of_involute_r, abs=2e-9)
+        assert math.atan2(point[1], point[0]) == pytest.approx(
+            involute_angle, abs=2e-9
+        )
+        assert section.segments["generated_root_pos"][0] == pytest.approx(
+            point, abs=2e-9
+        )
+    else:
+        alpha = math.acos(member.base_r / member.reference_r)
+        rho = p.basic_rack_root_radius_factor * p.module
+        corner_depth = member.dedendum - rho * (1.0 - math.sin(alpha))
+        expected_root_form = math.sqrt(
+            (member.reference_r - corner_depth) ** 2
+            + (corner_depth / math.tan(alpha)) ** 2
+        )
+        assert member.root_form_r == pytest.approx(expected_root_form, abs=1e-10)
+
+
+def test_positive_and_negative_profile_shift_move_the_rack_undercut_condition():
+    positive = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 12, 43, profile_shift_1=0.5, root_geometry="rack_generated"
+        )
+    ).pinion
+    negative = compute_set(
+        SpurSetParams.with_defaults(
+            2.0, 18, 43, profile_shift_1=-0.5, root_geometry="rack_generated"
+        )
+    ).pinion
+    assert positive.undercut is False
+    assert negative.undercut is True
+
+
+def test_no_undercut_transition_is_tangent_to_the_nominal_involute():
+    p = SpurSetParams.with_defaults(2.0, 18, 43, root_geometry="rack_generated")
+    geo = compute_set(p)
+    member = geo.pinion
+    section = tooth_space_section(geo, "pinion")
+    root = section.segments["generated_root_pos"]
+    flank = section.segments["flank_pos"]
+    rho = p.basic_rack_root_radius_factor * p.module
+    alpha = math.acos(member.base_r / member.reference_r)
+    depth = member.dedendum
+    centre_v = -depth + rho
+    tangent_v = centre_v - rho * math.sin(alpha)
+    tangent_phi = tangent_v * (1.0 + math.tan(alpha) ** 2) / (
+        math.tan(alpha) * member.reference_r
+    )
+    h = 1e-7
+    tangent_before = _independent_rack_root_point(
+        member.reference_r, alpha, depth, rho, member.psi0, member.half_pitch,
+        tangent_phi,
+    )
+    tangent_after = _independent_rack_root_point(
+        member.reference_r, alpha, depth, rho, member.psi0, member.half_pitch,
+        tangent_phi + h,
+    )
+    roll = math.sqrt((math.hypot(*tangent_before) / member.base_r) ** 2 - 1.0)
+    def involute_point(value):
+        radius = member.base_r * math.sqrt(1.0 + value * value)
+        angle = member.half_pitch - member.psi0 + value - math.atan(value)
+        return radius * math.cos(angle), radius * math.sin(angle)
+    involute_before = involute_point(roll)
+    involute_after = involute_point(roll + h)
+    root_tangent = (
+        tangent_after[0] - tangent_before[0],
+        tangent_after[1] - tangent_before[1],
+    )
+    flank_tangent = (
+        involute_after[0] - involute_before[0],
+        involute_after[1] - involute_before[1],
+    )
+    cross = abs(
+        root_tangent[0] * flank_tangent[1]
+        - root_tangent[1] * flank_tangent[0]
+    )
+    scale = math.hypot(*root_tangent) * math.hypot(*flank_tangent)
+    assert cross / scale < 1e-6
+    assert root[0] == pytest.approx(flank[-1], abs=1e-12)
+
+
+def test_generated_root_stays_on_the_root_side_of_the_nominal_involute():
+    p = SpurSetParams.with_defaults(2.0, 12, 43, root_geometry="rack_generated")
+    section = tooth_space_section(compute_set(p), "pinion")
+    member = compute_set(p).pinion
+    residuals = []
+    for point in section.segments["generated_root_pos"]:
+        radius = math.hypot(*point)
+        if radius < member.base_r:
+            continue
+        roll = math.sqrt((radius / member.base_r) ** 2 - 1.0)
+        nominal = member.half_pitch - member.psi0 + roll - math.atan(roll)
+        residuals.append(math.atan2(point[1], point[0]) - nominal)
+    assert residuals[-1] == pytest.approx(0.0, abs=2e-9)
+    assert all(value <= 2e-9 for value in residuals)
 
 
 @pytest.mark.parametrize("shift", [-0.5, 0.0, 0.5])

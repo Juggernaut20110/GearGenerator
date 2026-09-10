@@ -334,6 +334,8 @@ def validate(p: SpurSetParams) -> ValidationResult:
             member.beta,
             member.profile_shift,
             p.basic_rack_addendum_factor,
+            dedendum_factor=p.basic_rack_dedendum_factor,
+            root_radius_factor=p.basic_rack_root_radius_factor,
         )
         if member.z < z_min:
             form_note = (

@@ -58,7 +58,8 @@ from ..involute import (
     inv,
     max_tip_radius,
     min_internal_tip_radius,
-    rack_root_envelope,
+    rack_generated_root,
+    solve_start_of_involute,
     tooth_space_loop,
 )
 from .params import (
@@ -132,7 +133,11 @@ class SpurMemberGeometry:
     half_pitch: float           # pi / z
     internal: bool = False      # a ring gear: teeth pointing inward
     profile_shift: float = 0.0  # x_i, dimensionless ISO profile shift
-    generated_root_r: float | None = None  # d_fE / 2 when rack-generated
+    generated_root_r: float | None = None  # d_fE / 2, generated root boundary
+    root_form_r: float | None = None  # d_Ff / 2, actual SOI/root-form radius
+    start_of_involute_angle: float | None = None
+    involute_roll_parameter: float | None = None
+    undercut: bool | None = None
 
     @property
     def pitch_r(self) -> float:
@@ -185,17 +190,32 @@ class SpurMemberGeometry:
 
     @property
     def generated_root_d(self) -> float | None:
-        """Generated/form root diameter d_fE = 2 * generated_root_r.
+        """Generated root diameter d_fE = 2 * generated_root_r.
 
         ``None`` means the selected profile is the legacy radial/root-fillet
         approximation or that no verified generated-root construction applies
-        to this member.  It is intentionally separate from nominal ``root_d``.
+        to this member.  It is intentionally separate from nominal ``root_d``
+        and from ``root_form_d`` / ``d_Ff``.
         """
         return (
             None
             if self.generated_root_r is None
             else 2.0 * self.generated_root_r
         )
+
+    @property
+    def root_form_d(self) -> float | None:
+        """Root-form diameter ``d_Ff = 2*r_Ff`` when generated geometry exists."""
+        return None if self.root_form_r is None else 2.0 * self.root_form_r
+
+    @property
+    def start_of_involute_r(self) -> float | None:
+        """ISO start-of-involute radius, separate from nominal ``root_r``."""
+        return self.root_form_r
+
+    @property
+    def start_of_involute_d(self) -> float | None:
+        return self.root_form_d
 
     @property
     def hand(self) -> str:
@@ -368,12 +388,16 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
 
         half_pitch = math.pi / z
         generated_root_r = None
+        root_form_r = None
+        start_of_involute_angle = None
+        involute_roll_parameter = None
+        undercut = None
         if (
             p.root_geometry == "rack_generated"
             and not internal
             and abs(beta) <= 1e-12
         ):
-            generated = rack_root_envelope(
+            generated = rack_generated_root(
                 reference_r=reference_r,
                 r_base=base_r,
                 r_root=root_r,
@@ -381,10 +405,15 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 half_pitch=half_pitch,
                 cutter_tip_depth=dedendum,
                 rack_root_radius=p.basic_rack_root_radius_factor * m_n,
-                n=2,
             )
-            if generated is not None and tip_r > generated[1] + 1e-10:
-                generated_root_r = math.hypot(*generated[0][0])
+            if generated is not None:
+                soi = solve_start_of_involute(generated)
+                if soi is not None and tip_r > soi.start_of_involute_r + 1e-10:
+                    generated_root_r = generated.generated_root_r
+                    root_form_r = soi.start_of_involute_r
+                    start_of_involute_angle = soi.start_of_involute_angle
+                    involute_roll_parameter = soi.involute_roll_parameter
+                    undercut = soi.undercut
 
         members.append(
             SpurMemberGeometry(
@@ -412,6 +441,10 @@ def compute_set(p: SpurSetParams) -> SpurSetGeometry:
                 internal=internal,
                 profile_shift=member_shift,
                 generated_root_r=generated_root_r,
+                root_form_r=root_form_r,
+                start_of_involute_angle=start_of_involute_angle,
+                involute_roll_parameter=involute_roll_parameter,
+                undercut=undercut,
             )
         )
 
@@ -621,20 +654,22 @@ def undercut_limit(
     beta: float,
     profile_shift: float = 0.0,
     addendum_factor: float = ADDENDUM_FACTOR,
+    dedendum_factor: float | None = None,
+    root_radius_factor: float = 0.0,
 ) -> float:
     """Fewest teeth before a rack-generated external flank is undercut.
 
-    The no-undercut condition for a rack-generated external gear, written in
-    this repository's normal-module/profile-shift convention, is
+    The no-undercut condition for a straight rack-generated external gear,
+    written in this repository's normal-module/profile-shift convention, is
 
-        z >= 2 * cos(beta) * (h_aP* - x) / sin(alpha_t)^2.
+        z >= 2 * (h_fP* - x - rho_fP*(1 - sin(alpha_n))) /
+            sin(alpha_t)^2.
 
-    Thus ``profile_shift`` is part of the limit: positive shift moves the rack
-    away from the root and reduces undercut, while negative shift increases it.
-    With the default ``x=0`` and ``h_aP*=1`` this is the historic
-    ``2*cos(beta)/sin(alpha_t)^2`` result - 17.1 teeth at 20 degrees on a
-    straight gear.  This is a warning criterion for the selected external
-    rack form, not an exact internal interference calculation.
+    The default rack values make the bracket equal to one module, so the
+    historical result ``2/sin(alpha_t)^2`` remains 17.1 teeth at 20 degrees.
+    For nonzero helix angle this helper retains the existing conservative
+    transverse warning; the analytical Clause 10 construction is enabled only
+    for external straight gears.
 
     This remains a conservative design warning. ``root_geometry="legacy"``
     uses a radial below-base approximation, so it does not show the cutter-limited
@@ -642,12 +677,16 @@ def undercut_limit(
     generated root form. The limit itself is still reported rather than used to
     silently alter the selected tooth geometry.
     """
-    return (
-        2.0
-        * math.cos(beta)
-        * (addendum_factor - profile_shift)
-        / math.sin(alpha_t) ** 2
-    )
+    if abs(beta) <= 1e-12 and dedendum_factor is not None:
+        effective_depth = (
+            dedendum_factor
+            - profile_shift
+            - root_radius_factor * (1.0 - math.sin(alpha_t))
+        )
+        return 2.0 * effective_depth / math.sin(alpha_t) ** 2
+    return 2.0 * math.cos(beta) * (addendum_factor - profile_shift) / math.sin(
+        alpha_t
+    ) ** 2
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +767,10 @@ class ToothSpaceSection:
     r_cap: float
     filleted: bool
     generated_root_r: float | None = None
+    root_form_r: float | None = None
+    start_of_involute_angle: float | None = None
+    involute_roll_parameter: float | None = None
+    undercut: bool | None = None
     segments: dict[str, list[Point2]] = field(default_factory=dict)
     loop_2d: list[Point2] = field(default_factory=list)
 
@@ -818,12 +861,16 @@ def tooth_space_section(
     # cutter geometry has its own verified construction.
     rack_root = None
     generated_root_r = None
+    root_form_r = None
+    start_of_involute_angle = None
+    involute_roll_parameter = None
+    undercut = None
     if (
         p.root_geometry == "rack_generated"
         and not m.internal
         and abs(p.beta) <= 1e-12
     ):
-        rack_root = rack_root_envelope(
+        generated = rack_generated_root(
             reference_r=m.reference_r,
             r_base=m.base_r,
             r_root=m.root_r,
@@ -831,11 +878,21 @@ def tooth_space_section(
             half_pitch=m.half_pitch,
             cutter_tip_depth=m.dedendum,
             rack_root_radius=p.basic_rack_root_radius_factor * p.module,
-            n=max(24, n_flank // 2),
         )
-        if rack_root is not None:
-            generated_root_r = rack_root[0][0]
-            generated_root_r = math.hypot(*generated_root_r)
+        if generated is not None:
+            soi = solve_start_of_involute(generated)
+            if soi is not None and r_tip > soi.start_of_involute_r + 1e-10:
+                rack_root = (
+                    generated.sample_to(
+                        soi.trochoid_parameter, max(24, n_flank // 2)
+                    ),
+                    soi.start_of_involute_r,
+                )
+                generated_root_r = generated.generated_root_r
+                root_form_r = soi.start_of_involute_r
+                start_of_involute_angle = soi.start_of_involute_angle
+                involute_roll_parameter = soi.involute_roll_parameter
+                undercut = soi.undercut
 
     segments, loop, filleted = tooth_space_loop(
         m.base_r, m.root_r, r_tip, r_cap, m.psi0, m.half_pitch,
@@ -845,6 +902,10 @@ def tooth_space_section(
     )
     if not segments.get("generated_root_pos"):
         generated_root_r = None
+        root_form_r = None
+        start_of_involute_angle = None
+        involute_roll_parameter = None
+        undercut = None
 
     return ToothSpaceSection(
         member=member,
@@ -855,6 +916,10 @@ def tooth_space_section(
         r_cap=r_cap,
         filleted=filleted,
         generated_root_r=generated_root_r,
+        root_form_r=root_form_r,
+        start_of_involute_angle=start_of_involute_angle,
+        involute_roll_parameter=involute_roll_parameter,
+        undercut=undercut,
         segments=segments,
         loop_2d=loop,
     )

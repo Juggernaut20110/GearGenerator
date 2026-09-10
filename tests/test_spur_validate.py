@@ -141,11 +141,15 @@ def test_undercut_warning_fires_exactly_at_the_limit():
 
 
 def test_profile_shift_moves_the_external_undercut_boundary():
-    """The rack criterion uses x, not the old fixed x=0 tooth-count limit."""
+    """The rounded rack criterion uses x, dedendum, and tip radius."""
     alpha = math.radians(20.0)
     z = 17
-    # Rearranged directly from z >= 2 * (h_aP* - x) / sin(alpha)^2.
-    x_boundary = 1.0 - z * math.sin(alpha) ** 2 / 2.0
+    # Rearranged from Clause 10.2 for the default rack:
+    # z >= 2 * (h_fP* - x - rho_fP*(1 - sin(alpha))) / sin(alpha)^2.
+    h_f = 1.25
+    rho = 0.38
+    effective = h_f - rho * (1.0 - math.sin(alpha))
+    x_boundary = effective - z * math.sin(alpha) ** 2 / 2.0
 
     just_inside = tweak(profile_shift_1=x_boundary + 1e-6)
     just_outside = tweak(profile_shift_1=x_boundary - 1e-6)

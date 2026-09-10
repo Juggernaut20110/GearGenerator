@@ -66,7 +66,10 @@ The ISO symbol `z` is signed for internal gears in ISO 21771-1. In the table,
 | `d_b` base diameter | `2 * member.base_r` | Keep, but derive from the reference circle and `alpha_t`, never from a working circle. |
 | `d_a` tip diameter | `member.tip_d` | Keep as the nominal physical tip diameter, with the internal ring's tip being the smaller tooth radius. No signed ISO adapter is exposed. |
 | `d_f` root diameter | `2 * member.root_r` | Keep as nominal root diameter. Do not use it to mean a generated root diameter. |
-| `d_fE` / generated root diameter | `member.generated_root_d` in external straight rack mode | Available only for the opt-in external straight `rack_generated` mode; it is separate from nominal `root_d`. The involute transition radius is not exposed as a pair field. |
+| `d_fE` / generated root diameter | `member.generated_root_d` in external straight rack mode | Available only for the opt-in external straight `rack_generated` mode; it is separate from nominal `root_d`. |
+| `d_Ff` / root form diameter | `member.root_form_d` / `member.start_of_involute_d` | The solved start-of-involute/root-form diameter; separate from both nominal `d_f` and generated `d_fE`. |
+| start of involute | `member.start_of_involute_r`, `member.start_of_involute_angle`, `member.involute_roll_parameter` | Available for the verified external straight rack-generated path. |
+| undercut condition | `member.undercut` | Available for the verified external straight rack-generated path; internal and helical generated roots remain out of scope. |
 | profile shift coefficient `x` | `profile_shift_1`, `profile_shift_2` | Dimensionless normal-module coefficients, both defaulting to zero. Transitional JSON spellings are migrated. |
 | `h_aP*` | `basic_rack_addendum_factor` | User-editable data-model field, default `1.0`. |
 | `h_fP*` | `basic_rack_dedendum_factor` property | Derived as `h_aP* + c_P*`; default `1.25`. |
@@ -272,7 +275,11 @@ working_r / working_d        operating circle, d_w = d_b/cos(alpha_wt)
 base_r / base_d               involute base circle, d_b = d*cos(alpha_t)
 tip_r / tip_d                 nominal tooth-end circle, directional for a ring
 root_r / root_d                nominal root circle, directional for a ring
-generated_root_r               generated nominal root boundary when available
+generated_root_r / generated_root_d  generated root boundary (`d_fE`) when available
+root_form_r / root_form_d      root form / start-of-involute radius (`d_Ff`)
+start_of_involute_angle        polar angle of the solved SOI
+involute_roll_parameter        nominal involute roll at the solved SOI
+undercut                       Clause 10.2 result when generated geometry applies
 ```
 
 The compatibility property `pitch_r` returns `reference_r` and is documented as
@@ -497,15 +504,17 @@ The implemented external limited mode has a pure-math profile generator that:
 
 1. builds the selected basic rack/tool profile in a normal section from
    `alpha_n`, `h_aP*`, `h_fP*`, `c_P*`, and `rho_fP*`;
-2. rolls the rack/cutter against the gear and samples the envelope in the
-   transverse plane;
-3. identifies the generated root envelope and its transition to the nominal
-   involute;
-4. supports the external rack/hob case only;
-5. uses that straight transverse result in the existing CAD section path.
+2. rolls the rack/cutter against the gear and retains the analytical envelope
+   in the transverse plane;
+3. applies the Clause 10.2 undercut condition;
+4. uses the Clause 10.3 no-undercut transition or solves the Eq. (275)/(276)
+   trochoid/nominal-involute intersection when undercut exists;
+5. samples the solved curve only for CAD, and supports the external rack/hob
+   case only.
 
-This gives the external straight model a generated root and makes its undercut
-warning meaningful, so it remains a separately selectable mode. It does not
+This gives the external straight model a generated root and a separately
+reported start of involute/root-form diameter, and makes its undercut warning
+meaningful, so it remains a separately selectable mode. It does not
 claim an internal cutter/shaper envelope or a helical normal-to-transverse
 projection of the rack corner.
 
@@ -708,7 +717,9 @@ record rather than this historical plan. The following boundaries remain:
    tolerance or inspection model.
 3. The generated-root construction is verified only for the external straight
    rack-generated mode. Internal and helical roots use the legacy approximation;
-   no internal cutter/shaper envelope is claimed.
+   no internal cutter/shaper envelope is claimed. The Clause 10.4 trochoid
+   curvature equations are recorded in the verification document but are not
+   implemented as a reported result.
 4. Contact ratio uses nominal tip-circle limits. It uses working distance and
    working pressure angle, but does not yet shorten the path at a generated
    root/involute transition, nor perform exact internal trimming/interference

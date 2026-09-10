@@ -376,6 +376,23 @@ def derived_rows(geo: SpurSetGeometry) -> list[Row]:
             "not available" if b.generated_root_d is None else _n(b.generated_root_d),
             "mm",
         ),
+        Row(
+            "undercut",
+            "not available" if a.undercut is None else ("yes" if a.undercut else "no"),
+            "not available" if b.undercut is None else ("yes" if b.undercut else "no"),
+        ),
+        Row(
+            "root form diameter d_Ff / SOI diameter",
+            "not available" if a.root_form_d is None else _n(a.root_form_d),
+            "not available" if b.root_form_d is None else _n(b.root_form_d),
+            "mm",
+        ),
+        Row(
+            "start of involute angle",
+            "not available" if a.start_of_involute_angle is None else _n(a.start_of_involute_angle),
+            "not available" if b.start_of_involute_angle is None else _n(b.start_of_involute_angle),
+            "rad",
+        ),
         *(
             [Row("rim radius", "", _n(rim_radius(geo, "gear")), "mm")]
             if p.internal else []

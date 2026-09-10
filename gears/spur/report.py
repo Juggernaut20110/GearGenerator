@@ -172,6 +172,38 @@ def print_report(geo) -> None:
             "mm",
         )
     )
+    print(_row("undercut", _optional_bool(a.undercut), _optional_bool(b.undercut)))
+    print(
+        _row(
+            "root form diameter d_Ff / SOI diameter",
+            _optional(a.root_form_d),
+            _optional(b.root_form_d),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "start of involute radius r_Ff",
+            _optional(a.start_of_involute_r),
+            _optional(b.start_of_involute_r),
+            "mm",
+        )
+    )
+    print(
+        _row(
+            "start of involute angle",
+            _optional(a.start_of_involute_angle),
+            _optional(b.start_of_involute_angle),
+            "rad",
+        )
+    )
+    print(
+        _row(
+            "involute roll parameter",
+            _optional(a.involute_roll_parameter),
+            _optional(b.involute_roll_parameter),
+        )
+    )
     if p.internal:
         print(_row("rim radius", "", f(rim_radius(geo, "gear")), "mm"))
     print(_row("addendum", f(a.addendum), f(b.addendum), "mm"))
@@ -183,6 +215,10 @@ def print_report(geo) -> None:
 def _optional(value):
     """Format an optional derived quantity without inventing a zero value."""
     return "not available" if value is None else f"{value:.4f}"
+
+
+def _optional_bool(value):
+    return "not available" if value is None else ("yes" if value else "no")
 
 
 def report(args) -> tuple[object, object, list]:

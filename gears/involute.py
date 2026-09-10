@@ -52,8 +52,138 @@ derived from is what makes that reuse free.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 Point2 = tuple[float, float]
+
+
+@dataclass(frozen=True)
+class StartOfInvolute:
+    """Analytical start-of-involute result for a generated external root.
+
+    ``trochoid_parameter`` is the rolling parameter used by the analytical
+    rack envelope in this module.  ``involute_roll_parameter`` is the usual
+    involute roll parameter ``tan(alpha_r)``.  Keeping both makes it explicit
+    that the two curves were solved as a physical intersection rather than
+    joined at a common sampled radius.
+    """
+
+    start_of_involute_r: float
+    start_of_involute_angle: float
+    involute_roll_parameter: float
+    trochoid_parameter: float
+    undercut: bool
+    point: Point2
+
+    @property
+    def start_of_involute_d(self) -> float:
+        """Start-of-involute diameter, ``d_Ff = 2*r_Ff``."""
+        return 2.0 * self.start_of_involute_r
+
+
+@dataclass(frozen=True)
+class RackGeneratedRoot:
+    """Analytical transverse envelope of a rounded straight rack corner.
+
+    The curve is kept in analytical form.  ``phi_root`` and
+    ``phi_flank_transition`` delimit the generated root from the nominal root
+    circle to the rack flank/tip tangency.  The latter is only the standard
+    no-undercut transition; undercut gears use :func:`solve_start_of_involute`
+    to find the physical intersection with the nominal involute.
+    """
+
+    reference_r: float
+    r_base: float
+    r_root: float
+    psi0: float
+    half_pitch: float
+    cutter_tip_depth: float
+    rack_root_radius: float
+    alpha: float
+    pitch_space_angle: float
+    phi_root: float
+    phi_flank_transition: float
+    v_centre: float
+    u_centre: float
+
+    @property
+    def generated_root_r(self) -> float:
+        """Generated root-circle radius (ISO ``d_fE/2`` in this model)."""
+        return self.reference_r - self.cutter_tip_depth
+
+    @property
+    def undercut(self) -> bool:
+        return undercut_condition(self)
+
+    @property
+    def base_space_angle(self) -> float:
+        return self.half_pitch - self.psi0
+
+    def _raw_envelope(self, phi: float) -> Point2:
+        c, s = math.cos(phi), math.sin(phi)
+        a = self.reference_r + self.v_centre
+        b = self.u_centre - self.reference_r * phi
+        cx = c * a - s * b
+        cy = s * a + c * b
+
+        # Derivative of Rot(phi) (a, u_centre - R*phi).
+        dcx = -s * a - c * b + s * self.reference_r
+        dcy = c * a - s * b - c * self.reference_r
+        speed = math.hypot(dcx, dcy)
+        if speed <= 1e-14:
+            raise ValueError("rack root envelope has a stationary tool corner")
+
+        # The active side is the minus side of this inverted cutter corner.
+        return (
+            cx + self.rack_root_radius * dcy / speed,
+            cy - self.rack_root_radius * dcx / speed,
+        )
+
+    def point(self, phi: float) -> Point2:
+        """Evaluate the generated root at analytical rolling parameter ``phi``."""
+        x, y = self._raw_envelope(phi)
+        c, s = math.cos(self.pitch_space_angle), math.sin(self.pitch_space_angle)
+        return x * c - y * s, x * s + y * c
+
+    def polar(self, phi: float) -> tuple[float, float]:
+        """Return ``(radius, polar angle)`` for the analytical trochoid point."""
+        point = self.point(phi)
+        return math.hypot(*point), math.atan2(point[1], point[0])
+
+    def nominal_involute_point(self, roll: float) -> Point2:
+        """Evaluate the positive external nominal involute at roll ``tan(alpha)``."""
+        if roll < -1e-14:
+            raise ValueError("involute roll parameter must be non-negative")
+        roll = max(0.0, roll)
+        radius = self.r_base * math.sqrt(1.0 + roll * roll)
+        angle = self.base_space_angle + roll - math.atan(roll)
+        return polar(radius, angle)
+
+    def nominal_involute_at_radius(self, radius: float) -> tuple[Point2, float]:
+        """Return the nominal involute point and roll parameter at ``radius``."""
+        if radius < self.r_base - 1e-12:
+            raise ValueError("nominal involute is undefined below the base circle")
+        roll = math.sqrt(max(0.0, (radius / self.r_base) ** 2 - 1.0))
+        return self.nominal_involute_point(roll), roll
+
+    def sample_to(self, phi_end: float, n: int) -> list[Point2]:
+        """Sample the analytical root from the nominal root circle to ``phi_end``."""
+        if n < 2:
+            raise ValueError("at least two root samples are required")
+        points = [
+            self.point(
+                self.phi_root
+                + (phi_end - self.phi_root) * i / (n - 1)
+            )
+            for i in range(n)
+        ]
+        # The first point is exactly on the generated root circle.  Removing
+        # floating-point drift here does not alter the analytical curve.
+        points[0] = polar(
+            self.generated_root_r,
+            self.pitch_space_angle + self.phi_root,
+        )
+        return points
 
 # Default sampling density along one involute flank.
 FLANK_POINTS = 40
@@ -156,7 +286,7 @@ def flank_points(
     return pts
 
 
-def rack_root_envelope(
+def rack_generated_root(
     reference_r: float,
     r_base: float,
     r_root: float,
@@ -164,16 +294,12 @@ def rack_root_envelope(
     half_pitch: float,
     cutter_tip_depth: float,
     rack_root_radius: float,
-    n: int = 24,
-) -> tuple[list[Point2], float] | None:
-    """Return an external rack-generated root curve and its flank transition.
+) -> RackGeneratedRoot | None:
+    """Return an analytical external straight-rack root representation.
 
-    The returned points run from the nominal root circle to the transition
-    with the true involute.  The curve is the analytical envelope of the
-    *rounded tip of an inverted basic-rack tooth* as that rack rolls on the
-    gear reference circle.  Its last point is the point at which the rack
-    flank and its rounded tip are tangent; the caller joins that point to a
-    sampled involute.
+    This is the rolling envelope of the rounded tip of an inverted basic-rack
+    tooth.  It deliberately does not decide where the nominal involute starts;
+    :func:`solve_start_of_involute` performs that separate ISO 21771-1 step.
 
     ``cutter_tip_depth`` is measured from the gear reference circle towards
     its centre.  For an external gear generated from the ISO 53 basic rack it
@@ -190,8 +316,8 @@ def rack_root_envelope(
     A circle centre follows this motion.  The envelope point is the centre
     offset by the radius along the normal to the centre trajectory.  This is
     a direct envelope construction; no polynomial or spline is used as the
-    source geometry.  The returned polyline is only a CAD sampling of that
-    analytical curve.
+    source geometry.  CAD code samples the returned representation only after
+    the start-of-involute solution has been obtained.
 
     This function deliberately covers the external straight-gear case only.
     ISO 53 defines the rack in the normal section; a helical cutter's
@@ -200,8 +326,7 @@ def rack_root_envelope(
     explicitly falls back to its legacy root approximation otherwise.
 
     ``None`` means that the selected rack geometry cannot form a usable
-    transition (for example a non-positive radius or a tip circle inside the
-    transition).  That is a geometric fallback, not a cosmetic replacement.
+    analytical representation.
     """
     if (
         reference_r <= 0.0
@@ -209,7 +334,6 @@ def rack_root_envelope(
         or r_root <= 0.0
         or cutter_tip_depth <= 0.0
         or rack_root_radius <= 0.0
-        or n < 2
     ):
         return None
 
@@ -263,54 +387,217 @@ def rack_root_envelope(
     pitch_space_angle = (
         half_pitch - psi0 + inv(alpha)
     )
-    rotate_c, rotate_s = math.cos(pitch_space_angle), math.sin(pitch_space_angle)
-
-    def rotate(point: Point2) -> Point2:
-        x, y = point
-        return x * rotate_c - y * rotate_s, x * rotate_s + y * rotate_c
-
-    def envelope(phi: float) -> Point2:
-        c, s = math.cos(phi), math.sin(phi)
-        a = reference_r + v_centre
-        b = u_centre - reference_r * phi
-        cx = c * a - s * b
-        cy = s * a + c * b
-
-        # Derivative of Rot(phi) (a, u_centre - R*phi).
-        dcx = -s * a - c * b + s * reference_r
-        dcy = c * a - s * b - c * reference_r
-        speed = math.hypot(dcx, dcy)
-        if speed <= 1e-14:
-            raise ValueError("rack root envelope has a stationary tool corner")
-
-        # The minus side is the active side of this inverted cutter corner.
-        return cx + rho * dcy / speed, cy - rho * dcx / speed
-
+    representation = RackGeneratedRoot(
+        reference_r=reference_r,
+        r_base=r_base,
+        r_root=r_root,
+        psi0=psi0,
+        half_pitch=half_pitch,
+        cutter_tip_depth=cutter_tip_depth,
+        rack_root_radius=rack_root_radius,
+        alpha=alpha,
+        pitch_space_angle=pitch_space_angle,
+        phi_root=phi_root,
+        phi_flank_transition=phi_transition,
+        v_centre=v_centre,
+        u_centre=u_centre,
+    )
     try:
-        root_to_transition = [
-            rotate(
-                envelope(
-                    phi_root
-                    + (phi_transition - phi_root) * i / (n - 1)
-                )
-            )
-            for i in range(n)
-        ]
+        root_point = representation.point(phi_root)
+        transition_point = representation.point(phi_transition)
     except ValueError:
         return None
-
-    # These endpoint identities are exact for the construction.  Replacing
-    # only the first point removes harmless floating-point drift at the root
-    # arc; the involute endpoint is aligned by tooth_space_loop after it has
-    # generated the corresponding flank sample.
-    root_to_transition[0] = polar(
-        generated_root_r,
-        pitch_space_angle + phi_root,
-    )
-    transition_r = math.hypot(*root_to_transition[-1])
-    if transition_r <= r_root or not math.isfinite(transition_r):
+    if (
+        not math.isfinite(math.hypot(*root_point))
+        or math.hypot(*transition_point) <= r_root
+        or not math.isfinite(math.hypot(*transition_point))
+    ):
         return None
-    return root_to_transition, transition_r
+    return representation
+
+
+def undercut_condition(root: RackGeneratedRoot) -> bool:
+    """Return the Clause 10.2 rack undercut condition for ``root``.
+
+    For a straight rack, the transverse and normal pressure angles coincide.
+    With ``B = h_fP - x*m_n - rho_fP*(1 - sin(alpha_n))`` represented by
+    ``cutter_tip_depth - rack_root_radius*(1 - sin(alpha))``, ISO 21771-1
+    Clause 10.2 has undercut when ``(d/2)*sin(alpha)^2 - B < 0``.
+    """
+    corner_depth = root.cutter_tip_depth - root.rack_root_radius * (
+        1.0 - math.sin(root.alpha)
+    )
+    scale = max(1.0, abs(root.reference_r), abs(corner_depth))
+    return (
+        root.reference_r * math.sin(root.alpha) ** 2 - corner_depth
+        < -1e-14 * scale
+    )
+
+
+def _angular_intersection_residual(
+    root: RackGeneratedRoot, phi: float
+) -> float | None:
+    """Analytical angular residual after eliminating radius with Eq. (275)."""
+    radius, angle = root.polar(phi)
+    if radius < root.r_base - 1e-11 * max(1.0, root.r_base):
+        return None
+    _, roll = root.nominal_involute_at_radius(radius)
+    involute_angle = root.base_space_angle + roll - math.atan(roll)
+    return angle - involute_angle
+
+
+def _base_circle_boundary(root: RackGeneratedRoot, valid_phi: float, invalid_phi: float) -> float:
+    """Bound a local crossing of the trochoid with the nominal base circle."""
+    valid_radius = root.polar(valid_phi)[0]
+    invalid_radius = root.polar(invalid_phi)[0]
+    if valid_radius < root.r_base or invalid_radius >= root.r_base:
+        raise ValueError("invalid base-circle boundary bracket")
+    lo, hi = valid_phi, invalid_phi
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        if root.polar(mid)[0] >= root.r_base:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _base_boundary_residual(root: RackGeneratedRoot, phi: float) -> float:
+    """Angular residual at the base-circle limit, where involute roll is zero."""
+    return root.polar(phi)[1] - root.base_space_angle
+
+
+def _bisect_intersection(
+    root: RackGeneratedRoot, lo: float, hi: float, flo: float, fhi: float
+) -> float:
+    """Bounded bisection of the analytical angular intersection residual."""
+    if abs(flo) <= 1e-14:
+        return lo
+    if abs(fhi) <= 1e-14:
+        return hi
+    for _ in range(120):
+        mid = 0.5 * (lo + hi)
+        fmid = _angular_intersection_residual(root, mid)
+        if fmid is None:
+            # This only occurs at the base-circle boundary.  Move toward the
+            # valid half of the current bounded interval.
+            lo = mid
+            flo = fmid if fmid is not None else flo
+            continue
+        if abs(fmid) <= 1e-14:
+            return mid
+        if flo * fmid <= 0.0:
+            hi, fhi = mid, fmid
+        else:
+            lo, flo = mid, fmid
+    return 0.5 * (lo + hi)
+
+
+def solve_start_of_involute(
+    root: RackGeneratedRoot,
+) -> StartOfInvolute | None:
+    """Solve the ISO 21771-1 start of involute for an analytical root.
+
+    The radial equality in Clause 10.3 Eq. (275) is eliminated analytically by
+    evaluating the involute roll parameter from the trochoid radius.  A bounded
+    sign-bracketed solve then enforces Eq. (276), equality of polar angle.  No
+    sampled CAD point is used as the solution.
+    """
+    undercut = undercut_condition(root)
+    if not undercut:
+        phi = root.phi_flank_transition
+        radius, angle = root.polar(phi)
+        if radius < root.r_base:
+            return None
+        _, roll = root.nominal_involute_at_radius(radius)
+        return StartOfInvolute(
+            start_of_involute_r=radius,
+            start_of_involute_angle=angle,
+            involute_roll_parameter=roll,
+            trochoid_parameter=phi,
+            undercut=False,
+            point=root.point(phi),
+        )
+
+    lo = min(root.phi_root, root.phi_flank_transition)
+    hi = max(root.phi_root, root.phi_flank_transition)
+    # The values are analytical evaluations; this bounded subdivision only
+    # finds a sign bracket and never substitutes for the root solve.
+    brackets: list[tuple[float, float, float, float]] = []
+    previous: tuple[float, float] | None = None
+    for i in range(2049):
+        phi = lo + (hi - lo) * i / 2048.0
+        value = _angular_intersection_residual(root, phi)
+        if value is None:
+            if previous is not None:
+                boundary = _base_circle_boundary(root, previous[0], phi)
+                boundary_value = _base_boundary_residual(root, boundary)
+                if previous[1] * boundary_value < 0.0:
+                    brackets.append(
+                        (previous[0], boundary, previous[1], boundary_value)
+                    )
+                previous = None
+            continue
+        if abs(value) <= 1e-13:
+            brackets.append((phi, phi, value, value))
+        elif previous is not None and previous[1] * value < 0.0:
+            brackets.append((previous[0], phi, previous[1], value))
+        previous = (phi, value)
+
+    if not brackets:
+        return None
+
+    roots = [
+        lo if lo == hi else _bisect_intersection(root, lo, hi, flo, fhi)
+        for lo, hi, flo, fhi in brackets
+    ]
+    # If two intersections exist, the root-form transition is the physical
+    # one with the smallest radius on the root side of the nominal involute.
+    phi = min(roots, key=lambda candidate: root.polar(candidate)[0])
+    radius, angle = root.polar(phi)
+    _, roll = root.nominal_involute_at_radius(radius)
+    return StartOfInvolute(
+        start_of_involute_r=radius,
+        start_of_involute_angle=angle,
+        involute_roll_parameter=roll,
+        trochoid_parameter=phi,
+        undercut=True,
+        point=root.point(phi),
+    )
+
+
+def rack_root_envelope(
+    reference_r: float,
+    r_base: float,
+    r_root: float,
+    psi0: float,
+    half_pitch: float,
+    cutter_tip_depth: float,
+    rack_root_radius: float,
+    n: int = 24,
+) -> tuple[list[Point2], float] | None:
+    """Compatibility wrapper returning sampled root points and SOI radius.
+
+    New code should use :func:`rack_generated_root` followed by
+    :func:`solve_start_of_involute` so the full analytical result remains
+    available.  The wrapper keeps the old tuple-shaped helper usable by
+    downstream callers during migration.
+    """
+    root = rack_generated_root(
+        reference_r,
+        r_base,
+        r_root,
+        psi0,
+        half_pitch,
+        cutter_tip_depth,
+        rack_root_radius,
+    )
+    if root is None:
+        return None
+    soi = solve_start_of_involute(root)
+    if soi is None:
+        return None
+    return root.sample_to(soi.trochoid_parameter, n), soi.start_of_involute_r
 
 
 def internal_flank_points(
@@ -588,11 +875,17 @@ def tooth_space_loop(
                     flank, r_root, fillet_rho, internal=False
                 )
             else:
-                # Make the shared vertex literally identical in the sampled
-                # representation.  The analytical endpoints already agree;
-                # this avoids a CAD spline seeing a microscopic gap.
-                generated_root[-1] = flank[0]
-                fillet = None
+                # The analytical solver established this common physical
+                # point.  Unify only the two numerically sampled copies; do
+                # not move either curve to manufacture continuity.
+                if math.dist(generated_root[-1], flank[0]) > 1e-8:
+                    generated_root = []
+                    fillet = root_fillet(
+                        flank, r_root, fillet_rho, internal=False
+                    )
+                else:
+                    generated_root[-1] = flank[0]
+                    fillet = None
     else:
         flank = flank_points(r_base, r_root, r_tip, psi0, half_pitch, n_flank)
         fillet = root_fillet(flank, r_root, fillet_rho, internal=False)
