@@ -79,6 +79,7 @@ if(GEARGEN_BUILD_GUI)
 
         add_library(geargen_gui STATIC
             src/gui/main_window.cpp
+            src/gui/preview_widget.cpp
         )
         target_link_libraries(geargen_gui
             PUBLIC

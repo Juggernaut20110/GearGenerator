@@ -5,7 +5,8 @@ boundary chosen on `feature/cpp-port`. The Python implementation remains the
 behavioral reference. The native core now includes the common numerical
 foundation, analytical cylindrical involute/root profiles, complete spur pair
 derivation, and planetary composition; it remains independent of Qt and
-SOLIDWORKS.
+SOLIDWORKS. The native Qt Widgets application now provides the first usable
+parameter, validation, derived-value, preview, preset, and export workflow.
 
 ## Python architecture discovered
 
@@ -69,11 +70,11 @@ GearGenerator -> geargen_gui
 geargen_tests -> geargen_core + geargen_preview + geargen_solidworks
 ```
 
-`geargen_preview` currently contains only value-oriented scene models and
-export. A later Qt painter/widget adapter can consume those scenes without
-forcing `QPointF`, `QMatrix4x4`, `QString`, or QObject ownership into core.
-Likewise, `geargen_solidworks` currently exposes a backend/session boundary;
-the future Windows COM implementation will live behind it.
+`geargen_preview` contains only value-oriented scene models and export. The
+Qt painter/widget adapter consumes those scenes without forcing `QPointF`,
+`QMatrix4x4`, `QString`, or QObject ownership into core. Likewise,
+`geargen_solidworks` currently exposes a backend/session boundary; the future
+Windows COM implementation will live behind it.
 
 ## Native module mapping
 
@@ -196,6 +197,15 @@ Qt types. The DXF writer follows the Python R12 contract (`AC1009`, millimetre
 units, `POLYLINE`/`VERTEX`/`SEQEND`, one layer per style); CSV writers preserve
 the Python family-specific headers and coordinate columns.
 
+The native `src/gui/preview_widget.*` adapter owns only presentation state:
+it paints `Scene2D` polylines with `QPainter`, supports fit, pan, wheel zoom
+around the cursor, and double-click fit, and never regenerates gear geometry.
+The main window keeps field metadata separate from the family parameter
+records. A single debounced `QTimer` drives parse -> validation -> derivation
+-> scene rebuilding, while invalid inputs clear the derived table and disable
+the SOLIDWORKS action. Preset and export actions call the existing native
+value-based APIs.
+
 The 3D preview follows the Python implementation: section samples come from
 the core section function, are placed by the per-family mesh module, and are
 returned as a renderer-neutral `Scene3D`. Camera operations are UI-neutral;
@@ -224,14 +234,18 @@ keep explicit:
   planetary train must not add both meshes for every planet if that
   over-defines the assembly.
 
-The C++ GUI will use a worker object/thread and queued value-only result
-messages. The real COM session will be constructed inside that worker. Build
-errors, measurements, paths and mate summaries cross the thread as copied
+The current GUI performs native geometry recomputation synchronously after a
+short debounce; the ported calculations are fast enough that introducing a
+worker would add interaction and lifetime complexity without a measured
+benefit. When family construction is implemented, the GUI will use a worker
+object/thread and queued value-only result messages for SOLIDWORKS. The real
+COM session will be constructed inside that worker. Build errors,
+measurements, paths and mate summaries cross the thread as copied
 records/strings only.
 
 ## Planned port order
 
-1. Keep this branch's CMake/Qt smoke application and native smoke tests green.
+1. **Complete:** keep this branch's CMake/Qt application and native tests green.
 2. Port common types, constants, validation records and parameter schemas;
    add Python-vs-C++ JSON/default fixtures.
 3. Port involute primitives and tooth-space segment topology, beginning with
@@ -248,8 +262,11 @@ records/strings only.
    contact/offset conventions are fixed. **Complete on `feature/cpp-port`.**
 9. Port SOLIDWORKS part primitives and one spur pair, using a live CAD seat;
    then bevel, planetary and hypoid builders.
-10. Replace the Qt smoke UI with real parameter/readout/preview wiring and
+10. **Complete for non-CAD presentation:** replace the Qt smoke UI with
+    metadata-driven parameter/readout/preview wiring, presets, and exports;
     keep the Python implementation available until parity gates pass.
+11. Implement the native SOLIDWORKS family builders and connect the existing
+    validated GUI action through the COM worker boundary.
 
 ## Compatibility strategy and tolerances
 
@@ -336,4 +353,6 @@ parity for unusual invalid inputs, richer derived-row coverage, and native
 SOLIDWORKS construction bodies. The native hypoid section deliberately
 retains Python's documented Tredgold approximation boundary; replacing it
 with a true cutter-envelope model would be a separate geometry decision, not
-a compatibility fix.
+a compatibility fix. The current `Build in SOLIDWORKS` action deliberately
+reports the unconnected backend boundary rather than pretending to create a
+document; the Qt GUI itself is functional and testable without a CAD seat.
