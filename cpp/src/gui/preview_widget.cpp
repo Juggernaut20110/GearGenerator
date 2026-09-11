@@ -26,7 +26,19 @@ PreviewWidget::PreviewWidget(QWidget* parent)
 void PreviewWidget::set_scene(const preview::Scene2D& scene)
 {
     scene_ = scene;
+    scene3d_ = {};
     has_scene_ = true;
+    is_3d_ = false;
+    needs_fit_ = true;
+    update();
+}
+
+void PreviewWidget::set_scene3d(const preview::Scene3D& scene)
+{
+    scene3d_ = scene;
+    scene_ = {};
+    has_scene_ = true;
+    is_3d_ = true;
     needs_fit_ = true;
     update();
 }
@@ -34,7 +46,9 @@ void PreviewWidget::set_scene(const preview::Scene2D& scene)
 void PreviewWidget::clear_scene()
 {
     scene_ = {};
+    scene3d_ = {};
     has_scene_ = false;
+    is_3d_ = false;
     needs_fit_ = true;
     update();
 }
@@ -49,8 +63,18 @@ void PreviewWidget::fit_view()
 void PreviewWidget::ensure_fit()
 {
     if (!has_scene_ || !needs_fit_ || width() <= 0 || height() <= 0) return;
-    view_ = preview::View2D::fit(scene_.bounds(), width(), height(), 20.0);
+    if (is_3d_) camera_.fit_scene(scene3d_, width(), height(), 20.0);
+    else view_ = preview::View2D::fit(scene_.bounds(), width(), height(), 20.0);
     needs_fit_ = false;
+}
+
+void PreviewWidget::set_camera_view(const std::string& name)
+{
+    if (!has_scene_ || !is_3d_) return;
+    camera_.set_view(name);
+    needs_fit_ = true;
+    ensure_fit();
+    update();
 }
 
 void PreviewWidget::paintEvent(QPaintEvent*)
@@ -63,6 +87,41 @@ void PreviewWidget::paintEvent(QPaintEvent*)
         painter.setPen(QColor(QStringLiteral("#777777")));
         painter.drawText(rect(), Qt::AlignCenter,
                          QStringLiteral("Enter valid parameters to preview geometry."));
+        return;
+    }
+
+    if (is_3d_) {
+        for (const auto& line : scene3d_.polylines) {
+            if (line.points.size() < 2U) continue;
+            const auto points = preview::drawn_points(line);
+            if (points.size() < 2U) continue;
+            QPolygonF polygon;
+            polygon.reserve(static_cast<int>(points.size()));
+            bool finite = true;
+            for (const auto point : points) {
+                if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+                    !std::isfinite(point.z)) {
+                    finite = false;
+                    break;
+                }
+                const auto canvas = camera_.project(
+                    point, static_cast<double>(width()), static_cast<double>(height()));
+                polygon.append(QPointF(canvas.x, canvas.y));
+            }
+            if (!finite) continue;
+            const auto& style = preview::style_for_3d(line.style);
+            QPen pen(QColor(QString::fromStdString(style.colour)));
+            pen.setWidthF(style.width);
+            if (!style.dash.empty()) {
+                QVector<qreal> pattern;
+                pattern.reserve(static_cast<int>(style.dash.size()));
+                for (const int dash : style.dash) pattern.push_back(static_cast<qreal>(dash));
+                pen.setDashPattern(pattern);
+            }
+            painter.setPen(pen);
+            painter.drawPolyline(polygon);
+        }
+        draw_legend3d(painter);
         return;
     }
 
@@ -105,6 +164,7 @@ void PreviewWidget::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton ||
         event->button() == Qt::RightButton) {
         dragging_ = true;
+        drag_button_ = event->button();
         last_drag_position_ = event->position().toPoint();
         setCursor(Qt::ClosedHandCursor);
         event->accept();
@@ -118,8 +178,13 @@ void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
     if (dragging_) {
         const QPoint current = event->position().toPoint();
         const QPoint delta = current - last_drag_position_;
-        view_.origin_x += delta.x();
-        view_.origin_y += delta.y();
+        if (is_3d_) {
+            if (drag_button_ == Qt::LeftButton) camera_.orbit(delta.x(), delta.y());
+            else camera_.pan(delta.x(), delta.y());
+        } else {
+            view_.origin_x += delta.x();
+            view_.origin_y += delta.y();
+        }
         last_drag_position_ = current;
         update();
         event->accept();
@@ -131,6 +196,7 @@ void PreviewWidget::mouseMoveEvent(QMouseEvent* event)
 void PreviewWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     dragging_ = false;
+    drag_button_ = Qt::NoButton;
     unsetCursor();
     QWidget::mouseReleaseEvent(event);
 }
@@ -150,8 +216,16 @@ void PreviewWidget::wheelEvent(QWheelEvent* event)
     ensure_fit();
     if (!has_scene_ || event->angleDelta().y() == 0) return;
     const QPointF position = event->position();
+    const double factor = std::pow(
+        1.15, static_cast<double>(event->angleDelta().y()) / 120.0);
+    if (is_3d_) {
+        camera_.zoom_at(factor, position.x(), position.y(),
+                        static_cast<double>(width()), static_cast<double>(height()));
+        update();
+        event->accept();
+        return;
+    }
     const auto world = view_.from_canvas({position.x(), position.y()});
-    const double factor = std::pow(1.15, static_cast<double>(event->angleDelta().y()) / 120.0);
     const double new_scale = std::clamp(view_.scale * factor, 1e-6, 1e9);
     view_.scale = new_scale;
     view_.origin_x = position.x() - world.x * new_scale;
@@ -180,9 +254,30 @@ void PreviewWidget::draw_legend(QPainter& painter) const
     }
 }
 
+void PreviewWidget::draw_legend3d(QPainter& painter) const
+{
+    double y = 18.0;
+    for (const auto& [style_name, label] : scene3d_.legend) {
+        const auto& style = preview::style_for_3d(style_name);
+        QPen pen(QColor(QString::fromStdString(style.colour)));
+        pen.setWidthF(std::max(style.width, 1.6));
+        if (!style.dash.empty()) {
+            QVector<qreal> pattern;
+            pattern.reserve(static_cast<int>(style.dash.size()));
+            for (const int dash : style.dash) pattern.push_back(static_cast<qreal>(dash));
+            pen.setDashPattern(pattern);
+        }
+        painter.setPen(pen);
+        painter.drawLine(QPointF(12.0, y), QPointF(34.0, y));
+        painter.setPen(QColor(QStringLiteral("#444444")));
+        painter.drawText(QPointF(40.0, y + 4.0), QString::fromStdString(label));
+        y += 14.0;
+    }
+}
+
 void PreviewWidget::draw_scale_bar(QPainter& painter) const
 {
-    if (!has_scene_) return;
+    if (!has_scene_ || is_3d_) return;
     const double length_mm = preview::nice_length(view_.scale);
     const double length_px = length_mm * view_.scale;
     const double x1 = width() - 16.0;

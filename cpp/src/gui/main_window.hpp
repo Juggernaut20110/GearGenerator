@@ -7,6 +7,7 @@
 #include "core/spur/spur.hpp"
 #include "core/validation/validation.hpp"
 #include "preview/scene2d/scene.hpp"
+#include "preview/scene3d/scene.hpp"
 #include "gui/preview_widget.hpp"
 
 #include <QMainWindow>
@@ -21,6 +22,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSlider;
 class QTableWidget;
 class QTextEdit;
 class QTimer;
@@ -53,8 +55,14 @@ private:
                                   core::planetary::SetGeometry>;
 
     QComboBox* kind_combo_{};
+    QComboBox* preview_mode_combo_{};
     QComboBox* member_combo_{};
     QComboBox* scene_combo_{};
+    QLabel* member_label_{};
+    QLabel* scene_label_{};
+    QLabel* mesh_label_{};
+    QSlider* mesh_slider_{};
+    std::vector<QPushButton*> camera_buttons_;
     QWidget* fields_panel_{};
     QTableWidget* derived_table_{};
     QTextEdit* validation_text_{};
@@ -70,6 +78,7 @@ private:
     Geometry geometry_;
     core::ValidationResult validation_;
     preview::Scene2D scene_;
+    preview::Scene3D scene3d_;
     bool has_geometry_{false};
     bool updating_widgets_{false};
     bool initialized_{false};
@@ -88,6 +97,10 @@ private:
     void show_validation(const std::vector<std::string>& parse_errors);
     void show_derived();
     void show_scene();
+    void apply_preview_mode();
+    void on_preview_mode_changed();
+    void on_mesh_position_changed(int value);
+    void set_camera_view(const char* name);
     void set_status(const QString& text);
 
     [[nodiscard]] QString field_text(const char* key) const;

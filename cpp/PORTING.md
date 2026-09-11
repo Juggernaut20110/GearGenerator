@@ -210,8 +210,10 @@ value-based APIs.
 
 The 3D preview follows the Python implementation: section samples come from
 the core section function, are placed by the per-family mesh module, and are
-returned as a renderer-neutral `Scene3D`. Camera operations are UI-neutral;
-Qt/OpenGL is optional and is not part of this stage.
+returned as a renderer-neutral `Scene3D`. The Qt adapter now projects those
+polylines with `QPainter`; its orthographic camera supports front/top/right/
+isometric views, orbit, pan, cursor-anchored zoom, fit, and the same mesh
+position convention used by the Python UI. No OpenGL or CAD kernel is needed.
 
 ## SOLIDWORKS and threading
 

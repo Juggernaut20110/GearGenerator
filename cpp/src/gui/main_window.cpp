@@ -7,6 +7,7 @@
 #include "preview/scene2d/hypoid_scene.hpp"
 #include "preview/scene2d/planetary_scene.hpp"
 #include "preview/scene2d/spur_scene.hpp"
+#include "preview/scene3d/assembly.hpp"
 #include "solidworks/solidworks.hpp"
 
 #include <QComboBox>
@@ -23,6 +24,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
+#include <QSlider>
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTimer>
@@ -32,6 +34,7 @@
 #include <QHeaderView>
 
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <sstream>
@@ -304,15 +307,42 @@ void MainWindow::create_widgets()
     auto* right_layout = new QVBoxLayout(right);
     right_layout->setContentsMargins(6, 0, 0, 0);
     auto* toolbar = new QHBoxLayout;
-    toolbar->addWidget(new QLabel(QStringLiteral("Member"), right));
+    toolbar->addWidget(new QLabel(QStringLiteral("Preview"), right));
+    preview_mode_combo_ = new QComboBox(right);
+    preview_mode_combo_->addItem(QStringLiteral("2D detail"), QStringLiteral("2d"));
+    preview_mode_combo_->addItem(QStringLiteral("3D assembly"), QStringLiteral("3d"));
+    toolbar->addWidget(preview_mode_combo_);
+    member_label_ = new QLabel(QStringLiteral("Member"), right);
+    toolbar->addWidget(member_label_);
     member_combo_ = new QComboBox(right);
     toolbar->addWidget(member_combo_);
     toolbar->addSpacing(10);
-    toolbar->addWidget(new QLabel(QStringLiteral("View"), right));
+    scene_label_ = new QLabel(QStringLiteral("View"), right);
+    toolbar->addWidget(scene_label_);
     scene_combo_ = new QComboBox(right);
     toolbar->addWidget(scene_combo_, 1);
+    for (const auto& [name, text] : std::vector<std::pair<const char*, QString>>{
+             {"front", QStringLiteral("Front")},
+             {"top", QStringLiteral("Top")},
+             {"right", QStringLiteral("Right")},
+             {"iso", QStringLiteral("Iso")}}) {
+        auto* button = new QPushButton(text, right);
+        button->setProperty("camera_view", QString::fromUtf8(name));
+        camera_buttons_.push_back(button);
+        toolbar->addWidget(button);
+        connect(button, &QPushButton::clicked, this,
+                [this, name] { set_camera_view(name); });
+    }
     auto* fit_button = new QPushButton(QStringLiteral("Fit"), right);
     toolbar->addWidget(fit_button);
+    mesh_label_ = new QLabel(QStringLiteral("Mesh"), right);
+    toolbar->addWidget(mesh_label_);
+    mesh_slider_ = new QSlider(Qt::Horizontal, right);
+    mesh_slider_->setRange(0, 1000);
+    mesh_slider_->setValue(0);
+    mesh_slider_->setMaximumWidth(110);
+    mesh_slider_->setToolTip(QStringLiteral("Rotate the pinion through one tooth pitch"));
+    toolbar->addWidget(mesh_slider_);
     auto* export_dxf_button = new QPushButton(QStringLiteral("Export DXF"), right);
     auto* export_csv_button = new QPushButton(QStringLiteral("Export CSV"), right);
     toolbar->addWidget(export_dxf_button);
@@ -324,6 +354,10 @@ void MainWindow::create_widgets()
             [this] { if (!updating_widgets_) { show_scene(); schedule_refresh(); } });
     connect(scene_combo_, &QComboBox::currentTextChanged, this,
             [this] { if (!updating_widgets_) show_scene(); });
+    connect(preview_mode_combo_, &QComboBox::currentTextChanged, this,
+            [this] { if (!updating_widgets_) on_preview_mode_changed(); });
+    connect(mesh_slider_, &QSlider::valueChanged, this,
+            [this](int value) { on_mesh_position_changed(value); });
     connect(fit_button, &QPushButton::clicked, this, &MainWindow::fit_preview);
     connect(export_dxf_button, &QPushButton::clicked, this, &MainWindow::export_dxf);
     connect(export_csv_button, &QPushButton::clicked, this, &MainWindow::export_csv);
@@ -368,6 +402,7 @@ void MainWindow::create_widgets()
     connect(debounce_timer_, &QTimer::timeout, this, &MainWindow::refresh_now);
     connect(kind_combo_, &QComboBox::currentTextChanged, this,
             [this] { if (!updating_widgets_) on_kind_changed(); });
+    apply_preview_mode();
 }
 
 void MainWindow::apply_kind(bool)
@@ -744,21 +779,88 @@ void MainWindow::show_derived()
 
 void MainWindow::show_scene()
 {
-    if (!has_geometry_ || scene_combo_->currentData().toString().isEmpty()) return;
+    if (!has_geometry_) return;
     const std::string member = member_name();
     const std::string key = scene_combo_->currentData().toString().toStdString();
+    const bool three_d = preview_mode_combo_->currentData().toString() == QStringLiteral("3d");
+
     try {
-        if (const auto* g = std::get_if<core::bevel::SetGeometry>(&geometry_)) scene_ = preview::bevel::build_scene(*g, member, key);
-        else if (const auto* g = std::get_if<core::spur::SetGeometry>(&geometry_)) scene_ = preview::spur::build_scene(*g, member, key);
-        else if (const auto* g = std::get_if<core::hypoid::SetGeometry>(&geometry_)) scene_ = preview::hypoid::build_scene(*g, member, key);
-        else if (const auto* g = std::get_if<core::planetary::SetGeometry>(&geometry_)) scene_ = preview::planetary::build_scene(*g, member, key);
-        else return;
-        preview_widget_->set_scene(scene_);
-        scene_title_->setText(QString::fromStdString(scene_.title));
+        if (!key.empty()) {
+            if (const auto* g = std::get_if<core::bevel::SetGeometry>(&geometry_))
+                scene_ = preview::bevel::build_scene(*g, member, key);
+            else if (const auto* g = std::get_if<core::spur::SetGeometry>(&geometry_))
+                scene_ = preview::spur::build_scene(*g, member, key);
+            else if (const auto* g = std::get_if<core::hypoid::SetGeometry>(&geometry_))
+                scene_ = preview::hypoid::build_scene(*g, member, key);
+            else if (const auto* g = std::get_if<core::planetary::SetGeometry>(&geometry_))
+                scene_ = preview::planetary::build_scene(*g, member, key);
+        }
+
+        if (!three_d) {
+            preview_widget_->set_scene(scene_);
+            scene_title_->setText(QString::fromStdString(scene_.title));
+            return;
+        }
+
+        const auto [first, unused_second] = counts(params_);
+        (void)unused_second;
+        const double mesh_position = kind_key_ == "planetary"
+            ? 0.0
+            : static_cast<double>(mesh_slider_->value()) / 1000.0 *
+                  core::kTau / static_cast<double>(std::max(first, 1));
+        if (const auto* g = std::get_if<core::bevel::SetGeometry>(&geometry_))
+            scene3d_ = preview::scene3d::build_scene(*g, mesh_position);
+        else if (const auto* g = std::get_if<core::spur::SetGeometry>(&geometry_))
+            scene3d_ = preview::scene3d::build_scene(*g, mesh_position);
+        else if (const auto* g = std::get_if<core::hypoid::SetGeometry>(&geometry_))
+            scene3d_ = preview::scene3d::build_scene(*g, mesh_position);
+        else if (const auto* g = std::get_if<core::planetary::SetGeometry>(&geometry_))
+            scene3d_ = preview::scene3d::build_scene(*g, mesh_position);
+        else
+            return;
+        preview_widget_->set_scene3d(scene3d_);
+        scene_title_->setText(QString::fromStdString(scene3d_.title));
     } catch (const std::exception& error) {
         preview_widget_->clear_scene();
-        scene_title_->setText(QStringLiteral("Preview unavailable: %1").arg(QString::fromUtf8(error.what())));
+        scene_title_->setText(QStringLiteral("Preview unavailable: %1")
+                                  .arg(QString::fromUtf8(error.what())));
     }
+}
+
+void MainWindow::apply_preview_mode()
+{
+    if (preview_mode_combo_ == nullptr) return;
+    const bool three_d = preview_mode_combo_->currentData().toString() == QStringLiteral("3d");
+    member_label_->setVisible(!three_d);
+    member_combo_->setVisible(!three_d);
+    scene_label_->setVisible(!three_d);
+    scene_combo_->setVisible(!three_d);
+    mesh_label_->setVisible(three_d);
+    mesh_slider_->setVisible(three_d);
+    for (auto* button : camera_buttons_) button->setVisible(three_d);
+    mesh_slider_->setEnabled(three_d && kind_key_ != "planetary");
+}
+
+void MainWindow::on_preview_mode_changed()
+{
+    apply_preview_mode();
+    show_scene();
+    if (preview_mode_combo_->currentData().toString() == QStringLiteral("3d"))
+        preview_widget_->set_camera_view("iso");
+    fit_preview();
+}
+
+void MainWindow::on_mesh_position_changed(int)
+{
+    if (!initialized_ || !has_geometry_ ||
+        preview_mode_combo_->currentData().toString() != QStringLiteral("3d")) return;
+    show_scene();
+}
+
+void MainWindow::set_camera_view(const char* name)
+{
+    if (preview_mode_combo_->currentData().toString() != QStringLiteral("3d")) return;
+    preview_widget_->set_camera_view(name);
 }
 
 void MainWindow::set_status(const QString& text)
@@ -790,6 +892,7 @@ void MainWindow::on_kind_changed()
     const double old_module = module(old_params);
     kind_key_ = kind_combo_->currentData().toString().toStdString();
     apply_kind(true);
+    apply_preview_mode();
     params_ = default_params(kind_key_, old_module, old_counts.first, old_counts.second);
     populate_from_params(params_);
     refresh_now();

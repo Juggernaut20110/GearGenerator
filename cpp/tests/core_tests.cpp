@@ -318,6 +318,48 @@ int main()
     ok &= check(distance(camera.project({1.0, 2.0, 3.0}, 100.0, 80.0),
                          {51.0, 38.0}) < 1e-12,
                 "3D camera front projection matches Python convention");
+    camera.top();
+    ok &= check(distance(camera.project({1.0, 2.0, 3.0}, 100.0, 80.0),
+                         {51.0, 43.0}) < 1e-12,
+                "3D camera top projection matches Python convention");
+    camera.right();
+    ok &= check(distance(camera.project({1.0, 2.0, 3.0}, 100.0, 80.0),
+                         {53.0, 38.0}) < 1e-12,
+                "3D camera right projection matches Python convention");
+    camera.iso();
+    const std::array<double, 6> camera_bounds{-10.0, -5.0, -2.0,
+                                               20.0, 5.0, 8.0};
+    camera.fit(camera_bounds, 300.0, 200.0, 20.0);
+    bool camera_fit_ok = true;
+    for (const double x : {camera_bounds[0], camera_bounds[3]})
+        for (const double y : {camera_bounds[1], camera_bounds[4]})
+            for (const double z : {camera_bounds[2], camera_bounds[5]}) {
+                const auto projected = camera.project({x, y, z}, 300.0, 200.0);
+                camera_fit_ok &= projected.x >= 20.0 - 1e-9 && projected.x <= 280.0 + 1e-9 &&
+                                 projected.y >= 20.0 - 1e-9 && projected.y <= 180.0 + 1e-9;
+            }
+    ok &= check(camera_fit_ok, "3D camera fit contains all scene corners");
+    const auto anchor_before = camera.project({2.0, 1.0, 3.0}, 300.0, 200.0);
+    camera.zoom_at(1.75, anchor_before.x, anchor_before.y, 300.0, 200.0);
+    ok &= check(distance(camera.project({2.0, 1.0, 3.0}, 300.0, 200.0), anchor_before) < 1e-10,
+                "3D camera zoom keeps the cursor anchor stationary");
+
+    const auto spur_gear_axis = std::find_if(
+        scene3d_spur.polylines.begin(), scene3d_spur.polylines.end(),
+        [](const auto& line) { return line.style == "axis" && line.member == "gear"; });
+    const auto expected_gear_origin = spur::mesh::gear_translation(standard_geometry);
+    ok &= check(spur_gear_axis != scene3d_spur.polylines.end() &&
+                    distance(spur_gear_axis->points.front(), expected_gear_origin) < 1e-12,
+                "3D spur scene preserves calculated gear placement");
+    const auto scene3d_helical = geargen::preview::scene3d::build_scene(helical_geometry);
+    ok &= check(std::count_if(scene3d_helical.polylines.begin(), scene3d_helical.polylines.end(),
+                              [](const auto& line) {
+                                  return line.member == "pinion" && line.closed;
+                              }) >= 5,
+                "3D helical scene contains physical sections across the face width");
+    ok &= check(std::any_of(scene3d_planetary.polylines.begin(), scene3d_planetary.polylines.end(),
+                            [](const auto& line) { return line.member == "planet 0"; }),
+                "3D planetary scene includes placed planet geometry");
 
     const auto r12 = geargen::preview::exporter::dxf_lines(spur_transverse);
     ok &= check(std::find(r12.begin(), r12.end(), "AC1009") != r12.end() &&
