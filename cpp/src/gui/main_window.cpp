@@ -777,7 +777,7 @@ void MainWindow::show_derived()
     }
 }
 
-void MainWindow::show_scene()
+void MainWindow::show_scene(bool refit_3d)
 {
     if (!has_geometry_) return;
     const std::string member = member_name();
@@ -785,7 +785,9 @@ void MainWindow::show_scene()
     const bool three_d = preview_mode_combo_->currentData().toString() == QStringLiteral("3d");
 
     try {
-        if (!key.empty()) {
+        // Slider motion changes only assembly rotation.  Keep the already-current
+        // export scene and camera state instead of rebuilding/refitting both views.
+        if ((!three_d || refit_3d) && !key.empty()) {
             if (const auto* g = std::get_if<core::bevel::SetGeometry>(&geometry_))
                 scene_ = preview::bevel::build_scene(*g, member, key);
             else if (const auto* g = std::get_if<core::spur::SetGeometry>(&geometry_))
@@ -818,7 +820,7 @@ void MainWindow::show_scene()
             scene3d_ = preview::scene3d::build_scene(*g, mesh_position);
         else
             return;
-        preview_widget_->set_scene3d(scene3d_);
+        preview_widget_->set_scene3d(scene3d_, refit_3d);
         scene_title_->setText(QString::fromStdString(scene3d_.title));
     } catch (const std::exception& error) {
         preview_widget_->clear_scene();
@@ -854,7 +856,7 @@ void MainWindow::on_mesh_position_changed(int)
 {
     if (!initialized_ || !has_geometry_ ||
         preview_mode_combo_->currentData().toString() != QStringLiteral("3d")) return;
-    show_scene();
+    show_scene(false);
 }
 
 void MainWindow::set_camera_view(const char* name)

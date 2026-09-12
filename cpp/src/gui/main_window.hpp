@@ -96,7 +96,7 @@ private:
     void refresh_now();
     void show_validation(const std::vector<std::string>& parse_errors);
     void show_derived();
-    void show_scene();
+    void show_scene(bool refit_3d = true);
     void apply_preview_mode();
     void on_preview_mode_changed();
     void on_mesh_position_changed(int value);

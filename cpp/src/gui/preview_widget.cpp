@@ -33,13 +33,14 @@ void PreviewWidget::set_scene(const preview::Scene2D& scene)
     update();
 }
 
-void PreviewWidget::set_scene3d(const preview::Scene3D& scene)
+void PreviewWidget::set_scene3d(const preview::Scene3D& scene, bool refit)
 {
+    const bool entering_3d = !has_scene_ || !is_3d_;
     scene3d_ = scene;
     scene_ = {};
     has_scene_ = true;
     is_3d_ = true;
-    needs_fit_ = true;
+    if (refit || entering_3d) needs_fit_ = true;
     update();
 }
 

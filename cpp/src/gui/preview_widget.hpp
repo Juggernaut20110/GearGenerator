@@ -14,7 +14,7 @@ public:
     explicit PreviewWidget(QWidget* parent = nullptr);
 
     void set_scene(const preview::Scene2D& scene);
-    void set_scene3d(const preview::Scene3D& scene);
+    void set_scene3d(const preview::Scene3D& scene, bool refit = true);
     void clear_scene();
     void fit_view();
     void set_camera_view(const std::string& name);

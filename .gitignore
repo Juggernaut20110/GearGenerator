@@ -7,6 +7,8 @@ __pycache__/
 # Nuitka
 build/
 dist/
+# Native CMake build trees
+cpp/build-*/
 # Written when a Nuitka run dies, including when it dies only because its
 # output was piped into something that stopped reading.
 nuitka-crash-report.xml

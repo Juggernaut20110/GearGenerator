@@ -260,20 +260,24 @@ Scene3D build_scene(const core::planetary::SetGeometry& geometry, double)
     std::vector<Polyline3D> lines;
     const auto planet_sections = spur_sections(geometry.sun_planet, "gear");
     const auto add_member = [&lines](const core::spur::SetGeometry& pair,
-                                     const std::string& role, double clocking,
+                                     const std::string& role,
+                                     const std::vector<std::vector<Point3>>& sections,
+                                     double clocking,
                                      Point3 translation, const std::string& style,
                                      const std::string& label, double axis_length) {
         const auto& member = pair.member(role);
-        add_member_wireframe(lines, spur_sections(pair, role), member.teeth,
+        add_member_wireframe(lines, sections, member.teeth,
                              member.angular_pitch_rad(),
                              core::planetary::mesh::member_placement(clocking),
                              translation, style, label);
         add_axis(lines, core::planetary::mesh::member_placement(clocking),
                  translation, axis_length, label);
     };
-    add_member(geometry.sun_planet, "pinion", core::planetary::mesh::sun_clocking(),
+    add_member(geometry.sun_planet, "pinion", spur_sections(geometry.sun_planet, "pinion"),
+               core::planetary::mesh::sun_clocking(),
                {}, "sun", "sun", p.face_width);
-    add_member(geometry.planet_ring, "gear", core::planetary::mesh::ring_clocking(geometry),
+    add_member(geometry.planet_ring, "gear", spur_sections(geometry.planet_ring, "gear"),
+               core::planetary::mesh::ring_clocking(geometry),
                {}, "ring", "ring", p.face_width);
     for (const double z : {0.0, p.face_width}) {
         std::vector<Point3> ring;
@@ -283,7 +287,7 @@ Scene3D build_scene(const core::planetary::SetGeometry& geometry, double)
     }
     for (int i = 0; i < p.n_planets; ++i) {
         const auto translation = core::planetary::mesh::planet_translation(geometry, i);
-        add_member(geometry.sun_planet, "gear",
+        add_member(geometry.sun_planet, "gear", planet_sections,
                    core::planetary::mesh::planet_clocking(geometry, i),
                    translation, "planet", "planet " + std::to_string(i), p.face_width);
     }
